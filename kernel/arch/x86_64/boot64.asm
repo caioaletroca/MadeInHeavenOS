@@ -1,4 +1,5 @@
 global long_mode_start
+extern kmain
 
 section .text
 bits 64
@@ -11,6 +12,6 @@ long_mode_start:
     mov fs, ax
     mov gs, ax
 
-    mov dword [0xb8000], 0x2f4b2f4f
+    call kmain
 
 	hlt
