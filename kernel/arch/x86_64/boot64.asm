@@ -1,4 +1,5 @@
 global long_mode_start
+extern _init
 extern kmain
 
 section .text
@@ -12,6 +13,10 @@ long_mode_start:
     mov fs, ax
     mov gs, ax
 
+    ; Call global constructors
+    ; call _init
+
+    ; Start C code
     call kmain
 
 	hlt

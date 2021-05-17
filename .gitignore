@@ -46,6 +46,7 @@
 *.mod*
 *.cmd
 *.iso
+*.kernel
 .tmp_versions/
 modules.order
 Module.symvers
