@@ -45,6 +45,7 @@
 # Kernel Module Compile Results
 *.mod*
 *.cmd
+*.iso
 .tmp_versions/
 modules.order
 Module.symvers
@@ -52,5 +53,5 @@ Mkfile.old
 dkms.conf
 
 # Build results
-/build
-/dist
+/isodir
+/sysroot
