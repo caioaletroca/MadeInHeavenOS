@@ -10,8 +10,9 @@ void kmain() {
     // At the address pointed to by video_memory , store the character ’X’
     // (i.e. display ’X’ in the top - left of the screen ).
 
-    char* str = "almost every programmer should know memset!";
-    memset(str,'-',6);
+    char str1[]="Sample string";
+    char str2[40];
+    strcpy(str2,str1);
 
-    *video_memory = str;
+    *video_memory = str2[0];
 }
