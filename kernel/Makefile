@@ -16,7 +16,7 @@ INCLUDEDIR?=$(PREFIX)/include
 CFLAGS:=$(CFLAGS) -ffreestanding -Wall -Wextra
 CPPFLAGS:=$(CPPFLAGS) -D__is_kernel -Iinclude
 LDFLAGS:=$(LDFLAGS)
-LIBS:=$(LIBS) -nostdlib -lgcc
+LIBS:=$(LIBS) -nostdlib -lk -lgcc
 
 ARCHDIR=arch/$(HOSTARCH)
 
@@ -78,3 +78,5 @@ install-headers:
 install-kernel: mihos.kernel
 	mkdir -p $(DESTDIR)$(BOOTDIR)
 	cp mihos.kernel $(DESTDIR)$(BOOTDIR)
+
+-include $(OBJS:.o=.d)
