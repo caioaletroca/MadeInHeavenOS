@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <sys/cdefs.h>
 
+#define EOF (-1)
+
 __BEGIN_DECLS
 
 int putchar(int c);
