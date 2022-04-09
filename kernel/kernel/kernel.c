@@ -14,5 +14,6 @@ void kmain() {
     char str2[40];
     strcpy(str2,str1);
 
-    *video_memory = str2[0];
+    // *video_memory = str2[0];
+    terminal_writestring(str2);
 }
