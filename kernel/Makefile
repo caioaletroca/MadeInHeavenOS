@@ -29,7 +29,9 @@ LIBS:=$(LIBS) $(KERNEL_ARCH_LIBS)
 
 KERNEL_OBJS=\
 $(KERNEL_ARCH_OBJS) \
+kernel/kprintf \
 kernel/kernel.o \
+driver/screen.o \
 
 OBJS=\
 $(ARCHDIR)/crti.o \
@@ -73,6 +75,7 @@ install: install-headers install-kernel
 
 install-headers:
 	mkdir -p $(DESTDIR)$(INCLUDEDIR)
+	cp -R --preserve=timestamps driver/. $(DESTDIR)$(INCLUDEDIR)/driver
 	cp -R --preserve=timestamps include/. $(DESTDIR)$(INCLUDEDIR)/.
 
 install-kernel: mihos.kernel
