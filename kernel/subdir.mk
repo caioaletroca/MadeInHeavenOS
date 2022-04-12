@@ -1,5 +1,3 @@
 local_sources := kmain.c \
 
-# dirs := driver
-
-dirs += arch/$(ARCH)
+dirs += arch/$(ARCH) driver

@@ -1,5 +1,6 @@
 // #include <driver/tty.h>
 #include <string.h>
+#include <driver/screen.h>
 // #include <kernel/kprintf.h>
 
 void kmain() {

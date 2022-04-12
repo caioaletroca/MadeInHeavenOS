@@ -8,7 +8,11 @@ kernel := $(BINARY_DIR)/kernel
 
 all: install
 
-install: install-kernel
+install: install-headers install-kernel
+
+install-headers:
+	mkdir -p $(INCLUDE_DIR)
+	cp -R --preserve=timestamps include/. $(INCLUDE_DIR)
 
 install-kernel: $(kernel)
 	mkdir -p $(BOOT_DIR)

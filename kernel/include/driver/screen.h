@@ -5,6 +5,7 @@
 #define SCREEN_HEIGHT   25
 
 #include <stddef.h>
+#include <string.h>
 
 struct screen {
     unsigned int pos_x;

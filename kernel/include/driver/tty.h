@@ -2,8 +2,8 @@
 #define _KERNEL_TTY_H_ 1
 
 #include <stddef.h>
-
-
+#include <stdint.h>
+#include <string.h>
 
 // void terminal_clear(void);
 // void terminal_put(char c);

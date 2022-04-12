@@ -1,11 +1,6 @@
-#include <kernel/tty.h>
-#include <stdint.h>
-#include <string.h>
+#include <driver/tty.h>
 
 #define VIDEO_BUF   ((uint16_t *) (0xB8000 + KVBASE))
-
-#include "vga.h"
-#include "screen.h"
 
 static struct screen *scr;
 
