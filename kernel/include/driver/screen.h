@@ -5,6 +5,7 @@
 #define SCREEN_HEIGHT   25
 
 #include <stddef.h>
+#include <string.h>
 
 struct screen {
     unsigned int pos_x;
@@ -37,5 +38,16 @@ void screen_put(struct screen *scr, char c);
  * @param n String length
  */
 void screen_write(struct screen *scr, const char *str, size_t n);
+
+/**
+ * @brief Copy the backbuffer and update the hadware cursor.
+ * 
+ * The framebuffer has two I/O ports, one for accepting the data, and one
+ * for describing the data being received. Port 0x03D4 is the port that
+ * describes the data and port 0x03D5 is for the data itself.
+ * 
+ * @param scr Screen context
+ */
+void screen_update(struct screen *scr);
 
 #endif

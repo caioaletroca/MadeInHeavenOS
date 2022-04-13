@@ -1,85 +1,133 @@
-DEFAULT_HOST!=../default-host.sh
-HOST?=DEFAULT_HOST
-HOSTARCH!=../target-triplet-to-arch.sh $(HOST)
+include ../common.mk
 
-CFLAGS?=-O2 -g
-CPPFLAGS?=
-LDFLAGS?=
-LIBS?=
+###########################################
+# Folders and Flags
+ARCH_BINARY_DIR := $(BINARY_DIR)/arch/$(ARCH)
+CPPFLAGS += -D__is_kernel
 
-DESTDIR?=
-PREFIX?=/usr/local
-EXEC_PREFIX?=$(PREFIX)
-BOOTDIR?=$(EXEC_PREFIX)/boot
-INCLUDEDIR?=$(PREFIX)/include
+###########################################
 
-CFLAGS:=$(CFLAGS) -ffreestanding -Wall -Wextra
-CPPFLAGS:=$(CPPFLAGS) -D__is_kernel -Iinclude
-LDFLAGS:=$(LDFLAGS)
-LIBS:=$(LIBS) -nostdlib -lk -lgcc
+kernel := $(BINARY_DIR)/kernel
 
-ARCHDIR=arch/$(HOSTARCH)
+.PHONY: list
 
-include $(ARCHDIR)/make.config
-
-CFLAGS:=$(CFLAGS) $(KERNEL_ARCH_CFLAGS)
-CPPFLAGS:=$(CPPFLAGS) $(KERNEL_ARCH_CPPFLAGS)
-LDFLAGS:=$(LDFLAGS) $(KERNEL_ARCH_LDFLAGS)
-LIBS:=$(LIBS) $(KERNEL_ARCH_LIBS)
-
-KERNEL_OBJS=\
-$(KERNEL_ARCH_OBJS) \
-kernel/kprintf \
-kernel/kernel.o \
-driver/screen.o \
-
-OBJS=\
-$(ARCHDIR)/crti.o \
-$(ARCHDIR)/crtbegin.o \
-$(KERNEL_OBJS) \
-$(ARCHDIR)/crtend.o \
-$(ARCHDIR)/crtn.o \
-
-LINK_LIST=\
-$(LDFLAGS) \
-$(ARCHDIR)/crti.o \
-$(ARCHDIR)/crtbegin.o \
-$(KERNEL_OBJS) \
-$(LIBS) \
-$(ARCHDIR)/crtend.o \
-$(ARCHDIR)/crtn.o \
-
-.PHONY: all clean install install-headers install-kernel
-.SUFFIXES: .o .c .asm
-
-all: mihos.kernel
-
-mihos.kernel: $(OBJS) $(ARCHDIR)/linker.ld
-	$(CC) -n -T $(ARCHDIR)/linker.ld -o $@ $(CFLAGS) $(LINK_LIST)
-
-$(ARCHDIR)/crtbegin.o $(ARCHDIR)/crtend.o:
-	OBJ=`$(CC) $(CFLAGS) $(LDFLAGS) -print-file-name=$(@F)` && cp "$$OBJ" $@
-
-.c.o:
-	$(CC) -MD -c $< -o $@ -std=gnu11 $(CFLAGS) $(CPPFLAGS)
-
-.asm.o:
-	nasm -f elf64 $< -o $@
-
-clean:
-	rm -f mihos.kernel
-	rm -f $(OBJS) *.o */*.o */*/*.o
-	rm -f $(OBJS:.o=.d) *.d */*.d */*/*.d
+all: install
 
 install: install-headers install-kernel
 
 install-headers:
-	mkdir -p $(DESTDIR)$(INCLUDEDIR)
-	cp -R --preserve=timestamps driver/. $(DESTDIR)$(INCLUDEDIR)/driver
-	cp -R --preserve=timestamps include/. $(DESTDIR)$(INCLUDEDIR)/.
+	mkdir -p $(INCLUDE_DIR)
+	cp -R --preserve=timestamps include/. $(INCLUDE_DIR)
 
-install-kernel: mihos.kernel
-	mkdir -p $(DESTDIR)$(BOOTDIR)
-	cp mihos.kernel $(DESTDIR)$(BOOTDIR)
+install-kernel: $(kernel)
+	mkdir -p $(BOOT_DIR)
+	cp $^ $(BOOT_DIR)
 
--include $(OBJS:.o=.d)
+GCC_GENERATED_OBJS=\
+$(ARCH_BINARY_DIR)/crtbegin.o \
+$(ARCH_BINARY_DIR)/crtend.o \
+
+LINK_LIST=\
+$(libk) \
+$(objects) \
+$(ARCH_BINARY_DIR)/crtbegin.o \
+$(LDFLAGS_EXTRA) \
+$(ARCH_BINARY_DIR)/crtend.o \
+
+$(kernel): $(GCC_GENERATED_OBJS) $(objects) $(libk) $(ARCH_DIR)/linker.ld
+	$(CC) -n -T $(ARCH_DIR)/linker.ld -o $@ $(CFLAGS) $(LDFLAGS) $(LINK_LIST)
+
+$(ARCH_BINARY_DIR)/crtbegin.o $(ARCH_BINARY_DIR)/crtend.o:
+	OBJ=`$(CC) $(CFLAGS) $(LDFLAGS) -print-file-name=$(@F)` && cp "$$OBJ" $@
+
+-include $(GCC_GENERATED_OBJS:.o=.d)
+
+ifneq ($(MAKECMDGOALS),clean)
+ifneq ($(strip $(depends)),)
+-include $(depends)
+endif
+endif
+
+# DEFAULT_HOST!=../default-host.sh
+# HOST?=DEFAULT_HOST
+# HOSTARCH!=../target-triplet-to-arch.sh $(HOST)
+
+# CFLAGS?=-O2 -g
+# CPPFLAGS?=
+# LDFLAGS?=
+# LIBS?=
+
+# DESTDIR?=
+# PREFIX?=/usr/local
+# EXEC_PREFIX?=$(PREFIX)
+# BOOTDIR?=$(EXEC_PREFIX)/boot
+# INCLUDEDIR?=$(PREFIX)/include
+
+# CFLAGS:=$(CFLAGS) -ffreestanding -Wall -Wextra
+# CPPFLAGS:=$(CPPFLAGS) -D__is_kernel -Iinclude
+# LDFLAGS:=$(LDFLAGS)
+# LIBS:=$(LIBS) -nostdlib -lk -lgcc
+
+# ARCHDIR=arch/$(HOSTARCH)
+
+# include $(ARCHDIR)/make.config
+
+# CFLAGS:=$(CFLAGS) $(KERNEL_ARCH_CFLAGS)
+# CPPFLAGS:=$(CPPFLAGS) $(KERNEL_ARCH_CPPFLAGS)
+# LDFLAGS:=$(LDFLAGS) $(KERNEL_ARCH_LDFLAGS)
+# LIBS:=$(LIBS) $(KERNEL_ARCH_LIBS)
+
+# KERNEL_OBJS=\
+# $(KERNEL_ARCH_OBJS) \
+# kmain.o \
+
+# OBJS=\
+# $(ARCHDIR)/crti.o \
+# $(ARCHDIR)/crtbegin.o \
+# $(KERNEL_OBJS) \
+# $(ARCHDIR)/crtend.o \
+# $(ARCHDIR)/crtn.o \
+
+# LINK_LIST=\
+# $(LDFLAGS) \
+# $(ARCHDIR)/crti.o \
+# $(ARCHDIR)/crtbegin.o \
+# $(KERNEL_OBJS) \
+# $(LIBS) \
+# $(ARCHDIR)/crtend.o \
+# $(ARCHDIR)/crtn.o \
+
+# .PHONY: all clean install install-headers install-kernel
+# .SUFFIXES: .o .c .asm
+
+# all: mihos.kernel
+
+# mihos.kernel: $(OBJS) $(ARCHDIR)/linker.ld
+# 	$(CC) -n -T $(ARCHDIR)/linker.ld -o $@ $(CFLAGS) $(LINK_LIST)
+
+# $(ARCHDIR)/crtbegin.o $(ARCHDIR)/crtend.o:
+# 	OBJ=`$(CC) $(CFLAGS) $(LDFLAGS) -print-file-name=$(@F)` && cp "$$OBJ" $@
+
+# .c.o:
+# 	$(CC) -MD -c $< -o $@ -std=gnu11 $(CFLAGS) $(CPPFLAGS)
+
+# .asm.o:
+# 	nasm -f elf64 $< -o $@
+
+# clean:
+# 	rm -f mihos.kernel
+# 	rm -f $(OBJS) *.o */*.o */*/*.o
+# 	rm -f $(OBJS:.o=.d) *.d */*.d */*/*.d
+
+# install: install-headers install-kernel
+
+# install-headers:
+# 	mkdir -p $(DESTDIR)$(INCLUDEDIR)
+# 	cp -R --preserve=timestamps driver/. $(DESTDIR)$(INCLUDEDIR)/driver
+# 	cp -R --preserve=timestamps include/. $(DESTDIR)$(INCLUDEDIR)/.
+
+# install-kernel: mihos.kernel
+# 	mkdir -p $(DESTDIR)$(BOOTDIR)
+# 	cp mihos.kernel $(DESTDIR)$(BOOTDIR)
+
+# -include $(OBJS:.o=.d)

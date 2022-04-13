@@ -2,8 +2,12 @@
 #define _KERNEL_TTY_H_ 1
 
 #include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+#include <driver/screen.h>
 
-
+size_t tty_write(const void *str, size_t n);
+void tty_init();
 
 // void terminal_clear(void);
 // void terminal_put(char c);

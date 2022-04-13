@@ -1,4 +1,4 @@
-#include "screen.h"
+#include <driver/screen.h>
 
 void screen_put(struct screen *scr, char c) {
     // Insert new character into the buffer

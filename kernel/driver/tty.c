@@ -1,24 +1,22 @@
-#include <kernel/tty.h>
-#include <stdint.h>
-#include <string.h>
+#include <driver/tty.h>
 
-#define VIDEO_BUF   ((uint16_t *) (0xB8000 + KVBASE))
-
-#include "vga.h"
-#include "screen.h"
-
-static struct screen *scr;
+static struct screen scr;
 
 static int tty_putchar(char c) {
-    tty_init();
     screen_put(&scr, c);
-    uint16_t *buf = (uint16_t *)VIDEO_BUF;
-
-    for (i = 0; i < sizeof(scr->buf); i++)
-        buf[i] = vga_entry(c, vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+    return 0;
 }
 
-static tty_init() {
+size_t tty_write(const void *str, size_t n) {
+    size_t i;
+    for(i = 0; i < n; i++)
+        if(tty_putchar(((const unsigned char *)str)[i]) < 0)
+            break;
+    screen_update(&scr);
+    return i;
+}
+
+void tty_init() {
     screen_init(&scr);
 }
 

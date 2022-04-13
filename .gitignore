@@ -54,5 +54,6 @@ Mkfile.old
 dkms.conf
 
 # Build results
+/*/build
 /isodir
 /sysroot
