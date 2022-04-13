@@ -12,6 +12,8 @@ size_t tty_write(const void *str, size_t n) {
     for(i = 0; i < n; i++)
         if(tty_putchar(((const unsigned char *)str)[i]) < 0)
             break;
+            
+    // TODO: Adjust timers for screen update
     screen_update(&scr);
     return i;
 }

@@ -7,8 +7,8 @@ void kmain() {
     // terminal_clear();
     // terminal_writestring("Hello World!!!");
 
-    kprintf("SUAMAE");
-    kprintf("SUAMAE");
+    kprintf("%s SUAMAE", "Test");
+    // kprintf("SUAMAE");
 
     // char *VIDEO_MEMORY = (char*) 0xB8000;
 

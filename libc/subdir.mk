@@ -1,1 +1,4 @@
-dirs := string
+dirs := \
+stdtest \
+stdio \
+string
