@@ -1,6 +1,11 @@
 include ../common.mk
 
+###########################################
+# Folders and Flags
+ARCH_BINARY_DIR := $(BINARY_DIR)/arch/$(ARCH)
 CPPFLAGS += -D__is_kernel
+
+###########################################
 
 kernel := $(BINARY_DIR)/kernel
 
@@ -18,37 +23,24 @@ install-kernel: $(kernel)
 	mkdir -p $(BOOT_DIR)
 	cp $^ $(BOOT_DIR)
 
-KERNEL_ARCH_OBJS=\
-$(BINARY_DIR)/arch/$(ARCH)/boot.o \
-$(BINARY_DIR)/arch/$(ARCH)/boot64.o \
-$(BINARY_DIR)/arch/$(ARCH)/header.o \
-
-KERNEL_OBJS=\
-$(KERNEL_ARCH_OBJS) \
-$(BINARY_DIR)/kmain.o
-
-LIBS:=$(LIBS) -nostdlib -lk -lgcc
-
-OBJS=\
-$(BINARY_DIR)/arch/$(ARCH)/crtbegin.o \
-$(BINARY_DIR)/arch/$(ARCH)/crtend.o \
+GCC_GENERATED_OBJS=\
+$(ARCH_BINARY_DIR)/crtbegin.o \
+$(ARCH_BINARY_DIR)/crtend.o \
 
 LINK_LIST=\
-$(LDFLAGS) \
-$(BINARY_DIR)/arch/$(ARCH)/crti.o \
-$(BINARY_DIR)/arch/$(ARCH)/crtbegin.o \
-$(KERNEL_OBJS) \
-$(LIBS) \
-$(BINARY_DIR)/arch/$(ARCH)/crtend.o \
-$(BINARY_DIR)/arch/$(ARCH)/crtn.o \
+$(libk) \
+$(objects) \
+$(ARCH_BINARY_DIR)/crtbegin.o \
+$(LDFLAGS_EXTRA) \
+$(ARCH_BINARY_DIR)/crtend.o \
 
-$(kernel): $(OBJS) $(objects) $(libk) $(ARCH_DIR)/linker.ld
-	$(CC) -n -T $(ARCH_DIR)/linker.ld -o $@ $(CFLAGS) $(LDFLAGS) $(libk) $(LINK_LIST)
+$(kernel): $(GCC_GENERATED_OBJS) $(objects) $(libk) $(ARCH_DIR)/linker.ld
+	$(CC) -n -T $(ARCH_DIR)/linker.ld -o $@ $(CFLAGS) $(LDFLAGS) $(LINK_LIST)
 
-$(BINARY_DIR)/arch/$(ARCH)/crtbegin.o $(BINARY_DIR)/arch/$(ARCH)/crtend.o:
+$(ARCH_BINARY_DIR)/crtbegin.o $(ARCH_BINARY_DIR)/crtend.o:
 	OBJ=`$(CC) $(CFLAGS) $(LDFLAGS) -print-file-name=$(@F)` && cp "$$OBJ" $@
 
--include $(OBJS:.o=.d)
+-include $(GCC_GENERATED_OBJS:.o=.d)
 
 ifneq ($(MAKECMDGOALS),clean)
 ifneq ($(strip $(depends)),)

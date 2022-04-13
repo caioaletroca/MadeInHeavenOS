@@ -17,7 +17,8 @@ RM := rm -rf
 CFLAGS := -O2 -g -ffreestanding -Wall -Wextra
 CPPFLAGS := -Iinclude
 ASFLAGS := -f elf64
-LDFLAGS := -nostdlib -lk -lgcc
+LDFLAGS := 
+LDFLAGS_EXTRA := -nostdlib -lk -lgcc
 
 #####################################################################
 # Folders and paths
