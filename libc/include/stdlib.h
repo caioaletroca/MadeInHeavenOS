@@ -8,6 +8,9 @@ __BEGIN_DECLS
 
 __attribute__((__noreturn__))
 void abort(void);
+int atexit(void (*)(void));
+void free(void *);
+char *getenv(const char *);
 void *malloc(size_t size);
 
 /**
