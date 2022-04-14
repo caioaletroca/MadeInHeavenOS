@@ -10,6 +10,13 @@ __attribute__((__noreturn__))
 void abort(void);
 void *malloc(size_t size);
 
+/**
+ * @brief Converts a string of numbers into an integer.
+ * 
+ * @return int 
+ */
+int atoi(const char *);
+
 __END_DECLS
 
 #endif
