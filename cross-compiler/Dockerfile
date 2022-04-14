@@ -1,0 +1,56 @@
+# gcc 11.2.0 x86_64-mihos cross-compiler container
+
+FROM debian:stretch
+
+ARG BINUTILS_VERSION=2.37
+ARG GCC_VERSION=11.2.0
+
+# Install cross-compiler prerequisites
+RUN set -x \
+	&& apt-get update \
+	&& apt-get upgrade -y \
+	&& apt-get install -y wget gcc libgmp3-dev libmpfr-dev libisl-dev \
+		libcloog-isl-dev libmpc-dev texinfo bison flex make bzip2 patch \
+		build-essential
+
+# Pull binutils and gcc source code
+RUN set -x \
+	&& mkdir -p /usr/local/src \
+	&& cd /usr/local/src \
+	&& wget -q ftp://ftp.gnu.org/gnu/binutils/binutils-${BINUTILS_VERSION}.tar.gz \
+	&& wget -q ftp://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.gz \
+	&& tar zxf binutils-${BINUTILS_VERSION}.tar.gz \
+	&& tar zxf gcc-${GCC_VERSION}.tar.gz \
+	&& rm binutils-${BINUTILS_VERSION}.tar.gz gcc-${GCC_VERSION}.tar.gz \
+	&& chown -R root:root binutils-${BINUTILS_VERSION} \
+	&& chown -R root:root gcc-${GCC_VERSION} \
+	&& chmod -R o-w,g+w binutils-${BINUTILS_VERSION} \
+	&& chmod -R o-w,g+w gcc-${GCC_VERSION}
+
+# Copy compile scripts
+COPY src /usr/local/src/
+
+# Copy gcc patches
+COPY gcc/t-x86_64-mihos /usr/local/src/gcc-${GCC_VERSION}/gcc/config/i386/
+COPY gcc/config.gcc.patch /usr/local/src/gcc-${GCC_VERSION}/gcc/
+
+# Copy Sysroot
+COPY sysroot /usr/local/src/sysroot
+
+# Build and install binutils and the cross-compiler
+RUN set -x \
+	&& cd /usr/local/src \
+	&& ./build-binutils.sh ${BINUTILS_VERSION} \
+	&& ./build-gcc.sh ${GCC_VERSION}
+
+CMD ["/bin/bash"]
+
+# Install tools for grub
+RUN apt-get install -y nasm
+RUN apt-get install -y xorriso
+RUN apt-get install -y grub-pc-bin
+RUN apt-get install -y grub-common
+
+# Mount source code volume
+VOLUME /root/env
+WORKDIR /root/env
