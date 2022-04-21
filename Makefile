@@ -3,6 +3,10 @@ all: $(libk)
 	$(MAKE) -C kernel
 	$(MAKE) -C grub
 
+install:
+	$(MAKE) -C libc install
+	$(MAKE) -C kernel install
+
 clean:
 	$(MAKE) -C libc clean
 	$(MAKE) -C kernel clean

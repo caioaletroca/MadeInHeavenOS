@@ -1,1 +1,1 @@
-docker run --rm -it -v "%cd%:/root/env" elf-compiler
+docker run --rm -it -v "%cd%/..:/root/env" elf-compiler

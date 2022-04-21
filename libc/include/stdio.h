@@ -5,7 +5,7 @@
 #include <stdarg.h>
 #include <sys/cdefs.h>
 
-#define SEEK_SET 0s
+#define SEEK_SET 0
 #define EOF (-1)
 
 typedef struct { int unused } FILE;
@@ -18,7 +18,7 @@ int fclose(FILE *);
 int fflush(FILE *);
 FILE *fopen(const char *, const char *);
 int fprintf(FILE *, const char *, ...);
-size_t fread(void *, size_t, FILE *);
+size_t fread(void *, size_t, size_t, FILE *);
 int fseek(FILE *, long, int);
 long ftell(FILE *);
 size_t fwrite(const void *, size_t, size_t, FILE *);

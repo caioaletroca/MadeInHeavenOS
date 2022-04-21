@@ -5,7 +5,7 @@ libk := ../libc/build/$(ARCH)/libk.a
 
 #####################################################################
 # Common Programs and Flags
-DEFAULT_HOST := x86_64-elf
+DEFAULT_HOST := x86_64-mihos
 
 HOST := ${DEFAULT_HOST}
 

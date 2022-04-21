@@ -7,7 +7,7 @@ all: install
 install: install-headers install-libs
 
 $(library): $(objects)
-	x86_64-elf-ar rcs $@ $?
+	${AR} rcs $@ $?
 
 install-libs: $(library)
 	mkdir -p $(LIB_DIR)
