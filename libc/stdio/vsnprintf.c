@@ -5,7 +5,6 @@
 #define SPECIFIER_FLAG  1
 #define SPECIFIER_TYPE  4
 
-
 #define CHAR_SCP 'c'
 
 static size_t uimaxtoa(unsigned long integer, char *buffer, int base, int uppercase, size_t size);

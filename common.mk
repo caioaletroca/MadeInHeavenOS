@@ -14,7 +14,7 @@ AR := ${HOST}-ar
 AS := nasm
 RM := rm -rf
 
-CFLAGS := -O2 -g -ffreestanding -Wall -Wextra
+CFLAGS := -O2 -g -Wall -Wextra
 CPPFLAGS := -Iinclude
 ASFLAGS := -f elf64
 LDFLAGS := 
@@ -30,10 +30,6 @@ USR_DIR := $(SYSROOT_DIR)/usr
 INCLUDE_DIR := $(USR_DIR)/include
 BOOT_DIR := $(USR_DIR)/boot
 LIB_DIR := $(USR_DIR)/lib
-
-#####################################################################
-# Adjustments
-CFLAGS += --sysroot=${SYSROOT_DIR} -isystem=/usr/include
 
 #####################################################################
 # Common Macro Functions
@@ -78,6 +74,3 @@ $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.asm
 
 $(BINARY_DIR)/%: $(SOURCE_DIR)/%.c
 	@echo $^
-
-# $(ARCHDIR)/crtbegin.o $(ARCHDIR)/crtend.o:
-# 	OBJ=`$(CC) $(CFLAGS) $(LDFLAGS) -print-file-name=$(@F)` && cp "$$OBJ" $@
