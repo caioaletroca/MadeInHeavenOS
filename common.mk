@@ -11,7 +11,7 @@ HOST := ${DEFAULT_HOST}
 
 CC := ${HOST}-gcc
 AR := ${HOST}-ar
-AS := nasm
+AS := ${HOST}-as
 RM := rm -rf
 
 CFLAGS := -O2 -g -Wall -Wextra
@@ -66,8 +66,11 @@ purge:
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.c
 	$(CC) -MD -c $< -o $@ -std=gnu11 $(CFLAGS) $(CPPFLAGS)
 
+$(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.S
+	$(AS) $< -o $@
+
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.asm
-	$(AS) $(ASFLAGS) $< -o $@
+	nasm $< -o $@
 
 %.o: %.c
 	$(CC) -MD -c $< -o $@ -std=gnu11 $(CFLAGS) $(CPPFLAGS)
