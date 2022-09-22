@@ -22,7 +22,7 @@ _start:
 	# mov $64, ah
 	# int $0x10
 
-	movl $0x07690748,0xb8000
+	movl $0x07690748, 0xb8000
 
 	# mov stack_top, %esp
 
@@ -89,7 +89,7 @@ _start:
 
 # 	ret
 
-# error:
+# erro3r:
 # 	mov byte [0xB8000], %al
 # 	hlt
 
