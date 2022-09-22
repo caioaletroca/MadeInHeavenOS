@@ -67,7 +67,7 @@ $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.c
 	$(CC) -MD -c $< -o $@ -std=gnu11 $(CFLAGS) $(CPPFLAGS)
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.S
-	$(CC) -c $< -o $@
+	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.asm
 	nasm $< -o $@
