@@ -2,9 +2,6 @@
 
 FROM debian:stretch
 
-# ARG BINUTILS_VERSION=2.37
-# ARG GCC_VERSION=11.2.0
-
 # Install cross-compiler prerequisites
 RUN set -x \
 	&& apt-get update \
