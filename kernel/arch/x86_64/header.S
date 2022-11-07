@@ -18,8 +18,6 @@ header_start:
     .long PROTECTED_MODE
     .long SIZE
     .long CHECKSUM
-    # .long 0x18
-    # .long 0x17ADAF12
 
     # Required end tag for multiboot
     .short TYPE

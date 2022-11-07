@@ -139,7 +139,16 @@ stack_top:
 gdt64:
 	.quad 0 												# zero entry
 code_segment = . - gdt64
-	.quad (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) 	# code segment
+	.quad (1 << 41) | (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) 	# code segment
 pointer:
 	.short . - gdt64 - 1 									# length
 	.quad gdt64 											# address
+
+# gdt64:
+# 	.quad 0
+# code_segment = . - gdt64
+# 	.quad (1 << 55) | (1<<53) | (1<<47) | (1<<44) | (1<<43) | (1 << 41)
+# pointer:
+# 	.short . - gdt64 - 1 									# length
+# 	.quad gdt64 			
+

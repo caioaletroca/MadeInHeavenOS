@@ -1,0 +1,1 @@
+qemu-system-x86_64 -no-reboot -d int -cdrom mihos.iso

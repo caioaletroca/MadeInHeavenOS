@@ -18,3 +18,6 @@ purge:
 	$(MAKE) -C libc purge
 	$(MAKE) -C kernel purge
 	$(MAKE) -C grub purge
+
+dump:
+	objdump -d kernel/build/x86_64/kernel > dump.txt

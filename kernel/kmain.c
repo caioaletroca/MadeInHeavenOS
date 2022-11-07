@@ -1,14 +1,15 @@
 // #include <driver/tty.h>
 // #include <string.h>
 // #include <driver/tty.h>
-// #include <kprintf.h>
+#include <kprintf.h>
+#include <idt.h>
 
 void kmain() {
-    // terminal_clear();
-    // terminal_writestring("Hello World!!!");
+    idt_init();
 
     kprintf("%s SUAMAE\n", "Test");
-    // kprintf("SUAMAE");
+
+    // __asm__ __volatile__ ("int $0x2");
 
     // char *VIDEO_MEMORY = (char*) 0xB8000;
 
