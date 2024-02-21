@@ -1,43 +1,41 @@
-/* The bootloader will look at this image and start execution at the symbol
-   designated as the entry point. */
 ENTRY(_start)
+OUTPUT_FORMAT(elf64-x86-64)
+
+physical = 1M;
+offset = 0xFFFFFFFF80000000;
+virtual = offset + physical;
  
-/* Tell where the various sections of the object files will be put in the final
-   kernel image. */
 SECTIONS
 {
-	/* Begin putting sections at 1 MiB, a conventional place for kernels to be
-	   loaded at by the bootloader. */
-	. = 1M;
+	. = virtual;
  
-	/* First put the multiboot header, as it is required to be put very early
-	   early in the image or the bootloader won't recognize the file format.
-	   Next we'll put the .text section. */
-	.text BLOCK(4K) : ALIGN(4K)
+	/* _kernel_start = .;
+	.multiboot :
 	{
 		*(.multiboot)
+	}
+
+	. += offset; */
+	.rodata ALIGN(4K) : AT(ADDR(.rodata) - offset)
+	{
+		*(.multiboot)
+		*(.rodata)
+	}
+
+	.text ALIGN(4K) : AT(ADDR(.text) - offset)
+	{
 		*(.text)
 	}
  
-	/* Read-only data. */
-	.rodata BLOCK(4K) : ALIGN(4K)
-	{
-		*(.rodata)
-	}
- 
-	/* Read-write data (initialized) */
-	.data BLOCK(4K) : ALIGN(4K)
+	.data ALIGN(4K) : AT(ADDR(.data) - offset)
 	{
 		*(.data)
 	}
  
-	/* Read-write data (uninitialized) and stack */
-	.bss BLOCK(4K) : ALIGN(4K)
+	.bss ALIGN(4K) : AT(ADDR(.bss) - offset)
 	{
 		*(COMMON)
 		*(.bss)
 	}
- 
-	/* The compiler may produce other sections, by default it will put them in
-	   a segment with the same name. Simply add stuff here as needed. */
+	_kernel_end = .;
 }

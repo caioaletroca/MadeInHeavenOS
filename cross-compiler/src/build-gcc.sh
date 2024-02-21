@@ -10,7 +10,7 @@ mkdir build-gcc
 cd build-gcc
 ../mihos-gcc/configure --target=$TARGET --prefix="$PREFIX" --with-sysroot="$VOLUME/sysroot" --disable-nls --enable-languages=c,c++
 make -j 4 all-gcc
-make -j 4 all-target-libgcc
+make -j 4 all-target-libgcc CFLAGS_FOR_TARGET='-g -O2 -mcmodel=kernel -mno-red-zone'
 make install-gcc
 make install-target-libgcc
 

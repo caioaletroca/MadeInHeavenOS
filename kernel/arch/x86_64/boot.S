@@ -1,42 +1,77 @@
 .globl _start
 .extern long_mode_start
+.extern gdt64
+.extern pointer
 
+#define PAGE_SIZE 0x1000
+#define KERNEL_ADDRESS 0xFFFFFFFF80000000
 #define VGA_MEMORY	0xB8000
+
+.macro outb port val
+	mov $\val, %al
+	mov $\port, %dx
+	out %al, %dx
+.endm
 
 .section .text
 .code32
 .type _start, @function
 _start:
-	# The bootloader has loaded us into 32-bit protected mode on a x86 
-	# machine. Interrupts are disabled. Paging is disabled. The processor 
-	# state is as defined in the multiboot standard. The kernel has full 
-	# control of the CPU. The kernel can only make use of hardware features 
-	# and any code it provides as part of itself. There's no printf 
-	# function, unless the kernel provides its own <stdio.h> header and a 
-	# printf implementation. There are no security restrictions, no 
-	# safeguards, no debugging mechanisms, only what the kernel provides 
-	# itself. It has absolute and complete power over the 
-	# machine. 
+	# Disable interrupts
+	cli
 
-	# To set up a stack, we set the esp register to point to the top of our 
-	# stack (as it grows downwards on x86 systems). This is necessarily done 
-	# in assembly as languages such as C cannot function without a stack.
+	# Clear the direction flag
+	cld
 
-	mov $stack_top, %esp
+	mov $stack_bottom - KERNEL_ADDRESS, %esp
+	
+	call clear_screen
+
+	# Set the cursor to blink
+	outb 0x3D4, 0x09
+	outb 0x3D5, 0x0F
+	outb 0x3D4, 0x0B
+	outb 0x3D5, 0x0F
+	outb 0x3D4, 0x0A
+	outb 0x3D5, 0x0E
+
+	# Sets the cursor position to 0,1
+	outb 0x3D4, 0x0F
+	# Set cursor position to (row * 80) + col = (1 * 80) + 0 = 80
+	outb 0x3D5, 80
+	outb 0x3D4, 0x0E
+	outb 0x3D5, 0x00
+
+	
 
 	call check_multiboot
 	
 	call setup_page_tables
 	call enable_paging
 
-	lgdt (pointer)
-	jmp $code_segment, $long_mode_start
+	# lgdt (pointer)
+	# jmp $code, $long_mode_start
 
 	hlt
 .size _start, . - _start
 
+.type clear_screen, @function
+clear_screen:
+	# 80 * 25 characters on the screen
+	movl $2000, %ecx
+	jmp clear_end
+clear:
+	decl %ecx
+	movw $0x0F20, VGA_MEMORY(, %ecx, 2)
+clear_end:
+	cmpl $0, %ecx
+	jne clear
+	ret
+.size clear_screen, . - clear_screen
+
 .type check_multiboot, @function
 check_multiboot:
+	# Magic number to validate multiboot
 	cmp $0x36D76289, %eax
 	jne no_multiboot
 	ret
@@ -124,31 +159,13 @@ freeze:
 # stack is properly aligned and failure to align the stack will result in
 # undefined behavior.
 .section .bss
-	.align 4096
-page_table_l4:
-	.space 4096
-page_table_l3:
-	.space 4096
-page_table_l2:
-	.space 4096
-stack_bottom:
-	.space 16384
+	.align PAGE_SIZE
+page_table_l4 = . - KERNEL_ADDRESS
+	.space PAGE_SIZE
+page_table_l3 = . - KERNEL_ADDRESS
+	.space PAGE_SIZE
+page_table_l2 = . - KERNEL_ADDRESS
+	.space PAGE_SIZE
 stack_top:
-
-.section .rodata
-gdt64:
-	.quad 0 												# zero entry
-code_segment = . - gdt64
-	.quad (1 << 41) | (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) 	# code segment
-pointer:
-	.short . - gdt64 - 1 									# length
-	.quad gdt64 											# address
-
-# gdt64:
-# 	.quad 0
-# code_segment = . - gdt64
-# 	.quad (1 << 55) | (1<<53) | (1<<47) | (1<<44) | (1<<43) | (1 << 41)
-# pointer:
-# 	.short . - gdt64 - 1 									# length
-# 	.quad gdt64 			
-
+	.space PAGE_SIZE * 4
+stack_bottom:

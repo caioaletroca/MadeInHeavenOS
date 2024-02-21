@@ -14,10 +14,14 @@ AR := ${HOST}-ar
 AS := ${HOST}-as
 RM := rm -rf
 
-CFLAGS := -O2 -g -Wall -Wextra
+CFLAGS := -O2 -g -Wall -Wextra -mcmodel=kernel -mno-red-zone
+# CFLAGS		+= -ffreestanding -mno-red-zone -mcmodel=kernel -Iinclude -std=gnu11
+# CFLAGS		+= -Wall -Werror -Wextra -Wparentheses -Wmissing-declarations -Wunreachable-code -Wunused 
+# CFLAGS		+= -Wmissing-field-initializers -Wmissing-prototypes -Wpointer-arith -Wswitch-enum
+# CFLAGS		+= -Wredundant-decls -Wshadow -Wstrict-prototypes -Wswitch-default -Wuninitialized
 CPPFLAGS := -Iinclude
 ASFLAGS := -f elf64
-LDFLAGS := 
+LDFLAGS := -fno-PIC
 LDFLAGS_EXTRA := -nostdlib -lk -lgcc
 
 #####################################################################
@@ -64,13 +68,15 @@ purge:
 	$(RM) build
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.c
-	$(CC) -MD -c $< -o $@ -std=gnu11 $(CFLAGS) $(CPPFLAGS)
+	$(CC) -MD -c $< -o $@ -std=gnu11 $(CFLAGS)
+# $(CPPFLAGS)
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.S
-	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
+	$(CC) -MD -c $< -o $@ $(CFLAGS) 
+# $(CPPFLAGS)
 
-$(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.asm
-	nasm $< -o $@
+# $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.asm
+# 	nasm $< -o $@
 
 %.o: %.c
 	$(CC) -MD -c $< -o $@ -std=gnu11 $(CFLAGS) $(CPPFLAGS)

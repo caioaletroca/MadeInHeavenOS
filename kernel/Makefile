@@ -33,7 +33,7 @@ $(LDFLAGS_EXTRA) \
 $(ARCH_BINARY_DIR)/crtend.o \
 
 $(kernel): $(GCC_GENERATED_OBJS) $(objects) $(libk) $(ARCH_DIR)/linker.ld
-	$(CC) -g -n -T $(ARCH_DIR)/linker.ld -o $@ $(CFLAGS) $(LDFLAGS) $(LINK_LIST)
+	$(CC) -n -T $(ARCH_DIR)/linker.ld -o $@ $(CFLAGS) $(LDFLAGS) $(LINK_LIST)
 
 $(ARCH_BINARY_DIR)/crtbegin.o $(ARCH_BINARY_DIR)/crtend.o:
 	OBJ=`$(CC) $(CFLAGS) $(LDFLAGS) -print-file-name=$(@F)` && cp "$$OBJ" $@

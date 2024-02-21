@@ -31,4 +31,6 @@ typedef struct {
  */
 void idt_init(void);
 
+void test(void);
+
 #endif
