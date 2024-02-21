@@ -1,13 +1,13 @@
 # gcc 11.2.0 x86_64-mihos cross-compiler container
 
-FROM debian:stretch
+FROM debian:latest
 
 # Install cross-compiler prerequisites
 RUN set -x \
 	&& apt-get update \
 	&& apt-get upgrade -y \
 	&& apt-get install -y wget gcc libgmp3-dev libmpfr-dev libisl-dev \
-		libcloog-isl-dev libmpc-dev texinfo bison flex make bzip2 patch \
+		libmpc-dev texinfo bison flex make bzip2 patch \
 		build-essential git-all
 
 # Pull binutils and gcc source code
@@ -35,11 +35,8 @@ RUN set -x \
 
 CMD ["/bin/bash"]
 
-# # Install tools for grub
-RUN apt-get install -y nasm
-RUN apt-get install -y xorriso
-RUN apt-get install -y grub-pc-bin
-RUN apt-get install -y grub-common
+# Install tools for grub
+RUN apt-get install -y nasm xorriso grub-pc-bin grub-common
 
 # Mount source code volume
 VOLUME /root/env
