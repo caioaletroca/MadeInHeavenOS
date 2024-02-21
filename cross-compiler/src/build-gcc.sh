@@ -15,4 +15,4 @@ make install-gcc
 make install-target-libgcc
 
 cd $PREFIX/src
-# rm -rf build-gcc.sh build-gcc mihos-gcc
+rm -rf build-gcc.sh build-gcc mihos-gcc
