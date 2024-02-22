@@ -23,36 +23,30 @@ _start:
 	# Clear the direction flag
 	cld
 
+	# Set stack pointer
 	mov $stack_bottom - KERNEL_ADDRESS, %esp
 	
 	call clear_screen
 
-	# Set the cursor to blink
-	outb 0x3D4, 0x09
-	outb 0x3D5, 0x0F
-	outb 0x3D4, 0x0B
-	outb 0x3D5, 0x0F
-	outb 0x3D4, 0x0A
-	outb 0x3D5, 0x0E
+	call check_multiboot
 
-	# Sets the cursor position to 0,1
-	outb 0x3D4, 0x0F
-	# Set cursor position to (row * 80) + col = (1 * 80) + 0 = 80
-	outb 0x3D5, 80
-	outb 0x3D4, 0x0E
-	outb 0x3D5, 0x00
+	call set_cursor
 
-	
+	/* reset EFLAGS. */
+	pushl $0
+	popf
 
-	# call check_multiboot
 	call check_cpuid
 	call check_long_mode
 
 	call setup_page_tables
 	call enable_paging
 
-	# lgdt (pointer)
-	# jmp $code, $long_mode_start
+	# Turn on GDT
+	lgdt (gdt64_pointer - KERNEL_ADDRESS)
+
+	# Jump to 64bits world
+	ljmp $code, $(boot64 - KERNEL_ADDRESS)
 
 	hlt
 .size _start, . - _start
@@ -71,10 +65,30 @@ clear_end:
 	ret
 .size clear_screen, . - clear_screen
 
+.type set_cursor, @function
+set_cursor:
+	# Set the cursor to blink
+	outb 0x3D4, 0x09
+	outb 0x3D5, 0x0F
+	outb 0x3D4, 0x0B
+	outb 0x3D5, 0x0F
+	outb 0x3D4, 0x0A
+	outb 0x3D5, 0x0E
+
+	# Sets the cursor position to 0,1
+	outb 0x3D4, 0x0F
+	# Set cursor position to (row * 80) + col = (1 * 80) + 0 = 80
+	outb 0x3D5, 80
+	outb 0x3D4, 0x0E
+	outb 0x3D5, 0x00
+
+	ret
+.size set_cursor, . - set_cursor
+
 .type check_multiboot, @function
 check_multiboot:
 	# Magic number to validate multiboot
-	cmp $0x36D76289, %eax
+	cmpl $0x36D76289, %eax
 	jne no_multiboot
 	ret
 no_multiboot:
