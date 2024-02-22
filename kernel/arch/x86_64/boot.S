@@ -1,10 +1,10 @@
 .globl _start
-.extern long_mode_start
+.extern boot64
 .extern gdt64
-.extern pointer
+.extern code
+.extern gdt64_pointer
 
-#define PAGE_SIZE 0x1000
-#define KERNEL_ADDRESS 0xFFFFFFFF80000000
+#include "memory.h"
 #define VGA_MEMORY	0xB8000
 
 .macro outb port val
@@ -76,9 +76,46 @@ check_multiboot:
 	jne no_multiboot
 	ret
 no_multiboot:
-	mov $0x074D, %eax
+	# Sends 1 to error output
+	mov $0x0731, %eax
 	jmp error
 .size check_multiboot, . - check_multiboot
+
+.type check_cpuid, @function
+check_cpuid:
+	# Copy Flags into EAX by stack
+	pushf
+	popl %eax
+
+	# Copy to ECX as well for comparing later on
+	movl %eax, %ecx
+
+	# Flip the ID bit
+	xorl (1 << 21), %eax
+
+	# Copy EAX to Flags by stack
+	pushl %eax
+	popf
+
+	# Copy Flags back to EAX (with the flipped bit if CPUID is supported)
+	pushf
+	popl %eax
+
+	# Restore Flags from the old version stored in ECX (flipping the ID bit back if
+	# it was ever flipped)
+	pushl %ecx
+	popf
+
+	# Compare EAX and ECX. If they are equal then that means the bit
+	# wasn't flipped, and CPUID isn't supported
+	xorl %ecx, %eax
+	jz no_cpuid
+	ret
+no_cpuid:
+	# Sends 2 to error output
+	mov $0x0732, %eax
+	jmp error
+.size check_cpuid, . - check_cpuid
 
 setup_page_tables:
 	mov $page_table_l3, %eax
@@ -148,16 +185,6 @@ freeze:
 	jmp freeze
 .size freeze, . - freeze
 
-# The multiboot standard does not define the value of the stack pointer register
-# (esp) and it is up to the kernel to provide a stack. This allocates room for a
-# small stack by creating a symbol at the bottom of it, then allocating 16384
-# bytes for it, and finally creating a symbol at the top. The stack grows
-# downwards on x86. The stack is in its own section so it can be marked nobits,
-# which means the kernel file is smaller because it does not contain an
-# uninitialized stack. The stack on x86 must be 16-byte aligned according to the
-# System V ABI standard and de-facto extensions. The compiler will assume the
-# stack is properly aligned and failure to align the stack will result in
-# undefined behavior.
 .section .bss
 	.align PAGE_SIZE
 page_table_l4 = . - KERNEL_ADDRESS

@@ -1,6 +1,7 @@
 .globl _init
-.section .init
 .code64
+
+.section .init
 .type _init, @function
 _init:
 	push %rbp
