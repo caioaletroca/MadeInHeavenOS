@@ -44,8 +44,10 @@ _start:
 
 	
 
-	call check_multiboot
-	
+	# call check_multiboot
+	call check_cpuid
+	call check_long_mode
+
 	call setup_page_tables
 	call enable_paging
 
@@ -91,7 +93,7 @@ check_cpuid:
 	movl %eax, %ecx
 
 	# Flip the ID bit
-	xorl (1 << 21), %eax
+	xorl $(1 << 21), %eax
 
 	# Copy EAX to Flags by stack
 	pushl %eax
@@ -116,6 +118,35 @@ no_cpuid:
 	mov $0x0732, %eax
 	jmp error
 .size check_cpuid, . - check_cpuid
+
+.type check_long_mode, @function
+check_long_mode:
+	# Set the A-register
+	movl $0x80000000, %eax
+
+	# CPU Identification
+	cpuid
+
+	# Compare value, if it's less, there is no long mode
+	cmpl $0x80000001, %eax
+	jb no_long_mode
+
+	# Set the A-register again
+	mov $0x80000001, %eax
+
+	# CPU Identification
+	cpuid
+
+	# Test if the LM-bit, which is bit 29, is set in the D-register
+	test $(1 << 29), %edx
+	jz no_long_mode
+
+	ret
+no_long_mode:
+	# Sends 3 to error output
+	mov $0x0733, %eax
+	jmp error
+.size check_long_mode, . - check_long_mode
 
 setup_page_tables:
 	mov $page_table_l3, %eax
