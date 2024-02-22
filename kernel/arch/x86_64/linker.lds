@@ -1,30 +1,30 @@
+#include "memory.h"
+
 ENTRY(_start)
 OUTPUT_FORMAT(elf64-x86-64)
 
 physical = 1M;
-offset = 0xFFFFFFFF80000000;
+offset = KERNEL_ADDRESS;
 virtual = offset + physical;
  
 SECTIONS
 {
 	. = virtual;
  
-	/* _kernel_start = .;
-	.multiboot :
-	{
-		*(.multiboot)
-	}
+	_kernel_start = .;
 
-	. += offset; */
 	.rodata ALIGN(4K) : AT(ADDR(.rodata) - offset)
 	{
 		*(.multiboot)
 		*(.rodata)
+		*(.rodata*)
+		*(.eh_frame)
 	}
 
 	.text ALIGN(4K) : AT(ADDR(.text) - offset)
 	{
 		*(.text)
+		*(.text*)
 	}
  
 	.data ALIGN(4K) : AT(ADDR(.data) - offset)
@@ -37,5 +37,7 @@ SECTIONS
 		*(COMMON)
 		*(.bss)
 	}
+	_bss = .;
+	
 	_kernel_end = .;
 }
