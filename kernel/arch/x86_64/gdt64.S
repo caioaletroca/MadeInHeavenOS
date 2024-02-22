@@ -1,6 +1,6 @@
 .globl gdt64
 .globl code
-.globl pointer
+.globl gdt64_pointer
 
 # GDT Access Byte bits
 #define GDT_ACCESS_BYTE_P_BIT 			0b10000000
@@ -21,6 +21,7 @@
 
 # Global Descriptor Table x64 bits
 .section .rodata
+    .align 16
 gdt64:
 
     # Null Descriptor
@@ -61,6 +62,7 @@ gdt64:
 
 	# tss:
 	# 	.word 0 # TODO
-pointer:
-	.short . - gdt64 - 1 									# length
-	.quad gdt64 											# address
+
+gdt64_pointer:
+	.word . - gdt64 - 1 									# length
+	.long gdt64 - 0xFFFFFFFF80000000 						# address
