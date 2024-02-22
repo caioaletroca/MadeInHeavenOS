@@ -3,6 +3,10 @@
 .extern gdt64
 .extern code
 .extern gdt64_pointer
+.extern error
+.extern multiboot_error_message
+.extern cpuid_error_message
+.extern long_mode_error_message
 
 #include "memory.h"
 #define VGA_MEMORY	0xB8000
@@ -92,8 +96,7 @@ check_multiboot:
 	jne no_multiboot
 	ret
 no_multiboot:
-	# Sends 1 to error output
-	mov $0x0731, %eax
+	mov $multiboot_error_message, %eax
 	jmp error
 .size check_multiboot, . - check_multiboot
 
@@ -128,8 +131,7 @@ check_cpuid:
 	jz no_cpuid
 	ret
 no_cpuid:
-	# Sends 2 to error output
-	mov $0x0732, %eax
+	mov $cpuid_error_message, %eax
 	jmp error
 .size check_cpuid, . - check_cpuid
 
@@ -157,8 +159,7 @@ check_long_mode:
 
 	ret
 no_long_mode:
-	# Sends 3 to error output
-	mov $0x0733, %eax
+	mov $long_mode_error_message, %eax
 	jmp error
 .size check_long_mode, . - check_long_mode
 
@@ -187,57 +188,44 @@ setup_page_tables:
 	
 	ret
 
+.type enable_paging, @function
 enable_paging:
-	mov $page_table_l4, %eax
-	mov %eax, %cr3
-	
+	# Ensure that paging is off
+	movl    %cr0, %eax
+	andl    $0x7fffffff, %eax
+	movl    %eax, %cr0
+
 	# Enable PAE
 	mov %cr4, %eax
 	or $(1 << 5), %eax
 	mov %eax, %cr4
-	
+
+	# Load a Level4 Page Directory
+	movl    $(page_table_l4 - KERNEL_ADDRESS), %eax
+	mov     %eax, %cr3
+
 	# Enable long mode
 	mov $0xC0000080, %ecx
 	rdmsr
-	or $(1 << 8), %eax
-	wrmsr
+	orl $(1 << 8), %eax
+	wrmsr	
 
 	# Enable paging
-	mov %cr0, %eax
-	or $(1 << 31), %eax
-	mov %eax, %cr0
+	movl %cr0, %eax
+	orl $(1 << 31), %eax
+	movl %eax, %cr0
 
 	ret
-
-.globl error
-.type error, @function
-error:
-	mov $VGA_MEMORY, %ebx
-	mov $0x0745, (%ebx)
-	mov $0x0752, 2(%ebx)
-	mov $0x0752, 4(%ebx)
-	mov $0x073A, 6(%ebx)
-	mov $0x0720, 8(%ebx)
-	mov %eax, 10(%ebx)
-	jmp freeze
-.size error, . - error
-
-.globl freeze
-.type freeze, @function
-freeze:
-	cli
-	hlt
-	jmp freeze
-.size freeze, . - freeze
+.size enable_paging, . - enable_paging
 
 .section .bss
 	.align PAGE_SIZE
-page_table_l4 = . - KERNEL_ADDRESS
+page_table_l4:
 	.space PAGE_SIZE
-page_table_l3 = . - KERNEL_ADDRESS
+page_table_l3:
 	.space PAGE_SIZE
-page_table_l2 = . - KERNEL_ADDRESS
+page_table_l2:
 	.space PAGE_SIZE
-stack_top:
-	.space PAGE_SIZE * 4
 stack_bottom:
+	.space PAGE_SIZE * 4
+stack_top:
