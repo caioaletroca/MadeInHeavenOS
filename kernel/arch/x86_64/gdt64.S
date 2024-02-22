@@ -2,6 +2,8 @@
 .globl code
 .globl gdt64_pointer
 
+#include "memory.h"
+
 # GDT Access Byte bits
 #define GDT_ACCESS_BYTE_P_BIT 			0b10000000
 #define GDT_ACCESS_BYTE_DPL_KERNEL_BIT 	0b00000000
@@ -63,6 +65,7 @@ gdt64:
 	# tss:
 	# 	.word 0 # TODO
 
+# GDT x64 bits Pointer 
 gdt64_pointer:
-	.word . - gdt64 - 1 									# length
-	.long gdt64 - 0xFFFFFFFF80000000 						# address
+	.word . - gdt64 - 1 					# Length
+	.long gdt64 - KERNEL_ADDRESS			# Address
