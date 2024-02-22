@@ -1,13 +1,13 @@
 // #include <driver/tty.h>
 // #include <string.h>
 // #include <driver/tty.h>
-// #include <kprintf.h>
+#include <kprintf.h>
 // #include <idt.h>
 
 void kmain() {
     // idt_init();
 
-    // kprintf("%s SUAMAE\n", "Test");
+    kprintf("%s SUAMAE\n", "Test");
 
     // __asm__ __volatile__("hlt");
 

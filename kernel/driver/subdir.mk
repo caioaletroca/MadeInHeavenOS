@@ -1,3 +1,3 @@
 local_sources := \
-# screen.c \
-# tty.c
+screen.c \
+tty.c

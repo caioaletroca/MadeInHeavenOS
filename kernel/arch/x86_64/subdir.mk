@@ -5,7 +5,7 @@ gdt64.S \
 crti.S \
 crtn.S \
 header.S \
-# vga.c \
-# screen.c
+vga.c \
+screen.c
 # isr.S \
 # idt.c \
