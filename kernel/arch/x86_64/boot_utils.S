@@ -2,6 +2,7 @@
 .globl multiboot_error_message
 .globl cpuid_error_message
 .globl long_mode_error_message
+.globl sse_error_message
 .code32
 
 #include "memory.h"
@@ -63,3 +64,5 @@ cpuid_error_message = . - KERNEL_ADDRESS
     .string "Error: CPU ID not supported"
 long_mode_error_message = . - KERNEL_ADDRESS
     .string "Error: Long mode not supported"
+sse_error_message = . - KERNEL_ADDRESS
+    .string "Error: SSE not supported"

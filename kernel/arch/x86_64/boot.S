@@ -1,12 +1,19 @@
 .globl _start
 .extern boot64
+
+# GDT variables
 .extern gdt64
 .extern code
 .extern gdt64_pointer
+
+# Error Messages
 .extern error
 .extern multiboot_error_message
 .extern cpuid_error_message
 .extern long_mode_error_message
+.extern sse_error_message
+
+.code32
 
 #include "memory.h"
 #define VGA_MEMORY	0xB8000
@@ -18,7 +25,6 @@
 .endm
 
 .section .text
-.code32
 .type _start, @function
 _start:
 	# Disable interrupts
@@ -42,7 +48,9 @@ _start:
 
 	call check_cpuid
 	call check_long_mode
+	call check_sse
 
+	call enable_sse
 	call setup_page_tables
 	call enable_paging
 
@@ -162,6 +170,39 @@ no_long_mode:
 	mov $long_mode_error_message, %eax
 	jmp error
 .size check_long_mode, . - check_long_mode
+
+.type check_sse, @function
+check_sse:
+	mov $0x1, %eax
+	cpuid
+	test $(1 << 25), %edx
+	jz no_sse
+	ret
+no_sse:
+	mov $sse_error_message, %eax
+	jmp error
+.size check_sse, . - check_sse
+
+.type enable_sse, @function
+enable_sse:
+	mov %cr0, %eax
+
+	# Clear coprocessor emulation CR0.EM
+	and $0xFFFB, %ax
+
+	# Set coprocessor monitoring CR0.MP
+	or $0x2, %ax
+
+	mov %eax, %cr0
+	mov %cr4, %eax
+
+	# Set CR4.OSFXSR and CR4.OSXMMEXCPT at the same time
+	or $(3 << 9), %ax
+
+	mov %eax, %cr4
+
+	ret
+.size enable_sse, . - enable_sse
 
 setup_page_tables:
 	mov $page_table_l3, %eax
