@@ -8,6 +8,12 @@
 #include "memory.h"
 #define VGA_MEMORY	0xB8000
 
+.macro outb port val
+	mov $\val, %al
+	mov $\port, %dx
+	out %al, %dx
+.endm
+
 .section .text
 .type error, @function
 error:
