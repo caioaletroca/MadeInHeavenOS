@@ -1,6 +1,12 @@
 .globl gdt64
 .globl code
+.globl data
+.globl tss
 .globl gdt64_pointer
+
+.extern tss64_size
+.extern ist_stack1
+.extern ist_stack2
 
 #include "memory.h"
 
@@ -21,8 +27,13 @@
 #define GDT_FLAGS_SIZE_FLAG				0b0100
 #define GDT_FLAGS_LONG_MODE				0b0010
 
+# TSS Access Byte bits
+#define GDT_TSS_ACCESS_BYTE_TYPE_LDT          0x2
+#define GDT_TSS_ACCESS_BYTE_TYPE_AVAILABLE    0x9
+#define GDT_TSS_ACCESS_BYTE_TYPE_BUSY         0xB
+
 # Global Descriptor Table x64 bits
-.section .rodata
+.section .data
     .align 16
 gdt64:
 
@@ -62,8 +73,19 @@ gdt64:
         .byte (GDT_FLAGS_LONG_MODE << 4)	# Limit + Flags
         .byte 0                				# Base (high)
 
-	# tss:
-	# 	.word 0 # TODO
+    # Task Stack Segment
+	tss = . - gdt64
+		.word tss64_size                    # Limit
+        .word 0                             # Base (low)
+        .byte 0                             # Base (middle)
+        .byte ( \
+            GDT_TSS_ACCESS_BYTE_TYPE_AVAILABLE | \
+            GDT_ACCESS_BYTE_P_BIT \
+        )                                   # Access Byte
+        .byte 0                             # Limit + Flags
+        .byte 0                             # Base (high)
+        .long 0                             # Base (higher)
+        .long 0                             # Reserved
 
 # GDT x64 bits Pointer 
 gdt64_pointer:

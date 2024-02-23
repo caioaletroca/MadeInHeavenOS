@@ -1,8 +1,6 @@
-// #include <driver/tty.h>
 // #include <string.h>
-// #include <driver/tty.h>
 #include <kprintf.h>
-// #include <idt.h>
+#include <idt.h>
 
 void kmain() {
     // idt_init();

@@ -1,4 +1,9 @@
 .globl _start
+.globl page_table_l3
+.globl page_table_l4
+.globl ist_stack1
+.globl ist_stack2
+
 .extern boot64
 
 # GDT variables
@@ -14,6 +19,12 @@
 .extern sse_error_message
 
 .code32
+
+.macro outb port val
+	mov $\val, %al
+	mov $\port, %dx
+	out %al, %dx
+.endm
 
 #include "memory.h"
 #define VGA_MEMORY	0xB8000
@@ -198,30 +209,35 @@ enable_sse:
 	ret
 .size enable_sse, . - enable_sse
 
+.type setup_page_tables, @function
 setup_page_tables:
-	mov $page_table_l3, %eax
-	or $0b11, %eax			# Enable Present and R/W flags
-	mov %eax, page_table_l4
+	# Configure Page Directory 4
+	mov $(page_table_l3 - KERNEL_ADDRESS), %eax
+	or $0b11, %eax									# Enable Present and R/W flags
+	movl %eax, (page_table_l4 - KERNEL_ADDRESS)
+	mov $511, %ecx
+	movl %eax, page_table_l4 - KERNEL_ADDRESS(, %ecx, 8)
 
-	mov $page_table_l2, %eax
-	or $0b11, %eax			# Enable Present and R/W flags
-	mov %eax, page_table_l3
+	# Configure Page Directory 3
+	mov $(page_table_l2 - KERNEL_ADDRESS), %eax
+	or $0b11, %eax									# Enable Present and R/W flags
+	movl %eax, (page_table_l3 - KERNEL_ADDRESS)
+	mov $510, %ecx
+	movl %eax, page_table_l3 - KERNEL_ADDRESS(, %ecx, 8)
 
-	mov $0, %ecx				# Start counter
-
+	mov $0, %ecx			# Start counter
 1:
 	mov $0x200000, %eax		# 2 MiB data
 	mul %ecx
 	or $0b10000011, %eax		# Enable Present, R/W flags and huge page
-	# mov %eax, %es(page_table_l2, %ecx, 8)
-	mov %eax, page_table_l2(, %ecx, 8)
-	# mov %eax, [page_table_l2 + %ecx * 8]
+	mov %eax, page_table_l2 - KERNEL_ADDRESS(, %ecx, 8)
 
 	inc %ecx
 	cmp $512, %ecx			# Check for all memory mapped
 	jne 1b
 	
 	ret
+.size setup_page_tables, . - setup_page_tables
 
 .type enable_paging, @function
 enable_paging:
@@ -264,3 +280,8 @@ page_table_l2:
 stack_bottom:
 	.space PAGE_SIZE * 4
 stack_top:
+
+ist_stack1:
+	.space PAGE_SIZE
+ist_stack2:
+	.space PAGE_SIZE
