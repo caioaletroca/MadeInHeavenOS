@@ -2,54 +2,12 @@
 #include "io.h"
 #include <kprintf.h>
 
-extern void isr_0(void);
-extern void isr_1(void);
-extern void isr_2(void);
-extern void isr_3(void);
-extern void isr_4(void);
-extern void isr_5(void);
-extern void isr_6(void);
-extern void isr_7(void);
-extern void isr_8(void);
-extern void isr_9(void);
-extern void isr_10(void);
-extern void isr_11(void);
-extern void isr_12(void);
-extern void isr_13(void);
-extern void isr_14(void);
-extern void isr_15(void);
-extern void isr_16(void);
-extern void isr_17(void);
-extern void isr_18(void);
-extern void isr_19(void);
-extern void isr_20(void);
-extern void isr_21(void);
-extern void isr_22(void);
-extern void isr_23(void);
-extern void isr_24(void);
-extern void isr_25(void);
-extern void isr_26(void);
-extern void isr_27(void);
-extern void isr_28(void);
-extern void isr_29(void);
-extern void isr_30(void);
-extern void isr_31(void);
-extern void isr_32(void);
-extern void isr_33(void);
-extern void isr_34(void);
-extern void isr_35(void);
-extern void isr_36(void);
-extern void isr_37(void);
-extern void isr_38(void);
-extern void isr_39(void);
-extern void isr_40(void);
-extern void isr_41(void);
-extern void isr_42(void);
-extern void isr_43(void);
-extern void isr_44(void);
-extern void isr_45(void);
-extern void isr_46(void);
-extern void isr_47(void);
+#define ISR_NAME(index) isr_##index
+
+#define IDT_INSTALL_CLI(index) ({ \
+    extern void ISR_NAME(index)(void); \
+    idt_entry_init(index, (uint64_t)ISR_NAME(index), 0x8E); \
+})
 
 static idt_register idt_reg;
 
@@ -110,9 +68,9 @@ arguments:
  * @param selector 
  * @param flags 
  */
-void idt_entry_init(unsigned int i, uint64_t offset, uint16_t selector, uint8_t flags) {
+void idt_entry_init(unsigned int i, uint64_t offset, uint8_t flags) {
     idt_entries[i].low_offset   = (uint64_t)offset & 0xFFFF;
-    idt_entries[i].selector     = selector;
+    idt_entries[i].selector     = 0x08;                                     // Kernel Code Segment
     idt_entries[i].ist          = 0;
     idt_entries[i].flags        = flags;
     idt_entries[i].mid_offset   = ((uint64_t)offset >> 16) & 0xFFFF;
@@ -159,46 +117,43 @@ void idt_entry_init(unsigned int i, uint64_t offset, uint16_t selector, uint8_t 
 // }
 
 void idt_init(void) {
-    // uint32_t idt_addr = (uint32_t)&idt_entries;
-
-    /* Init the IDT register */
+    // Init the IDT register
     idt_reg.limit = sizeof(idt_entry) * 256 - 1;
     idt_reg.base = (uintptr_t)&idt_entries[0];
     
-    // __asm__ __volatile__ ("xchgw %bx, %bx");
-    /* CPU interrupts to signal exceptions and faults. */
-    idt_entry_init(0,   (uint64_t)isr_0,    0x08,   0x8E);
-    idt_entry_init(1,   (uint64_t)isr_1,    0x08,   0x8E);
-    idt_entry_init(2,   (uint64_t)isr_2,    0x08,   0x8E);
-    idt_entry_init(3,   (uint64_t)isr_3,    0x08,   0x8E);
-    idt_entry_init(4,   (uint64_t)isr_4,    0x08,   0x8E);
-    idt_entry_init(5,   (uint64_t)isr_5,    0x08,   0x8E);
-    idt_entry_init(6,   (uint64_t)isr_6,    0x08,   0x8E);
-    idt_entry_init(7,   (uint64_t)isr_7,    0x08,   0x8E);
-    idt_entry_init(8,   (uint64_t)isr_8,    0x08,   0x8E);
-    idt_entry_init(9,   (uint64_t)isr_9,    0x08,   0x8E);
-    idt_entry_init(10,  (uint64_t)isr_10,   0x08,   0x8E);
-    idt_entry_init(11,  (uint64_t)isr_11,   0x08,   0x8E);
-    idt_entry_init(12,  (uint64_t)isr_12,   0x08,   0x8E);
-    idt_entry_init(13,  (uint64_t)isr_13,   0x08,   0x8E);
-    idt_entry_init(14,  (uint64_t)isr_14,   0x08,   0x8E);
-    idt_entry_init(15,  (uint64_t)isr_15,   0x08,   0x8E);
-    idt_entry_init(16,  (uint64_t)isr_16,   0x08,   0x8E);
-    idt_entry_init(17,  (uint64_t)isr_17,   0x08,   0x8E);
-    idt_entry_init(18,  (uint64_t)isr_18,   0x08,   0x8E);
-    idt_entry_init(19,  (uint64_t)isr_19,   0x08,   0x8E);
-    idt_entry_init(20,  (uint64_t)isr_20,   0x08,   0x8E);
-    idt_entry_init(21,  (uint64_t)isr_21,   0x08,   0x8E);
-    idt_entry_init(22,  (uint64_t)isr_22,   0x08,   0x8E);
-    idt_entry_init(23,  (uint64_t)isr_23,   0x08,   0x8E);
-    idt_entry_init(24,  (uint64_t)isr_24,   0x08,   0x8E);
-    idt_entry_init(25,  (uint64_t)isr_25,   0x08,   0x8E);
-    idt_entry_init(26,  (uint64_t)isr_26,   0x08,   0x8E);
-    idt_entry_init(27,  (uint64_t)isr_27,   0x08,   0x8E);
-    idt_entry_init(28,  (uint64_t)isr_28,   0x08,   0x8E);
-    idt_entry_init(29,  (uint64_t)isr_29,   0x08,   0x8E);
-    idt_entry_init(30,  (uint64_t)isr_30,   0x08,   0x8E);
-    idt_entry_init(31,  (uint64_t)isr_31,   0x08,   0x8E);
+    // CPU interrupts to signal exceptions and faults.
+    IDT_INSTALL_CLI(0);
+    IDT_INSTALL_CLI(1);
+    IDT_INSTALL_CLI(2);
+    IDT_INSTALL_CLI(3);
+    IDT_INSTALL_CLI(4);
+    IDT_INSTALL_CLI(5);
+    IDT_INSTALL_CLI(6);
+    IDT_INSTALL_CLI(7);
+    IDT_INSTALL_CLI(8);
+    IDT_INSTALL_CLI(9);
+    IDT_INSTALL_CLI(10);
+    IDT_INSTALL_CLI(11);
+    IDT_INSTALL_CLI(12);
+    IDT_INSTALL_CLI(13);
+    IDT_INSTALL_CLI(14);
+    IDT_INSTALL_CLI(15);
+    IDT_INSTALL_CLI(16);
+    IDT_INSTALL_CLI(17);
+    IDT_INSTALL_CLI(18);
+    IDT_INSTALL_CLI(19);
+    IDT_INSTALL_CLI(20);
+    IDT_INSTALL_CLI(21);
+    IDT_INSTALL_CLI(22);
+    IDT_INSTALL_CLI(23);
+    IDT_INSTALL_CLI(24);
+    IDT_INSTALL_CLI(25);
+    IDT_INSTALL_CLI(26);
+    IDT_INSTALL_CLI(27);
+    IDT_INSTALL_CLI(28);
+    IDT_INSTALL_CLI(29);
+    IDT_INSTALL_CLI(30);
+    IDT_INSTALL_CLI(31);
 
     // PIC_remap(PIC1, PIC2);
 
@@ -223,8 +178,7 @@ void idt_init(void) {
     
     /* Software interrupt (used by syscalls) */
 
-    /* Make effective by loading the new IDT register */
-    
+    // Make effective by loading the new IDT register
     __asm__ __volatile__("lidt %0": : "m"(idt_reg));
 
     // __asm__ __volatile__("sti");

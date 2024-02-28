@@ -6,9 +6,7 @@
     .globl isr_\num
     isr_\num:
         cli
-        mov $0x0745, (0xB8000)
-        
-        # call isr_common
+        call isr_common
         hlt
         # iretq
 .endm
@@ -20,9 +18,7 @@
     .globl isr_\num
     isr_\num:
         cli
-        mov $0x0745, (0xB8000)
-        
-        # call isr_common
+        call isr_common
         hlt
         # iretq
 .endm
@@ -30,6 +26,10 @@
 .section .text
 
 .code64
+
+isr_common:
+    hlt
+    # ret
 
 /*
  * Define all the required ISR stubs
@@ -82,9 +82,3 @@ ISR 44
 ISR 45
 ISR 46
 ISR 47
-
-isr_common:
-    # mov $0x0745, 0xB8000
-    hlt
-    # call test
-    # ret
