@@ -1,3 +1,5 @@
 {
-    "files.eol": "\n"
+    "files.eol": "\n",
+    "cmake.configureOnOpen": false,
+    "C_Cpp.errorSquiggles": "Disabled"
 }
