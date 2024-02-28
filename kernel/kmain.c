@@ -3,13 +3,15 @@
 #include <idt.h>
 
 void kmain() {
-    // idt_init();
+    idt_init();
 
     kprintf("%s SUAMAE\n", "Test");
 
     // __asm__ __volatile__("hlt");
 
-    // __asm__ __volatile__ ("int $0x2");
+    __asm__ __volatile__ ("xchgw %bx, %bx");
+    // __asm__ __volatile__ ("int $0x0");
+    __asm__ __volatile__ ("int $0x2");
 
     // char *VIDEO_MEMORY = (char*) 0xB8000;
 

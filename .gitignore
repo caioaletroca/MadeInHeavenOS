@@ -53,6 +53,10 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
+# Emulator files
+bochslog.txt
+mihos.txt
+
 # Build results
 /*/build
 /isodir

@@ -36,7 +36,7 @@ $(kernel): $(GCC_GENERATED_OBJS) $(objects) $(libk) $(ARCH_BINARY_DIR)/linker.ld
 	$(CC) -n -T $(ARCH_BINARY_DIR)/linker.lds.i -o $@ $(CFLAGS) $(LDFLAGS) $(LINK_LIST)
 
 $(ARCH_BINARY_DIR)/linker.lds.i: $(ARCH_DIR)/linker.lds
-	$(CC) -E -P -x c -D__ASSEMBLER__ $(ARCH_DIR)/linker.lds -o $(ARCH_BINARY_DIR)/linker.lds.i
+	$(CC) -E -P -x c $(ARCH_DIR)/linker.lds -o $(ARCH_BINARY_DIR)/linker.lds.i
 
 $(ARCH_BINARY_DIR)/crtbegin.o $(ARCH_BINARY_DIR)/crtend.o:
 	OBJ=`$(CC) $(CFLAGS) $(LDFLAGS) -print-file-name=$(@F)` && cp "$$OBJ" $@
