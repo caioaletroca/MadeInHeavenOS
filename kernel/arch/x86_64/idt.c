@@ -164,57 +164,41 @@ void idt_init(void) {
     /* Init the IDT register */
     idt_reg.limit = sizeof(idt_entry) * 256 - 1;
     idt_reg.base = (uintptr_t)&idt_entries[0];
-
-    // idt_entries[0].low_offset   = (uint64_t)isr_0 & 0xFFFF;
-    // idt_entries[0].selector     = 0x08;
-    // idt_entries[0].ist          = 0;
-    // idt_entries[0].flags        = 0x8E;
-    // idt_entries[0].mid_offset   = ((uint64_t)isr_0 >> 16) & 0xFFFF;
-    // idt_entries[0].high_offset  = ((uint64_t)isr_0 >> 32) & 0xFFFFFFFF;
-    // idt_entries[0].zero         = 0;
-
-    // idt_entries[0].low_offset   = (uint64_t)isr_1 & 0xFFFF;
-    // idt_entries[0].selector     = 0x08;
-    // idt_entries[0].ist          = 0;
-    // idt_entries[0].flags        = 0x8E;
-    // idt_entries[0].mid_offset   = ((uint64_t)isr_1 >> 16) & 0xFFFF; 
-    // idt_entries[0].high_offset  = ((uint64_t)isr_1 >> 32) & 0xFFFFFFFF;
-    // idt_entries[0].zero         = 0;
-    kprintf("%i", sizeof(idt_entry));
+    
     // __asm__ __volatile__ ("xchgw %bx, %bx");
     /* CPU interrupts to signal exceptions and faults. */
     idt_entry_init(0,   (uint64_t)isr_0,    0x08,   0x8E);
     idt_entry_init(1,   (uint64_t)isr_1,    0x08,   0x8E);
-    // idt_entry_init(2,   (uint64_t)isr_2,    0x08,   0x8E);
-    // idt_entry_init(3,   (uint64_t)isr_3,    0x08,   0x8E);
-    // idt_entry_init(4,   (uint64_t)isr_4,    0x08,   0x8E);
-    // idt_entry_init(5,   (uint64_t)isr_5,    0x08,   0x8E);
-    // idt_entry_init(6,   (uint64_t)isr_6,    0x08,   0x8E);
-    // idt_entry_init(7,   (uint64_t)isr_7,    0x08,   0x8E);
-    // idt_entry_init(8,   (uint64_t)isr_8,    0x08,   0x8E);
-    // idt_entry_init(9,   (uint64_t)isr_9,    0x08,   0x8E);
-    // idt_entry_init(10,  (uint64_t)isr_10,   0x08,   0x8E);
-    // idt_entry_init(11,  (uint64_t)isr_11,   0x08,   0x8E);
-    // idt_entry_init(12,  (uint64_t)isr_12,   0x08,   0x8E);
-    // idt_entry_init(13,  (uint64_t)isr_13,   0x08,   0x8E);
-    // idt_entry_init(14,  (uint64_t)isr_14,   0x08,   0x8E);
-    // idt_entry_init(15,  (uint64_t)isr_15,   0x08,   0x8E);
-    // idt_entry_init(16,  (uint64_t)isr_16,   0x08,   0x8E);
-    // idt_entry_init(17,  (uint64_t)isr_17,   0x08,   0x8E);
-    // idt_entry_init(18,  (uint64_t)isr_18,   0x08,   0x8E);
-    // idt_entry_init(19,  (uint64_t)isr_19,   0x08,   0x8E);
-    // idt_entry_init(20,  (uint64_t)isr_20,   0x08,   0x8E);
-    // idt_entry_init(21,  (uint64_t)isr_21,   0x08,   0x8E);
-    // idt_entry_init(22,  (uint64_t)isr_22,   0x08,   0x8E);
-    // idt_entry_init(23,  (uint64_t)isr_23,   0x08,   0x8E);
-    // idt_entry_init(24,  (uint64_t)isr_24,   0x08,   0x8E);
-    // idt_entry_init(25,  (uint64_t)isr_25,   0x08,   0x8E);
-    // idt_entry_init(26,  (uint64_t)isr_26,   0x08,   0x8E);
-    // idt_entry_init(27,  (uint64_t)isr_27,   0x08,   0x8E);
-    // idt_entry_init(28,  (uint64_t)isr_28,   0x08,   0x8E);
-    // idt_entry_init(29,  (uint64_t)isr_29,   0x08,   0x8E);
-    // idt_entry_init(30,  (uint64_t)isr_30,   0x08,   0x8E);
-    // idt_entry_init(31,  (uint64_t)isr_31,   0x08,   0x8E);
+    idt_entry_init(2,   (uint64_t)isr_2,    0x08,   0x8E);
+    idt_entry_init(3,   (uint64_t)isr_3,    0x08,   0x8E);
+    idt_entry_init(4,   (uint64_t)isr_4,    0x08,   0x8E);
+    idt_entry_init(5,   (uint64_t)isr_5,    0x08,   0x8E);
+    idt_entry_init(6,   (uint64_t)isr_6,    0x08,   0x8E);
+    idt_entry_init(7,   (uint64_t)isr_7,    0x08,   0x8E);
+    idt_entry_init(8,   (uint64_t)isr_8,    0x08,   0x8E);
+    idt_entry_init(9,   (uint64_t)isr_9,    0x08,   0x8E);
+    idt_entry_init(10,  (uint64_t)isr_10,   0x08,   0x8E);
+    idt_entry_init(11,  (uint64_t)isr_11,   0x08,   0x8E);
+    idt_entry_init(12,  (uint64_t)isr_12,   0x08,   0x8E);
+    idt_entry_init(13,  (uint64_t)isr_13,   0x08,   0x8E);
+    idt_entry_init(14,  (uint64_t)isr_14,   0x08,   0x8E);
+    idt_entry_init(15,  (uint64_t)isr_15,   0x08,   0x8E);
+    idt_entry_init(16,  (uint64_t)isr_16,   0x08,   0x8E);
+    idt_entry_init(17,  (uint64_t)isr_17,   0x08,   0x8E);
+    idt_entry_init(18,  (uint64_t)isr_18,   0x08,   0x8E);
+    idt_entry_init(19,  (uint64_t)isr_19,   0x08,   0x8E);
+    idt_entry_init(20,  (uint64_t)isr_20,   0x08,   0x8E);
+    idt_entry_init(21,  (uint64_t)isr_21,   0x08,   0x8E);
+    idt_entry_init(22,  (uint64_t)isr_22,   0x08,   0x8E);
+    idt_entry_init(23,  (uint64_t)isr_23,   0x08,   0x8E);
+    idt_entry_init(24,  (uint64_t)isr_24,   0x08,   0x8E);
+    idt_entry_init(25,  (uint64_t)isr_25,   0x08,   0x8E);
+    idt_entry_init(26,  (uint64_t)isr_26,   0x08,   0x8E);
+    idt_entry_init(27,  (uint64_t)isr_27,   0x08,   0x8E);
+    idt_entry_init(28,  (uint64_t)isr_28,   0x08,   0x8E);
+    idt_entry_init(29,  (uint64_t)isr_29,   0x08,   0x8E);
+    idt_entry_init(30,  (uint64_t)isr_30,   0x08,   0x8E);
+    idt_entry_init(31,  (uint64_t)isr_31,   0x08,   0x8E);
 
     // PIC_remap(PIC1, PIC2);
 

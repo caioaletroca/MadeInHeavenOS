@@ -14,8 +14,8 @@ AR := ${HOST}-ar
 AS := ${HOST}-as
 RM := rm -rf
 
-CFLAGS := -O0 -g -Wall -Wextra -mcmodel=kernel -mno-red-zone -Wpacked -Wpadded -mno-ms-bitfields
-# CFLAGS		+= -ffreestanding -mno-red-zone -mcmodel=kernel -Iinclude -std=gnu11
+CFLAGS := -O2 -g -Wall -Wextra -mcmodel=kernel -mno-red-zone -mno-ms-bitfields
+# CFLAGS		+= -ffreestanding -mno-red-zone -mcmodel=kernel -Iinclude -std=gnu11 -Wpacked -Wpadded
 # CFLAGS		+= -Wall -Werror -Wextra -Wparentheses -Wmissing-declarations -Wunreachable-code -Wunused 
 # CFLAGS		+= -Wmissing-field-initializers -Wmissing-prototypes -Wpointer-arith -Wswitch-enum
 # CFLAGS		+= -Wredundant-decls -Wshadow -Wstrict-prototypes -Wswitch-default -Wuninitialized
