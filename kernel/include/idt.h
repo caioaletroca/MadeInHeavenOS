@@ -6,7 +6,8 @@
 /**
  * @brief Interrupt descriptor table entry
  */
-typedef struct {
+#pragma pack(push, 1)
+typedef struct __attribute__((__packed__)) {
     uint16_t    low_offset;         // The lower 16 bits of the ISR's address
     uint16_t    selector;           // Kernel segment selector
     uint8_t     ist;                // 
@@ -14,7 +15,8 @@ typedef struct {
     uint16_t    mid_offset;         // The higher 16 bits of the lower 32 bits of the ISR's address
     uint32_t    high_offset;        // The higher 32 bits of the ISR's address
     uint32_t    zero;               // Reserved, zero
-} __attribute__((packed)) idt_entry;
+} __attribute__((__packed__)) idt_entry;
+#pragma pack(pop)
 
 /**
  * @brief A struct describing a pointer to an array of interrupt handlers.
@@ -30,7 +32,5 @@ typedef struct {
  * 
  */
 void idt_init(void);
-
-void test(void);
 
 #endif
