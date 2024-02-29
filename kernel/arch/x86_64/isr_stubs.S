@@ -7,9 +7,11 @@
 .macro ISR num
     .globl isr_\num
     isr_\num:
-        call isr_common
-        hlt
-        # iretq
+        pushq $0
+        # Store  the interrupt number in the highest four bytes of the erro code.
+        # This way we can always increment rsp by 8 before iretq and no memory is wasted.
+        movl $\num, 4(%rsp)
+        jmp isr_common
 .endm
 
 /*
@@ -18,9 +20,10 @@
 .macro ISR_ERR num
     .globl isr_\num
     isr_\num:
-        call isr_common
-        hlt
-        # iretq
+        # Store  the interrupt number in the highest four bytes of the erro code.
+        # This way we can always increment rsp by 8 before iretq and no memory is wasted.
+        movl $\num, 4(%rsp)
+        jmp isr_common
 .endm
 
 .section .text
@@ -29,30 +32,32 @@
 
 isr_common:
     # Preserve Scratch Register in order
-    push %r11
-    push %r10
-    push %r9
-    push %r8
-    push %rcx
-    push %rdx
-    push %rsi
-    push %rdi
-    push %rax
+    pushq %r11
+    pushq %r10
+    pushq %r9
+    pushq %r8
+    pushq %rcx
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+    pushq %rax
 
+    mov %rsp, %rdi
     call isr_handler
 
     # Pop back register
-    pop %rax
-    pop %rdi
-    pop %rsi
-    pop %rdx
-    pop %rcx
-    pop %r8
-    pop %r9
-    pop %r10
-    pop %r11
+    popq %rax
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
+    popq %r8
+    popq %r9
+    popq %r10
+    popq %r11
 
-    hlt
+    # Remove info from the stack
+    add $8, %rsp
 
     iretq
 
