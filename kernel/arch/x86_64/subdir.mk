@@ -9,5 +9,6 @@ crtn.S \
 header.S \
 vga.c \
 screen.c \
-isr.S \
+isr_stubs.S \
+isr.c \
 idt.c
