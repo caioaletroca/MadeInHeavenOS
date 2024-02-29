@@ -18,6 +18,8 @@ void screen_put(struct screen *scr, char c) {
                 scr->pos_y++;
                 scr->pos_x = 0;
                 break;
+            case '\t':
+                scr->pos_x += SCREEN_TAB_SPACES;
             default:
                 break;
         }

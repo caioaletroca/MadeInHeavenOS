@@ -1,8 +1,9 @@
 #ifndef _SCREEN_H_
 #define _SCREEN_H_
 
-#define SCREEN_WIDTH    80
-#define SCREEN_HEIGHT   25
+#define SCREEN_WIDTH        80
+#define SCREEN_HEIGHT       25
+#define SCREEN_TAB_SPACES   8
 
 #include <stddef.h>
 #include <string.h>

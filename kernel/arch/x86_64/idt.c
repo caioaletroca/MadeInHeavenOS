@@ -177,6 +177,7 @@ void idt_init(void) {
     // idt_entry_init(48,  (uint64_t)isr_47,   0x08,   0x8E);
     
     /* Software interrupt (used by syscalls) */
+    // Add to 128 syscall
 
     // Make effective by loading the new IDT register
     __asm__ __volatile__("lidt %0": : "m"(idt_reg));
