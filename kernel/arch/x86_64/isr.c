@@ -1,29 +1,58 @@
 #include "isr.h"
-#include <kprintf.h>
 
-void isr_handler(isr_context *regs) {
-    uint8_t int_no = (regs->info >> 32) & 0xFF;
-    uint8_t err_code = regs->info & 0xFF;
-    
-    kprintf("int_no: %i\n", int_no);
-    kprintf("err_code: %i\n", err_code);
+static const char *const exception_messages[32] = {
+    "Division by zero",
+    "Debug",
+    "Non-maskable Interrupt",
+    "Breakpoint",
+    "Overflow",
+    "Bound range exceeded",
+    "Invalid opcode",
+    "Device not available",
+    "Double Fault",
+    "(Reserved exception 9)",
+    "Invalid TSS",
+    "Segment not present",
+    "Stack-Segment fault",
+    "General Protection Fault",
+    "Page Fault",
+    "(Reserved exception 15)",
+    "x87 Floating-Point",
+    "Alignment check",
+    "Machine check",
+    "SIMD Floating-Point",
+    "Virtualization",
+    "Control Protection",
+    "(Reserved exception 22)",
+    "(Reserved exception 23)",
+    "(Reserved exception 24)",
+    "(Reserved exception 25)",
+    "(Reserved exception 26)",
+    "(Reserved exception 27)",
+    "Hypervisor Injection",
+    "VMM Communication",
+    "Secutiry",
+    "(Reserved exception 31)"
+};
 
-    // kprintf("rax: %i\n", regs->rax);
-    // kprintf("rdi: %i\n", regs->rdi);
-    // kprintf("rsi: %i\n", regs->rsi);
-    // kprintf("rcx: %i\n", regs->rcx);
-    // kprintf("r8: %i\n", regs->r8);
-    // kprintf("r9: %i\n", regs->r9);
-    // kprintf("r10: %i\n", regs->r10);
-    // kprintf("r11: %i\n", regs->r11);
-    
-    // kprintf("info: %i\n", regs->info);
+static void exception_handler(isr_context *regs) {
+    uint8_t int_no = (uint8_t)(regs->info >> 32) & 0xFF;
 
-    // kprintf("rip: %i\n", regs->rip);
-    // kprintf("cs: %i\n", regs->cs);
-    // kprintf("rflags: %i\n", regs->rflags);
-    // kprintf("rsp: %i\n", regs->rsp);
-    // kprintf("ss: %i\n", regs->ss);
+    panic(
+        "Exception: %s\n"
+        "\trip: %p, rsp: %p\n"
+        "\tint_no: %i, err_code: %lu",
+        exception_messages[int_no],
+        (void *)regs->rip, (void *)regs->rsp,
+        int_no, (regs->info & 0xFFFFFFFF)
+    );
 
     __asm__ __volatile__ ("xchgw %bx, %bx");
+}
+
+void isr_handler(isr_context *regs) {
+    // uint8_t int_no = (regs->info >> 32) & 0xFF;
+    // uint8_t err_code = regs->info & 0xFF;
+
+    exception_handler(regs);
 }
