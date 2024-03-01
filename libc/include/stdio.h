@@ -3,7 +3,9 @@
 
 #include <stddef.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <sys/cdefs.h>
+#include <string.h>
 
 #define SEEK_SET 0
 #define EOF (-1)
