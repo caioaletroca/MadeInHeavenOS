@@ -14,8 +14,8 @@ AR := ${HOST}-ar
 AS := ${HOST}-as
 RM := rm -rf
 
-CFLAGS := -O2 -g -Wall -Wextra -mcmodel=kernel -mno-red-zone -mno-ms-bitfields
-# CFLAGS		+= -ffreestanding -mno-red-zone -mcmodel=kernel -Iinclude -std=gnu11 -Wpacked -Wpadded
+CFLAGS := -O2 -g -std=gnu11 -mcmodel=kernel -mno-red-zone -mno-ms-bitfields -Wall -Wextra
+# CFLAGS		+= -ffreestanding -mno-red-zone -Iinclude  -Wpacked -Wpadded
 # CFLAGS		+= -Wall -Werror -Wextra -Wparentheses -Wmissing-declarations -Wunreachable-code -Wunused 
 # CFLAGS		+= -Wmissing-field-initializers -Wmissing-prototypes -Wpointer-arith -Wswitch-enum
 # CFLAGS		+= -Wredundant-decls -Wshadow -Wstrict-prototypes -Wswitch-default -Wuninitialized
@@ -68,13 +68,13 @@ purge:
 	$(RM) build
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.c
-	$(CC) -MD -c $< -o $@ -std=gnu11 $(CFLAGS)
+	$(CC) -MD -c $< -o $@ $(CFLAGS)
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.S
 	$(CC) -MD -c $< -o $@ $(CFLAGS) 
 
 %.o: %.c
-	$(CC) -MD -c $< -o $@ -std=gnu11 $(CFLAGS) $(CPPFLAGS)
+	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
 
 $(BINARY_DIR)/%: $(SOURCE_DIR)/%.c
 	@echo $^
