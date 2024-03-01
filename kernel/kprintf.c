@@ -1,12 +1,12 @@
 #include <kprintf.h>
 
-#define KPRINTF_BUFFER_SIZE 64
+#define KPRINTF_BUFFER_SIZE 512
 
 void kvprintf(const char *fmt, va_list args) {
     char str[KPRINTF_BUFFER_SIZE];
     
     // Formats string
-    int n = vsnprintf(str, 64, fmt, args);
+    int n = vsnprintf(str, KPRINTF_BUFFER_SIZE, fmt, args);
 
     // Put into the console
     if (n > 0)
