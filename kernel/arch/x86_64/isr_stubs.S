@@ -26,6 +26,13 @@
         jmp isr_common
 .endm
 
+.macro ISR_IRQ num
+    .globl isr_\num
+    isr_\num:
+        pushq $\num
+        jmp isr_common
+.endm
+
 .section .text
 
 .code64
@@ -96,19 +103,19 @@ ISR 28
 ISR 29
 ISR 30
 ISR 31
-ISR 32
-ISR 33
-ISR 34
-ISR 35
-ISR 36
-ISR 37
-ISR 38
-ISR 39
-ISR 40
-ISR 41
-ISR 42
-ISR 43
-ISR 44
-ISR 45
-ISR 46
-ISR 47
+ISR_IRQ 32
+ISR_IRQ 33
+ISR_IRQ 34
+ISR_IRQ 35
+ISR_IRQ 36
+ISR_IRQ 37
+ISR_IRQ 38
+ISR_IRQ 39
+ISR_IRQ 40
+ISR_IRQ 41
+ISR_IRQ 42
+ISR_IRQ 43
+ISR_IRQ 44
+ISR_IRQ 45
+ISR_IRQ 46
+ISR_IRQ 47

@@ -11,4 +11,5 @@ vga.c \
 screen.c \
 isr_stubs.S \
 isr.c \
-idt.c
+idt.c \
+pic.c

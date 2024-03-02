@@ -35,24 +35,25 @@ static const char *const exception_messages[32] = {
     "(Reserved exception 31)"
 };
 
+// TODO: For now, panic in all exceptions
 static void exception_handler(isr_context *regs) {
     uint8_t int_no = (uint8_t)(regs->info >> 32) & 0xFF;
 
-    panic(
-        "Exception: %s\n"
-        "\trip: %p, rsp: %p\n"
-        "\tint_no: %i, err_code: %lu",
-        exception_messages[int_no],
-        (void *)regs->rip, (void *)regs->rsp,
-        int_no, (regs->info & 0xFFFFFFFF)
-    );
-
-    __asm__ __volatile__ ("xchgw %bx, %bx");
+    if(int_no < 32) {
+        panic(
+            "Exception: %s\n"
+            "\trip: %p, rsp: %p\n"
+            "\tint_no: %u, err_code: %u",
+            exception_messages[int_no],
+            (void *)regs->rip, (void *)regs->rsp,
+            int_no, (regs->info & 0xFFFFFFFF)
+        );
+    }
+    else {
+        kprintf("Test");
+    }
 }
 
 void isr_handler(isr_context *regs) {
-    // uint8_t int_no = (regs->info >> 32) & 0xFF;
-    // uint8_t err_code = regs->info & 0xFF;
-
     exception_handler(regs);
 }

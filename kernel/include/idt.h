@@ -31,4 +31,9 @@ typedef struct {
  */
 void idt_init(void);
 
+/**
+ * @brief Loads IDT structure and enable interrupts
+*/
+void idt_load(void);
+
 #endif

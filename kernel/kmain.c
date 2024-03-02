@@ -1,11 +1,11 @@
 #include <kprintf.h>
-#include <idt.h>
+#include <interrupts.h>
 
 void kmain() {
-    idt_init();
+    interrupts_init();
 
     kprintf("%s Hello\n", "Test");
 
     __asm__ __volatile__ ("xchgw %bx, %bx");
-    __asm__ __volatile__ ("int $0x2");
+    // __asm__ __volatile__ ("int $0x2");
 }
