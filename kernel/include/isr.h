@@ -29,6 +29,29 @@ typedef struct {
 	uint64_t ss;
 } isr_context;
 
+/**
+ * Defines the standard isr handler function
+*/
+typedef void (*isr_handler_t)(isr_context *regs);
+
+/**
+ * ISR Information structure
+*/
+typedef struct {
+    enum isr_type {
+        ISR_EXCEPTION,  // CPU exceptions
+        ISR_IRQ         // Normal IRQs that requires EOI
+    } type;
+    isr_handler_t handler;
+} isr_info_t;
+
+/**
+ * @brief Sets new items inside the isr_table vector
+ * @param vector Index of the vector
+ * @param info Struct information
+*/
+void isr_set_info(uint8_t vector, isr_info_t *info);
+
 void isr_handler(isr_context *regs);
 
 #endif

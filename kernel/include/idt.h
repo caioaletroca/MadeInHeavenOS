@@ -14,7 +14,7 @@ typedef struct {
     uint16_t    mid_offset;         // The higher 16 bits of the lower 32 bits of the ISR's address
     uint32_t    high_offset;        // The higher 32 bits of the ISR's address
     uint32_t    zero;               // Reserved, zero
-} __attribute__((__packed__)) idt_entry;
+} __attribute__((__packed__)) idt_entry_t;
 
 /**
  * @brief A struct describing a pointer to an array of interrupt handlers.
@@ -23,7 +23,7 @@ typedef struct {
 typedef struct {
     uint16_t    limit;              //
     uint64_t    base;               // Address of the first entry
-} __attribute__((__packed__)) idt_register;
+} __attribute__((__packed__)) idt_register_t;
 
 /**
  * @brief Initialize the Interrupt Descriptor Table

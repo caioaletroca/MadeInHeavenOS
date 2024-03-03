@@ -14,11 +14,11 @@
     idt_entry_init(index, (uint64_t)ISR_NAME(index), 0x8F); \
 })
 
-static idt_register idt_reg;
+static idt_register_t idt_reg;
 
 // TODO: Add max size into a macro
 __attribute__((aligned(16)))
-static idt_entry idt_entries[256];
+static idt_entry_t idt_entries[256];
 
 /**
  * @brief Initialize a single IDT entry
@@ -68,7 +68,7 @@ void idt_entry_init(unsigned int i, uint64_t offset, uint8_t flags) {
 
 void idt_init(void) {
     // Init the IDT register
-    idt_reg.limit = sizeof(idt_entry) * 256 - 1;
+    idt_reg.limit = sizeof(idt_entry_t) * 256 - 1;
     idt_reg.base = (uintptr_t)&idt_entries[0];
     
     // CPU interrupts to signal exceptions and faults.

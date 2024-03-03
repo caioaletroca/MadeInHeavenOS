@@ -22,8 +22,16 @@
 
 #define PIC_EOI         0x20
 
+/**
+ * Initialize PIC
+*/
 void pic_init(void);
 
+/**
+ *  @brief Remap PIC
+ *  @param offset1 Vector offset for master PIC vectors on the master become offset1..offset1+7
+ *  @param offset2 Same for slave PIC: offset2..offset2+7
+*/ 
 void pic_remap(int offset1, int offset2);
 
 #endif
