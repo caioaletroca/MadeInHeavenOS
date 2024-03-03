@@ -31,14 +31,14 @@ static const char *const exception_messages[32] = {
     "(Reserved exception 27)",
     "Hypervisor Injection",
     "VMM Communication",
-    "Secutiry",
+    "Security",
     "(Reserved exception 31)"
 };
 
 // TODO: For now, panic in all exceptions
 static void exception_handler(isr_context *regs) {
     uint8_t int_no = (uint8_t)(regs->info >> 32) & 0xFF;
-
+    
     if(int_no < 32) {
         panic(
             "Exception: %s\n"
@@ -50,7 +50,7 @@ static void exception_handler(isr_context *regs) {
         );
     }
     else {
-        kprintf("Test");
+        kprintf("IRQ: %u\n", int_no);
     }
 }
 

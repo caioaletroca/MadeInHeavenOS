@@ -4,8 +4,12 @@
 void kmain() {
     interrupts_init();
 
-    kprintf("%s Hello\n", "Test");
+    kprintf("Alive!!!\n");
 
     __asm__ __volatile__ ("xchgw %bx, %bx");
-    // __asm__ __volatile__ ("int $0x2");
+
+    while(1) {
+        __asm__ __volatile__ ("hlt");
+    }
+    // __asm__ __volatile__ ("int $33");
 }

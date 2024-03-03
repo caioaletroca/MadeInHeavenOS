@@ -54,6 +54,7 @@ Mkfile.old
 dkms.conf
 
 # Emulator files
+*.ini
 bochslog.txt
 mihos.txt
 
