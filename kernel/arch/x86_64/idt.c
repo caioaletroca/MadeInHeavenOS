@@ -20,6 +20,11 @@ static idt_register_t idt_reg;
 __attribute__((aligned(16)))
 static idt_entry_t idt_entries[256];
 
+void idt_load() {
+    __asm__ __volatile__("lidt %0": : "m"(idt_reg));
+    __asm__ __volatile__("sti");
+}
+
 /**
  * @brief Initialize a single IDT entry
  * 
@@ -334,12 +339,4 @@ void idt_init(void) {
     
     /* Software interrupt (used by syscalls) */
     // TODO: Add to 128 syscall
-}
-
-/**
- * Loads IDT structure and enable interrupts
-*/
-void idt_load() {
-    __asm__ __volatile__("lidt %0": : "m"(idt_reg));
-    __asm__ __volatile__("sti");
 }

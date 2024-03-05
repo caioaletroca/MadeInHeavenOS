@@ -12,4 +12,5 @@ screen.c \
 isr_stubs.S \
 isr.c \
 idt.c \
-pic.c
+pic.c \
+ps2.c
