@@ -36,4 +36,9 @@ void idt_init(void);
 */
 void idt_load(void);
 
+/**
+ * @brief Enable interrupts
+*/
+void enable_interrupts(void);
+
 #endif
