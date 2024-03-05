@@ -7,12 +7,12 @@ static inline uint8_t ps2_read_status() {
 }
 
 static inline uint8_t ps2_read_data() {
-    while((ps2_read_status() & 1) == 0);
+    while((ps2_read_status() & 1) == 0) {}
     return inb(PS2_DATA);
 }
 
 static inline void ps2_write_data(uint8_t data) {
-    while((ps2_read_status() & 2) != 0);
+    while((ps2_read_status() & 2) != 0) {}
     return outb(PS2_DATA, data);
 }
 

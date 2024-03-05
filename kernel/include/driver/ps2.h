@@ -34,16 +34,44 @@ struct ps2_device_t {
 
 static struct ps2_device_t ps2_devices[2];
 
+/**
+ * Flushs the buffer by reading data register without checking status
+*/
 uint8_t ps2_flush_buffer(void);
+
+/**
+ * Disable both ports using commands and disabling device struct
+*/
 void ps2_disable(void);
+
+/**
+ * Enable both ports using command and enabling device struct
+*/
 void ps2_enable(void);
 
+/**
+ * Sets the current configuration byte using a OR bit mask
+*/
 uint8_t ps2_set_configuration_byte(uint8_t byte);
+
+/**
+ * Unsets the current configuration byte using a AND bit mask
+*/
 uint8_t ps2_unset_configuration_byte(uint8_t byte);
 
+/**
+ * Performs a PS/2 Controller self test
+*/
 void ps2_self_test(void);
+
+/**
+ * Performs a PS/2 interface test on both ports
+*/
 void ps2_interface_test(void);
 
+/**
+ * Initialize PS/2 system
+*/
 void ps2_init(void);
 
 #endif
