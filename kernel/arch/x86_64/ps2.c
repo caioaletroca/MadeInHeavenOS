@@ -1,5 +1,4 @@
 #include <driver/ps2.h>
-#include <kprintf.h>
 #include "io.h"
 
 static inline uint8_t ps2_read_status() {

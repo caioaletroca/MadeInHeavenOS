@@ -1,6 +1,9 @@
 #include "driver/ps2.h"
 
 void ps2_init() {
+    // TODO: Initialise USB controllers
+	// TODO: Determine if the PS/2 controller exists
+
     // Disable devices
     ps2_disable();
 
