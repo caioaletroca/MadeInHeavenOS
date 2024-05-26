@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <sys/cdefs.h>
 #include <string.h>
@@ -13,10 +14,13 @@
 #define SEEK_SET 0
 #define EOF (-1)
 
-typedef struct { int unused } FILE;
+// Opaque FILE type
+typedef struct _FILE FILE;
 
 __BEGIN_DECLS
 
+extern FILE *stdin;
+extern FILE *stdout;
 extern FILE *stderr;
 
 int fclose(FILE *);
