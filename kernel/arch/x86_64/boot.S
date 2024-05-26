@@ -41,6 +41,9 @@ _start:
 	# Set stack pointer
 	mov $stack_bottom - KERNEL_ADDRESS, %esp
 	
+	# Preserve multiboot information
+	push %ebx
+
 	call clear_screen
 
 	call check_multiboot
@@ -54,6 +57,9 @@ _start:
 	call check_cpuid
 	call check_long_mode
 	call check_sse
+
+	# Restore multiboot information into EBX	
+	pop %ebx
 
 	call enable_sse
 	call setup_page_tables

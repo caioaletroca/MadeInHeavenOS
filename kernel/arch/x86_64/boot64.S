@@ -80,6 +80,7 @@ boot64_high:
     call _init
 
     # Start C code
+    mov %rbx, %rdi
     call kmain
 
     hlt
