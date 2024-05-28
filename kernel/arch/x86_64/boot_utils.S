@@ -58,11 +58,11 @@ freeze:
 .size freeze, . - freeze
 
 .section .rodata
-multiboot_error_message = . - KERNEL_ADDRESS
+multiboot_error_message = . - KERNEL_VIRTUAL_ADDRESS
     .string "Error: Invalid multiboot"
-cpuid_error_message = . - KERNEL_ADDRESS
+cpuid_error_message = . - KERNEL_VIRTUAL_ADDRESS
     .string "Error: CPU ID not supported"
-long_mode_error_message = . - KERNEL_ADDRESS
+long_mode_error_message = . - KERNEL_VIRTUAL_ADDRESS
     .string "Error: Long mode not supported"
-sse_error_message = . - KERNEL_ADDRESS
+sse_error_message = . - KERNEL_VIRTUAL_ADDRESS
     .string "Error: SSE not supported"

@@ -1,14 +1,9 @@
 #include <addresses.h>
 #include <kprintf.h>
 #include <interrupts.h>
-#include <multiboot2.h>
+#include <mm.h>
 #include "idt.h"
 #include "driver/ps2.h"
-
-// #define ALIGNUP(val, align) ({ \
-// 	const typeof((val)) _val = (val); \
-// 	const typeof((align)) _align = (align); \
-// 	(_val + (_align - 1)) & -_align; })
 
 void kmain(physaddr_t address) {
     struct multiboot_info *info = (struct multiboot_info*)phys_to_kern(address);
@@ -21,11 +16,13 @@ void kmain(physaddr_t address) {
 
     enable_interrupts();
 
-    kprintf("Phys Address: %p\n", address);
-    kprintf("Kernel Address: %p\n", phys_to_kern(address));
-    kprintf("Multiboot Total Size: %X\n", info->total_size);
-    kprintf("Reserved: %p\n", info->reserved);
-    kprintf("First Tag Type: %u\n", info->tags[0].type);
+    mmap_init(info);
+
+    // kprintf("Phys Address: %p\n", address);
+    // kprintf("Kernel Address: %p\n", phys_to_kern(address));
+    // kprintf("Multiboot Total Size: %X\n", info->total_size);
+    // kprintf("Reserved: %p\n", info->reserved);
+    // kprintf("First Tag Type: %u\n", info->tags[0].type);
 
     // struct multiboot_tag* tags = (struct multiboot_tag*)info->tags;
     // for(; tags->type != 0; tags = (struct multiboot_tag*)ALIGNUP((uintptr_t)tags + tags->size, 8)) {

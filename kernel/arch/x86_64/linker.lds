@@ -39,5 +39,5 @@ SECTIONS
 	}
 	_bss = .;
 	
-	_kernel_end = .;
+	_kernel_physical_end = . + 0x1000 - offset;
 }
