@@ -90,4 +90,4 @@ gdt64:
 # GDT x64 bits Pointer 
 gdt64_pointer:
 	.word . - gdt64 - 1 					# Length
-	.long gdt64 - KERNEL_ADDRESS			# Address
+	.long gdt64 - KERNEL_VIRTUAL_ADDRESS	# Address

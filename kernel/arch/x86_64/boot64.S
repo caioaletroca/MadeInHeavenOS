@@ -20,13 +20,13 @@
 .type boot64, @function
 boot64:
     # Load TSS descriptor into GDT base address
-    movq (gdt64 - KERNEL_ADDRESS), %rdi
+    movq (gdt64 - KERNEL_VIRTUAL_ADDRESS), %rdi
 
     # Offset with the TSS, to get the TSS address
 	addq $tss, %rdi
 
     # Get TSS descriptor address
-	movq (tss64 - KERNEL_ADDRESS), %rax
+	movq (tss64 - KERNEL_VIRTUAL_ADDRESS), %rax
 
     # Insert base (low), 2 bytes
 	movw %ax, 2(%rdi)
@@ -45,7 +45,7 @@ boot64:
 
     # Load GDT again, but now since it's on 64 bits
     # the address will be correct
-	lgdt (gdt64_pointer - KERNEL_ADDRESS)
+	lgdt (gdt64_pointer - KERNEL_VIRTUAL_ADDRESS)
 
     # Indirect jump to for non-relative jump
     movabsq $boot64_high, %rax
@@ -55,7 +55,7 @@ boot64:
 .type boot64_high, @function
 boot64_high:
     # Adjust the stack pointer to be in upper memory
-	movq $KERNEL_ADDRESS, %rax
+	movq $KERNEL_VIRTUAL_ADDRESS, %rax
 	addq %rax, %rsp
 
     # GDT data segment into all data segment registers

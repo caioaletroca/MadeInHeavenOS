@@ -39,7 +39,7 @@ _start:
 	cld
 
 	# Set stack pointer
-	mov $stack_bottom - KERNEL_ADDRESS, %esp
+	mov $stack_bottom - KERNEL_VIRTUAL_ADDRESS, %esp
 	
 	# Preserve multiboot information
 	push %ebx
@@ -66,10 +66,10 @@ _start:
 	call enable_paging
 
 	# Turn on GDT
-	lgdt (gdt64_pointer - KERNEL_ADDRESS)
+	lgdt (gdt64_pointer - KERNEL_VIRTUAL_ADDRESS)
 
 	# Jump to 64bits world
-	ljmp $code, $(boot64 - KERNEL_ADDRESS)
+	ljmp $code, $(boot64 - KERNEL_VIRTUAL_ADDRESS)
 
 	hlt
 .size _start, . - _start
@@ -218,25 +218,25 @@ enable_sse:
 .type setup_page_tables, @function
 setup_page_tables:
 	# Configure Page Directory 4
-	mov $(page_table_l3 - KERNEL_ADDRESS), %eax
+	mov $(page_table_l3 - KERNEL_VIRTUAL_ADDRESS), %eax
 	or $0b11, %eax									# Enable Present and R/W flags
-	movl %eax, (page_table_l4 - KERNEL_ADDRESS)
+	movl %eax, (page_table_l4 - KERNEL_VIRTUAL_ADDRESS)
 	mov $511, %ecx
-	movl %eax, page_table_l4 - KERNEL_ADDRESS(, %ecx, 8)
+	movl %eax, page_table_l4 - KERNEL_VIRTUAL_ADDRESS(, %ecx, 8)
 
 	# Configure Page Directory 3
-	mov $(page_table_l2 - KERNEL_ADDRESS), %eax
+	mov $(page_table_l2 - KERNEL_VIRTUAL_ADDRESS), %eax
 	or $0b11, %eax									# Enable Present and R/W flags
-	movl %eax, (page_table_l3 - KERNEL_ADDRESS)
+	movl %eax, (page_table_l3 - KERNEL_VIRTUAL_ADDRESS)
 	mov $510, %ecx
-	movl %eax, page_table_l3 - KERNEL_ADDRESS(, %ecx, 8)
+	movl %eax, page_table_l3 - KERNEL_VIRTUAL_ADDRESS(, %ecx, 8)
 
 	mov $0, %ecx			# Start counter
 1:
 	mov $0x200000, %eax		# 2 MiB data
 	mul %ecx
 	or $0b10000011, %eax		# Enable Present, R/W flags and huge page
-	mov %eax, page_table_l2 - KERNEL_ADDRESS(, %ecx, 8)
+	mov %eax, page_table_l2 - KERNEL_VIRTUAL_ADDRESS(, %ecx, 8)
 
 	inc %ecx
 	cmp $512, %ecx			# Check for all memory mapped
@@ -258,7 +258,7 @@ enable_paging:
 	mov %eax, %cr4
 
 	# Load a Level4 Page Directory
-	movl    $(page_table_l4 - KERNEL_ADDRESS), %eax
+	movl    $(page_table_l4 - KERNEL_VIRTUAL_ADDRESS), %eax
 	mov     %eax, %cr3
 
 	# Enable long mode

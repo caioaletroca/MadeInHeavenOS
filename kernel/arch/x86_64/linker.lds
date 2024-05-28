@@ -4,7 +4,7 @@ ENTRY(_start)
 OUTPUT_FORMAT(elf64-x86-64)
 
 physical = 1M;
-offset = KERNEL_ADDRESS;
+offset = KERNEL_VIRTUAL_ADDRESS;
 virtual = offset + physical;
  
 SECTIONS
