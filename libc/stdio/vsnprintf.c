@@ -120,6 +120,10 @@ int vsnprintf(char *str, size_t size, const char *format, va_list args) {
                     case 'p':
                         filler = '0';
                         alignment = 2 * sizeof(void *);
+                        value_i = va_arg(args, void *);
+                        n = uimaxtoa_fill(value_i, &str[s], 16, 0, alignment, filler, remain);
+                        f++;
+                        break;
                     // Hexadecimal
                     case 'x':
                         value_i = va_arg(args, unsigned int);
