@@ -20,7 +20,7 @@ struct list {
  * Initialize a list
  * The link is made a point to itself
  * 
- * @param link  List pointer
+ * @param list  List pointer
 */
 static inline void list_init(struct list *list) {
     list->next = list;
