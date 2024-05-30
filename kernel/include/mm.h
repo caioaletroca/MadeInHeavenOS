@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <multiboot2.h>
+#include <memory.h>
 #include <util.h>
 
 void mmap_init(struct multiboot_info *info);

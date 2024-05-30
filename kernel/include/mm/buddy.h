@@ -3,21 +3,24 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+#include <kmalloc.h>
 #include <sys/list.h>
 
-struct frame {
-    struct list link;
-};
+typedef struct frame {
+    list_t link;
+} frame_t;
 
-struct free_list {
-
-};
+typedef struct free_list {
+    list_t list;
+    uintptr_t *map;
+} free_list_t;
 
 /**
  * A buddy system context
  * Allows for separate allocators for each memory zone
 */
-struct buddy_system {
+typedef struct buddy_system {
     /**
      * 
     */
@@ -31,16 +34,33 @@ struct buddy_system {
     /**
      * Free area for the memory zone
     */
-    struct free_list *free_area;
+    free_list_t *free_area;
 
     /**
      * 
     */
-    struct frame *frames;
-};
+    frame_t *frames;
+} buddy_system_t;
 
-int buddy_init(struct buddy_system *b, uint64_t frame_num, uint64_t frame_size);
+frame_t buddy_alloc(const buddy_system_t *ctx, unsigned int order);
 
-void buddy_log(const struct buddy_system *b);
+/**
+ * Initialize the buddy memory allocator context to handle a chunk of memory.
+ * 
+ * TODO: Check for errors
+ * 
+ * @param ctx           Buddy system context pointer
+ * @param frames_num    Number of frames to be handled
+ * @param frame_size    Size of a single memory frame
+ * @return              Returns zero on success and -1 as failure
+*/
+int buddy_init(buddy_system_t *ctx, uint64_t frame_num, uint64_t frame_size);
+
+/**
+ * Logs information about the buddy system on stdout
+ * 
+ * @param ctx           Buddy system context pointer
+*/
+void buddy_log(const buddy_system_t *ctx);
 
 #endif
