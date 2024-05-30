@@ -1,5 +1,6 @@
 local_sources := \
-kmain.c \
-kprintf.c
+kprintf.c \
+kmalloc.c \
+kmain.c
 
 dirs += arch/$(ARCH) cpu driver mm sys

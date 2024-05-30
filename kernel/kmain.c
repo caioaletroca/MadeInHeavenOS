@@ -8,7 +8,7 @@
 void kmain(physaddr_t address) {
     struct multiboot_info *info = (struct multiboot_info*)phys_to_kern(address);
 
-    kprintf("Alive!!!\n");
+    kprintf("MiHOS\n");
 
     interrupts_init();
 
