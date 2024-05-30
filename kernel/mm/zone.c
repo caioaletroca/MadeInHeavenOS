@@ -1,20 +1,20 @@
 #include <mm/zone.h>
 
-int zone_init(zone *z, physaddr_t address, size_t size, size_t frame_size) {
+int zone_init(zone_t *ctx, physaddr_t address, size_t size, size_t frame_size) {
     if(frame_size == 0) {
         return -1;
     }
 
-    z->address = address;
-    z->size = size;
-    z->frame_size = frame_size;
-    z->next = NULL;
+    ctx->address = address;
+    ctx->size = size;
+    ctx->frame_size = frame_size;
+    ctx->next = NULL;
 
-    return buddy_init(&z->buddy, size / frame_size, frame_size);
+    return buddy_init(&ctx->buddy, size / frame_size, frame_size);
 }
 
-void zone_log(const zone *z) {
-    kprintf("Zone Start Address: 0x%p\n", z->address);
-    kprintf("Zone End Address: 0x%p\n", z->address + z->size);
-    buddy_log(&z->buddy);
+void zone_log(const zone_t *ctx) {
+    kprintf("Zone Start Address: 0x%p\n", ctx->address);
+    kprintf("Zone End Address: 0x%p\n", ctx->address + ctx->size);
+    buddy_log(&ctx->buddy);
 }

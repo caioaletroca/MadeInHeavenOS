@@ -5,7 +5,7 @@
 #include <addresses.h>
 #include <mm/buddy.h>
 
-typedef struct _zone {
+typedef struct zone {
     // Zone physical address
     physaddr_t address;
 
@@ -20,15 +20,15 @@ typedef struct _zone {
 
     // Boddy system for the zone
     struct buddy_system buddy;
-} zone;
+} zone_t;
 
-int zone_init(zone *z, physaddr_t address, size_t size, size_t frame_size);
+int zone_init(zone_t *z, physaddr_t address, size_t size, size_t frame_size);
 
 /**
  * Logs zone information on stdout
  * 
  * @param z Zone structure pointer
 */
-void zone_log(const zone *z);
+void zone_log(const zone_t *ctx);
 
 #endif

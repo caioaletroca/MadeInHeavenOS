@@ -11,9 +11,15 @@ typedef struct frame {
     list_t link;
 } frame_t;
 
+/**
+ * List of frames within the same order
+*/
 typedef struct free_list {
+    // Free list node
     list_t list;
-    uintptr_t *map;
+
+    // Bitmap used to keep track of the state of each couple of buddies
+    unsigned long *map;
 } free_list_t;
 
 /**
@@ -42,8 +48,6 @@ typedef struct buddy_system {
     frame_t *frames;
 } buddy_system_t;
 
-frame_t buddy_alloc(const buddy_system_t *ctx, unsigned int order);
-
 /**
  * Initialize the buddy memory allocator context to handle a chunk of memory.
  * 
@@ -55,6 +59,8 @@ frame_t buddy_alloc(const buddy_system_t *ctx, unsigned int order);
  * @return              Returns zero on success and -1 as failure
 */
 int buddy_init(buddy_system_t *ctx, uint64_t frame_num, uint64_t frame_size);
+
+frame_t buddy_alloc(const buddy_system_t *ctx, unsigned int order);
 
 /**
  * Logs information about the buddy system on stdout

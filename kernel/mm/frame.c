@@ -1,7 +1,7 @@
 #include <mm/frame.h>
 
 int frame_zone_add(void *address, size_t size, size_t frame_size) {
-    zone *z = (zone *)kmalloc(sizeof(zone));
+    zone_t *z = (zone_t *)kmalloc(sizeof(zone_t));
 
     if(z == NULL) {
         return -1;
