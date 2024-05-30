@@ -8,13 +8,13 @@ __BEGIN_DECLS
 /**
  * Circularly double linked list data structure
 */
-struct list {
+typedef struct list {
     // Link for the previous item
     struct list *prev;
 
     // Link fo the next item
     struct list *next;
-};
+} list_t;
 
 /**
  * Initialize a list
@@ -22,7 +22,7 @@ struct list {
  * 
  * @param list  List pointer
 */
-static inline void list_init(struct list *list) {
+static inline void list_init(list_t *list) {
     list->next = list;
     list->prev = list;
 }
@@ -34,7 +34,7 @@ static inline void list_init(struct list *list) {
  * the new item will be positioned after this item
  * @param node  New item pointer
 */
-static inline void list_insert_after(struct list *list, struct list *node) {
+static inline void list_insert_after(list_t *list, list_t *node) {
     node->next = list->next;
     node->prev = list;
     list->next->prev = node;
@@ -47,7 +47,7 @@ static inline void list_insert_after(struct list *list, struct list *node) {
  * 
  * @param node  The item to be removed
 */
-static inline void list_delete(struct list *node) {
+static inline void list_delete(list_t *node) {
     node->next->prev = node->prev;
     node->prev->next = node->next;
     node->next = node;
