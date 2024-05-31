@@ -7,8 +7,15 @@
 #include <kmalloc.h>
 #include <sys/list.h>
 
+/**
+ * Physical memory frame structure
+*/
 typedef struct frame {
+    // Free link list
     list_t link;
+
+    // Number of references on this frame
+    unsigned int refs;
 } frame_t;
 
 /**
@@ -28,7 +35,7 @@ typedef struct free_list {
 */
 typedef struct buddy_system {
     /**
-     * 
+     * log2(frame_size). Used to convert frame index to address
     */
     uint64_t order_bit;
 
@@ -43,7 +50,7 @@ typedef struct buddy_system {
     free_list_t *free_area;
 
     /**
-     * 
+     * Frame support structures (for the free_area)
     */
     frame_t *frames;
 } buddy_system_t;
@@ -60,13 +67,22 @@ typedef struct buddy_system {
 */
 int buddy_init(buddy_system_t *ctx, uint64_t frame_num, uint64_t frame_size);
 
-frame_t buddy_alloc(const buddy_system_t *ctx, unsigned int order);
+frame_t *buddy_alloc(const buddy_system_t *ctx, unsigned int order);
+
+/**
+ * Release a frame of memory
+ * 
+ * @param ctx           Buddy system context pointer
+ * @param frame         Memory frame start
+ * @param order         Memory order
+*/
+void buddy_free(const buddy_system_t *ctx, const frame_t *frame, unsigned int order);
 
 /**
  * Logs information about the buddy system on stdout
  * 
  * @param ctx           Buddy system context pointer
 */
-void buddy_log(const buddy_system_t *ctx);
+void buddy_log(const buddy_system_t *ctx, void *address);
 
 #endif
