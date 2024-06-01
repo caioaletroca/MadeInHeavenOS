@@ -2,20 +2,6 @@
 #include <mm/buddy.h>
 
 /**
- * Calculates the first non-zero bit position starting from the left,
- * but counting from the right, minus 1.
- * Returns zero if val is zero.
- * Ex: _fnzb(0b0001110) = 3
- * 
- * @param value The value analyzed
-*/
-static inline unsigned int _fnzb(unsigned long value) {
-    if(value == 0)
-        return 0;
-    return (sizeof(unsigned long) * 8) - __builtin_clzl(value) - 1;
-}
-
-/**
  * Toggles the bit for a couple of buddies
  * It uses only one bit for a couple, and returns the modified bit value
  * 
@@ -91,7 +77,7 @@ void buddy_free(const buddy_system_t *ctx, const frame_t *frame, unsigned int or
 
     // Block index will be the address distance between the frame and the first frame
     frame_index = frame - ctx->frames;
-
+    
     // Loop through all orders from the current order to max
     while(order != ctx->order_max) {
         // Calculate the buddy index by XOR the frame_index

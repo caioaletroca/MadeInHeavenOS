@@ -6,6 +6,7 @@
 #include <string.h>
 #include <kmalloc.h>
 #include <sys/list.h>
+#include <util.h>
 
 /**
  * Physical memory frame structure

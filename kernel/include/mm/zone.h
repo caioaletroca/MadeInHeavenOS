@@ -2,6 +2,7 @@
 #define _ZONE_H_
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <addresses.h>
 #include <mm/buddy.h>
 
@@ -81,6 +82,15 @@ void *zone_alloc(const zone_t *ctx, int order);
  * @param order         Frame order
 */
 void zone_free(const zone_t *ctx, const void *address, unsigned int order);
+
+/**
+ * Checks if a memory area is contained in a zone
+ * 
+ * @param ctx           Zone descriptor pointer
+ * @param address       A memory address
+ * @param size          The memory size
+*/
+bool zone_contains(const zone_t *ctx, uintptr_t address, size_t size);
 
 /**
  * Logs zone information on stdout
