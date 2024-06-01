@@ -20,6 +20,7 @@ void screen_put(struct screen *scr, char c) {
                 break;
             case '\t':
                 scr->pos_x += SCREEN_TAB_SPACES;
+                break;
             default:
                 break;
         }
@@ -32,7 +33,16 @@ void screen_put(struct screen *scr, char c) {
         scr->pos_y++;
     }
 
-    // TODO: Scroll the screen
+    // Scroll the screen
+    if(scr->pos_y >= SCREEN_HEIGHT) {
+        // Copy contents one live before
+        memcpy(&scr->buf, &scr->buf[SCREEN_WIDTH], SCREEN_WIDTH * (SCREEN_HEIGHT - 1));
+        
+        // Clear last line
+        memset(&scr->buf[SCREEN_WIDTH * (SCREEN_HEIGHT - 1)], ' ', SCREEN_WIDTH);
+
+        scr->pos_y = SCREEN_HEIGHT - 1;
+    }
 }
 
 void screen_write(struct screen *scr, const char *str, size_t n) {
