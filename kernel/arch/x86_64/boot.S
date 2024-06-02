@@ -50,9 +50,10 @@ _start:
 
 	call set_cursor
 
-	/* reset EFLAGS. */
-	pushl $0
-	popf
+	# TODO: Check if we need this
+	# /* reset EFLAGS. */
+	# pushl $0
+	# popf
 
 	call check_cpuid
 	call check_long_mode

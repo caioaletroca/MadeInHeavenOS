@@ -193,7 +193,7 @@ void buddy_log(const buddy_system_t *ctx, void *address) {
                 // Calculate the frame address using the zone base address
                 void *frame_ptr = address + (frame_index << ctx->order_bit);
 
-                kprintf("  [ 0x%p : 0x%p ]\n", frame_ptr, frame_ptr + (1 << (ctx->order_bit+i)));
+                kprintf("  [ 0x%p : 0x%p ]\n", frame_ptr, frame_ptr + (1 << (ctx->order_bit + i)));
                 
                 // Sums free memory
                 free_memory += (1 << (ctx->order_bit + i));
