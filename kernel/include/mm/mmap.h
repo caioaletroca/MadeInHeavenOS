@@ -4,18 +4,36 @@
 #include <mm/frame.h>
 #include <util.h>
 
+/**
+ * MMap memory region structure
+*/
 typedef struct mmap_region {
+    // Memory base address
     uintptr_t base;
+
+    // Memory size
     size_t size;
 } mmap_region_t;
 
+/**
+ * MMap memory type structure
+*/
 typedef struct mmap_type {
+    // List of memory regions
     mmap_region_t *regions;
+
+    // Length of the list
     uint32_t length;
 } mmap_type_t;
 
+/**
+ * MMap structure
+*/
 typedef struct mmap {
+    // List of available memory
     mmap_type_t available;
+
+    // List of reserved memory
     mmap_type_t reserved;
 } mmap_t;
 

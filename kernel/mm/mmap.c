@@ -4,8 +4,10 @@
 
 extern const uintptr_t _kernel_physical_end;
 
-mmap_region_t available[128];
-mmap_region_t reserved[128];
+#define MMAP_MAX_REGIONS 128
+
+mmap_region_t available[MMAP_MAX_REGIONS];
+mmap_region_t reserved[MMAP_MAX_REGIONS];
 
 static mmap_t memory_map = {
     .available = { .length = 0, .regions = available },
@@ -19,8 +21,6 @@ static void mmap_free(uintptr_t start, uintptr_t end) {
     kprintf("End Address: %p\n", end);
 
     while(current < end) {
-        // if(current >= 0xf66000)
-        //     kprintf("Current Address: %p\n", current);
         frame_free(current, 0);
         current += PAGE_SIZE;
     }
@@ -186,10 +186,6 @@ void mmap_init(struct multiboot_info *info) {
     mmap_sort_region(&memory_map.available);
 
     mmap_register_region(&memory_map.available, PAGE_SIZE);
-
-    // TODO: Remove this line
-    // mmap_log(&memory_map);
-    // frame_log();
 }
 
 static void mmap_log(mmap_t *ctx) {

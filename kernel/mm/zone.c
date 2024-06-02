@@ -1,7 +1,16 @@
 #include <mm/zone.h>
 
 void *zone_alloc(const zone_t *ctx, int order) {
-    buddy_alloc(&ctx->buddy, order);
+    frame_t *frame = buddy_alloc(&ctx->buddy, order);
+    if(frame == NULL) {
+        return NULL;
+    }
+
+    // Update references
+    frame->refs++;
+
+    // Calculate frame address
+    return (ctx->address + ctx->frame_size * (frame - ctx->buddy.frames));
 }
 
 void zone_free(const zone_t *ctx, const void *address, unsigned int order) {

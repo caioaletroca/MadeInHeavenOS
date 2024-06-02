@@ -72,6 +72,13 @@ typedef struct zone {
 */
 int zone_init(zone_t *ctx, physaddr_t address, size_t size, size_t frame_size, int flags);
 
+/**
+ * Allocate a memory segment from a zone
+ * 
+ * @param ctx           Zone descriptor pointer
+ * @param order         Frame order
+ * @return              Pointer to the allocated memory chunk
+*/
 void *zone_alloc(const zone_t *ctx, int order);
 
 /**

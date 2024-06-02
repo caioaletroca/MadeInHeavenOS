@@ -18,6 +18,15 @@
 int frame_zone_add(void *address, size_t size, size_t frame_size);
 
 /**
+ * Allocate a physical memory page
+ * 
+ * @param order         Frame order
+ * @param flags         Allocation flags
+ * @return              Memory physical address
+*/
+void *frame_alloc(unsigned int order, unsigned int flags);
+
+/**
  * Free a physical memory page
  * 
  * @param ptr           Memory physical address

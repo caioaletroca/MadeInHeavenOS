@@ -8,6 +8,7 @@ int frame_zone_add(void *address, size_t size, size_t frame_size) {
         return -1;
     }
 
+    // TODO: Fix the flags param
     if(zone_init(zone, address, size, frame_size, ZONE_NORMAL) != 0) {
         // TODO: Free kmalloc memory here
     }
@@ -17,6 +18,22 @@ int frame_zone_add(void *address, size_t size, size_t frame_size) {
     zone_list = zone;
 
     return 0;
+}
+
+void *frame_alloc(unsigned int order, unsigned int flags) {
+    void *ptr = NULL;
+
+    for(zone_t *zone = zone_list; zone != NULL; zone = zone->next) {
+        if((zone->flags & flags) == flags) {
+            ptr = zone_alloc(zone, order);
+
+            if(ptr != NULL) {
+                break;
+            }
+        }
+    }
+
+    return ptr;
 }
 
 void frame_free(void *ptr, unsigned int order) {

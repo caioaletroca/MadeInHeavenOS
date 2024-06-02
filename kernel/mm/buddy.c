@@ -45,30 +45,48 @@ static int toggle_bit(const buddy_system_t *ctx, unsigned int block_index, unsig
 */
 
 frame_t *buddy_alloc(const buddy_system_t *ctx, unsigned int order) {
-    frame_t *frm = NULL;
+    frame_t *frame = NULL;
     unsigned int current_order = 0;
     unsigned int left_index;
     unsigned int right_index;
 
+    // Loop through orders starting from the order param going up
     for(current_order = order; current_order <= ctx->order_max; current_order++) {
+        // If the list is not empty, we found a new block to allocate
         if(!list_empty(&ctx->free_area[current_order].list)) {
-
-            frm = list_container(ctx->free_area[current_order].list.next,
+            // Get the container frame of this link/list
+            frame = list_container(ctx->free_area[current_order].list.next,
                                  frame_t, link);
 
-            left_index = frm - ctx->frames;
+            // Calculate the frame index by subtracting the base address
+            // of the first frame from the current frame address
+            left_index = frame - ctx->frames;
 
-            kprintf("HIT - Order: %u, Frame: %p, Left Index: %u\n", current_order, frm, left_index);
+            break;
         }
+    }
+
+    // There's no available frame
+    if(current_order > ctx->order_max) {
+        return NULL;
+    }
+
+    // Toggle bit for the newly allocated frame
+    // Order max doesn't have buddies
+    if(current_order != ctx->order_max) {
+        toggle_bit(ctx, left_index, current_order);
     }
 
     // Split free area if needed
     while(current_order > order) {
         current_order--;
         right_index = left_index + (1 << current_order);
+
+        list_insert_before(&ctx->free_area[current_order].list, &ctx->frames[right_index].link);
+        toggle_bit(ctx, right_index, current_order);
     }
 
-    return frm;
+    return frame;
 }
 
 void buddy_free(const buddy_system_t *ctx, const frame_t *frame, unsigned int order) {
