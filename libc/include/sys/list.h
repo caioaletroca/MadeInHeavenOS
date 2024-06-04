@@ -1,5 +1,5 @@
-#ifndef _LIST_H_
-#define _LIST_H_
+#ifndef _SYS_LIST_H_
+#define _SYS_LIST_H_
 
 #include <sys/cdefs.h>
 

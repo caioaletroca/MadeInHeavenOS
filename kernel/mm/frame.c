@@ -10,7 +10,7 @@ int frame_zone_add(void *address, size_t size, size_t frame_size) {
 
     // TODO: Fix the flags param
     if(zone_init(zone, address, size, frame_size, ZONE_NORMAL) != 0) {
-        // TODO: Free kmalloc memory here
+        // TODO: Free kmalloc memory here in case of failure
     }
 
     // Add newly created zone to the zone list

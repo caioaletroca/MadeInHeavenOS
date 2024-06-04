@@ -3,6 +3,7 @@
 #include <kprintf.h>
 
 #define ISR_NAME(index) isr_##index
+#define IDT_MAX_ENTRIES 256
 
 #define IDT_INSTALL_CLI(index) ({ \
     extern void ISR_NAME(index)(void); \
@@ -16,9 +17,8 @@
 
 static idt_register_t idt_reg;
 
-// TODO: Add max size into a macro
 __attribute__((aligned(16)))
-static idt_entry_t idt_entries[256];
+static idt_entry_t idt_entries[IDT_MAX_ENTRIES];
 
 void idt_load() {
     __asm__ __volatile__("lidt %0": : "m"(idt_reg));

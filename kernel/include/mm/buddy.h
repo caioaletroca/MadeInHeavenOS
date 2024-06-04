@@ -1,6 +1,13 @@
 #ifndef _BUDDY_H_
 #define _BUDDY_H_
 
+/**
+ * Resources of explanation on buddy allocators:
+ * 
+ * Allocation Adventures 3: The Buddy Allocator
+ * https://github.com/red-rocket-computing/buddy-alloc/blob/master/doc/bitsquid-buddy-allocator-design.md
+*/
+
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>

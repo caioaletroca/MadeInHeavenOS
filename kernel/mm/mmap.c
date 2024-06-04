@@ -2,9 +2,9 @@
 #include <kprintf.h>
 #include <mm/mmap.h>
 
-extern const uintptr_t _kernel_physical_end;
-
 #define MMAP_MAX_REGIONS 128
+
+extern const uintptr_t _kernel_physical_end;
 
 mmap_region_t available[MMAP_MAX_REGIONS];
 mmap_region_t reserved[MMAP_MAX_REGIONS];
@@ -14,6 +14,7 @@ static mmap_t memory_map = {
     .reserved = { .length = 0, .regions = reserved }
 };
 
+// TODO: See what to do with this function, maybe remove?
 static void mmap_free(uintptr_t start, uintptr_t end) {
     uintptr_t current = start;
 
