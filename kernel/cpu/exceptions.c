@@ -38,7 +38,7 @@ static const char *const exception_messages[32] = {
 };
 
 // TODO: For now, panic in all exceptions
-static void exception_handler(isr_context *regs) {
+static void exception_handler(isr_context_t *regs) {
     uint8_t int_no = (uint8_t)(regs->info >> 32) & 0xFF;
     
     if(int_no < 32) {

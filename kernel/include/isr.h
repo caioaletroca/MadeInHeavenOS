@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include "panic.h"
 
-typedef struct {
+typedef struct isr_context {
     // Register pushed by implementation
     uint64_t rax;
     uint64_t rdi;
@@ -27,12 +27,12 @@ typedef struct {
 	uint64_t rflags;
 	uint64_t rsp;
 	uint64_t ss;
-} isr_context;
+} isr_context_t;
 
 /**
  * Defines the standard isr handler function
 */
-typedef void (*isr_handler_t)(isr_context *regs);
+typedef void (*isr_handler_t)(isr_context_t *regs);
 
 /**
  * ISR Information structure
@@ -52,6 +52,6 @@ typedef struct {
 */
 void isr_set_info(uint8_t vector, isr_info_t *info);
 
-void isr_handler(isr_context *regs);
+void isr_handler(isr_context_t *regs);
 
 #endif

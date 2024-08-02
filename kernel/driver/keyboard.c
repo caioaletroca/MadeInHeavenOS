@@ -32,7 +32,7 @@ static inline uint8_t inb(uint16_t port) {
 #define PS2_COMMAND 0x64
 #define PS2_DATA 0x60
 
-void ps2_keyboard_irq_handler(isr_context *regs) {
+void ps2_keyboard_irq_handler(isr_context_t *regs) {
     while ((inb(PS2_STATUS) & 1) == 0);
 	uint8_t casa = inb(PS2_DATA);
 

@@ -15,15 +15,17 @@ static mmap_t memory_map = {
 };
 
 // TODO: See what to do with this function, maybe remove?
-static void mmap_free(uintptr_t start, uintptr_t end) {
-    uintptr_t current = start;
+static void mmap_free(mmap_type_t *type) {
 
-    kprintf("Start Address: %p\n", start);
-    kprintf("End Address: %p\n", end);
-
-    while(current < end) {
-        frame_free(current, 0);
-        current += PAGE_SIZE;
+    for(size_t i = 0; i < type->length - 1; i++) {
+        uintptr_t start = type->regions[i].base;
+        uintptr_t end = start + type->regions[i].size - 1;
+        uintptr_t current = start;
+        
+        while(current < end) {
+            frame_free(current, 0);
+            current += PAGE_SIZE;
+        }
     }
 }
 
@@ -187,6 +189,8 @@ void mmap_init(struct multiboot_info *info) {
     mmap_sort_region(&memory_map.available);
 
     mmap_register_region(&memory_map.available, PAGE_SIZE);
+
+    mmap_free(&memory_map.available);
 }
 
 static void mmap_log(mmap_t *ctx) {
