@@ -13,4 +13,4 @@ make -j 4
 make install
 
 cd $PREFIX/src
-rm -rf build-binutils.sh build-binutils mihos-binutils
+rm -rf build-binutils mihos-binutils

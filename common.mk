@@ -19,9 +19,9 @@ CFLAGS := -O2 -g -std=gnu11 -mcmodel=kernel -mno-red-zone -mno-ms-bitfields -Wal
 # CFLAGS		+= -Wall -Werror -Wextra -Wparentheses -Wmissing-declarations -Wunreachable-code -Wunused 
 # CFLAGS		+= -Wmissing-field-initializers -Wmissing-prototypes -Wpointer-arith -Wswitch-enum
 # CFLAGS		+= -Wredundant-decls -Wshadow -Wstrict-prototypes -Wswitch-default -Wuninitialized
-CPPFLAGS := -Iinclude
+CPPFLAGS = -Iinclude --sysroot=$(SYSROOT_DIR) -isystem $(INCLUDE_DIR)
 ASFLAGS := -f elf64
-LDFLAGS := -fno-PIC
+LDFLAGS = -fno-PIC --sysroot=$(SYSROOT_DIR) -L$(LIB_DIR)
 LDFLAGS_EXTRA := -nostdlib -lk -lgcc
 
 #####################################################################
@@ -68,10 +68,10 @@ purge:
 	$(RM) build
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.c
-	$(CC) -MD -c $< -o $@ $(CFLAGS)
+	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.S
-	$(CC) -MD -c $< -o $@ $(CFLAGS) 
+	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
 
 %.o: %.c
 	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)

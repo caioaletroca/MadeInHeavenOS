@@ -21,17 +21,18 @@ RUN set -x \
 	&& chmod -R o-w,g+w,g+x mihos-binutils \
 	&& chmod -R o-w,g+w,g+x mihos-gcc
 
-# Copy compile scripts
-COPY src /usr/local/src/
-
 # Copy Sysroot
 COPY sysroot /root/env/sysroot
 
-# Build and install binutils and the cross-compiler
-RUN set -x \
-	&& cd /usr/local/src \
-	&& ./build-binutils.sh \
-	&& ./build-gcc.sh
+# Build and install binutils
+COPY --chmod=755 src/build-binutils.sh /usr/local/src/build-binutils.sh
+RUN sed -i 's/\r$//' /usr/local/src/build-binutils.sh \
+	&& /usr/local/src/build-binutils.sh
+
+# Build and install the cross-compiler
+COPY --chmod=755 src/build-gcc.sh /usr/local/src/build-gcc.sh
+RUN sed -i 's/\r$//' /usr/local/src/build-gcc.sh \
+	&& /usr/local/src/build-gcc.sh
 
 CMD ["/bin/bash"]
 
