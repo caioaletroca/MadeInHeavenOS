@@ -150,7 +150,7 @@ void mmap_init(struct multiboot_info *info) {
         if(tag->type == MULTIBOOT_TAG_MMAP) {
             struct multiboot_tag_mmap *mmap_tag = (struct multiboot_tag_mmap *)tag;
 
-            // Interate over all entries inside the Memory Map Tag
+            // Iterate over all entries inside the Memory Map Tag
             struct multiboot_mmap_entry *first_entry = (struct multiboot_mmap_entry *)mmap_tag->entries;
             for(
                 struct multiboot_mmap_entry *entry = first_entry;

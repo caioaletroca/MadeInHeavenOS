@@ -25,4 +25,14 @@ static inline unsigned int _fnzb(unsigned long value) {
     return (sizeof(unsigned long) * 8) - __builtin_clzl(value) - 1;
 }
 
+/**
+ * Get a pointer to the struct start given a pointer to a member.
+ *
+ * @param member_ptr    Struct member pointer.
+ * @param struct_type   Type of the structure the element is embedded in.
+ * @param member_name   Name of the member within the struct.
+ */
+#define struct_ptr(member_ptr, struct_type, member_name) \
+    ((struct_type *)((char *)(member_ptr)-offsetof(struct_type,member_name)))
+
 #endif

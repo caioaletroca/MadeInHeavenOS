@@ -2,4 +2,6 @@ local_sources := \
 buddy.c \
 zone.c \
 frame.c \
-mmap.c
+slab.c \
+mmap.c \
+paging.c
