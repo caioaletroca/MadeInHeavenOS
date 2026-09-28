@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <mm/slab.h>
 #include <mm/frame.h>
 #include <memory.h>
@@ -40,6 +41,93 @@ typedef struct slab
     slab_state_t state;
 } slab_t;
 
+/**
+ * Checks if the given object belongs to the specified slab within the cache.
+ *
+ * @param cache The slab cache containing the slab.
+ * @param slab The slab to check.
+ * @param object The object to check for membership.
+ * @return true if the object belongs to the slab, false otherwise.
+ */
+static bool slab_contains(const slab_cache_t *cache, const slab_t *slab, const void *object)
+{
+    uintptr_t start = (uintptr_t)slab->memory;
+    uintptr_t address = (uintptr_t)object;
+    uintptr_t end = start + slab->capacity * cache->stride;
+    return address >= start && address < end && ((address - start) % cache->stride == 0);
+}
+
+/**
+ * Finds the slab in the given list that contains the specified object.
+ *
+ * @param head The head of the list of slabs to search.
+ * @param cache The slab cache containing the slabs.
+ * @param object The object to find the owning slab for.
+ * @return A pointer to the slab containing the object, or NULL if not found.
+ */
+static slab_t *slab_list_find(list_t *head, const slab_cache_t *cache, const void *object)
+{
+    list_t *node;
+    list_for_each(node, head)
+    {
+        slab_t *slab = list_container(node, slab_t, link);
+        if (slab_contains(cache, slab, object))
+            return slab;
+    }
+    return NULL;
+}
+
+/**
+ * Checks if the given object is currently free within the specified slab.
+ *
+ * @param slab The slab containing the object.
+ * @param object The object to check.
+ * @return true if the object is free, false otherwise.
+ */
+static bool slab_object_is_free(const slab_t *slab, const void *object)
+{
+    size_t visited = 0;
+    for (const slab_free_object_t *obj = slab->free_objects; obj != NULL; obj = obj->next)
+    {
+        if (obj == object)
+            return true;
+        visited++;
+
+        KASSERT(visited <= slab->capacity);
+    }
+    return false;
+}
+
+/**
+ * Validates the integrity of a slab within the cache.
+ *
+ * @param cache The slab cache containing the slab.
+ * @param slab The slab to validate.
+ * @return true if the slab is valid, false otherwise.
+ */
+static bool slab_validate(const slab_cache_t *cache, const slab_t *slab)
+{
+    size_t free_count = 0;
+
+    for (const slab_free_object_t *object = slab->free_objects; object != NULL; object = object->next)
+    {
+        if (!slab_contains(cache, slab, object))
+            return false;
+        free_count++;
+
+        if (free_count > slab->capacity)
+            return false;
+    }
+
+    if (free_count + slab->inuse != slab->capacity)
+        return false;
+
+    if (slab->inuse > slab->capacity)
+        return false;
+
+    return true;
+}
+
 int slab_cache_init(slab_cache_t *cache, const char *name, size_t object_size, size_t alignment)
 {
     if (cache == NULL || object_size == 0)
@@ -75,6 +163,12 @@ int slab_cache_init(slab_cache_t *cache, const char *name, size_t object_size, s
     list_init(&cache->empty_slabs);
     list_init(&cache->partial_slabs);
     list_init(&cache->full_slabs);
+
+    KASSERT(cache->stride >= cache->object_size);
+    KASSERT(cache->stride >= sizeof(slab_free_object_t));
+    KASSERT(cache->capacity > 0);
+    KASSERT(cache->capacity * cache->stride <= PAGE_SIZE);
+    KASSERT((cache->alignment & (cache->alignment - 1)) == 0);
 
     return 0;
 }
@@ -200,6 +294,8 @@ static void slab_reclassify(slab_cache_t *cache, slab_t *slab)
         slab->state = SLAB_PARTIAL;
         list_insert_after(&cache->partial_slabs, &slab->link);
     }
+
+    KASSERT(slab->inuse <= slab->capacity);
 }
 
 void *slab_cache_alloc(slab_cache_t *cache)
@@ -212,6 +308,9 @@ void *slab_cache_alloc(slab_cache_t *cache)
     if (slab == NULL)
         return NULL;
 
+    KASSERT(slab->inuse < slab->capacity);
+    KASSERT(slab->free_objects != NULL);
+
     void *object = slab_take_object(slab);
 
     if (object == NULL)
@@ -219,43 +318,10 @@ void *slab_cache_alloc(slab_cache_t *cache)
 
     slab_reclassify(cache, slab);
 
+    KASSERT(slab->inuse <= slab->capacity);
+    KASSERT(slab_validate(cache, slab));
+
     return object;
-}
-
-/**
- * Checks if the given object belongs to the specified slab within the cache.
- *
- * @param cache The slab cache containing the slab.
- * @param slab The slab to check.
- * @param object The object to check for membership.
- * @return true if the object belongs to the slab, false otherwise.
- */
-static bool slab_contains(const slab_cache_t *cache, const slab_t *slab, const void *object)
-{
-    uintptr_t start = (uintptr_t)slab->memory;
-    uintptr_t address = (uintptr_t)object;
-    uintptr_t end = start + slab->capacity * cache->stride;
-    return address >= start && address < end && ((address - start) % cache->stride == 0);
-}
-
-/**
- * Finds the slab in the given list that contains the specified object.
- *
- * @param head The head of the list of slabs to search.
- * @param cache The slab cache containing the slabs.
- * @param object The object to find the owning slab for.
- * @return A pointer to the slab containing the object, or NULL if not found.
- */
-static slab_t *slab_list_find(list_t *head, const slab_cache_t *cache, const void *object)
-{
-    list_t *node;
-    list_for_each(node, head)
-    {
-        slab_t *slab = list_container(node, slab_t, link);
-        if (slab_contains(cache, slab, object))
-            return slab;
-    }
-    return NULL;
 }
 
 /**
@@ -300,11 +366,21 @@ int slab_cache_free(slab_cache_t *cache, void *object)
         return -1;
 
     slab_t *slab = slab_cache_find_owner(cache, object);
+
     if (slab == NULL)
+        return -1;
+
+    if (slab->inuse == 0)
+        return -1;
+
+    if (slab_object_is_free(slab, object))
         return -1;
 
     slab_return_object(slab, object);
     slab_reclassify(cache, slab);
+
+    KASSERT(slab_contains(cache, slab, object));
+    KASSERT(slab_validate(cache, slab));
 
     return 0;
 }
