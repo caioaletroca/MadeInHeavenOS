@@ -39,7 +39,7 @@ _start:
 	cld
 
 	# Set stack pointer
-	mov $stack_bottom - KERNEL_VIRTUAL_ADDRESS, %esp
+	mov $stack_top - KERNEL_VIRTUAL_ADDRESS, %esp
 	
 	# Preserve multiboot information
 	push %ebx
