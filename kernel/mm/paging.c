@@ -3,7 +3,6 @@
 #include <string.h>
 
 extern page_table_t page_table_l4;
-extern page_table_t page_table_l3;
 
 #define fault_address_get(virt) \
     __asm__ __volatile__("mov %%cr2, %0" : "=r"(virt));
@@ -16,7 +15,10 @@ extern page_table_t page_table_l3;
 #define PAGE_ENTRY_INDEX(address, shift) \
     (((uintptr_t)(address) >> (shift)) & 0x1FFULL)
 
-#define PAGE_ADDRESS_MASK 0x000FFFFFFFFFF000ULL
+#define PAGE_4K_SIZE 0x1000ULL
+#define PAGE_2M_SIZE 0x200000ULL
+#define PAGE_4K_ADDRESS_MASK 0x000FFFFFFFFFF000ULL
+#define PAGE_2M_ADDRESS_MASK 0x000FFFFFFFE00000ULL
 
 /**
  * Retrieves the page table at the given index from the specified page table.
@@ -27,7 +29,7 @@ extern page_table_t page_table_l3;
  */
 static inline page_table_t *page_table_from_entry(page_table_entry_t entry)
 {
-    physaddr_t physical = entry & PAGE_ADDRESS_MASK;
+    physaddr_t physical = entry & PAGE_4K_ADDRESS_MASK;
     return phys_to_kern(physical);
 }
 
@@ -130,7 +132,7 @@ int page_map(page_table_t *root, uintptr_t virtual_address, physaddr_t physical_
     if ((page_table_l1->pages[p1_index] & PAGE_TABLE_ENTRY_PRESENT) != 0)
         return -1;
 
-    page_table_l1->pages[p1_index] = (physical_address & PAGE_ADDRESS_MASK) | PAGE_TABLE_ENTRY_PRESENT | flags;
+    page_table_l1->pages[p1_index] = (physical_address & PAGE_4K_ADDRESS_MASK) | PAGE_TABLE_ENTRY_PRESENT | flags;
 
     __asm__ volatile("invlpg (%0)" ::"r"(virtual_address) : "memory");
 
@@ -174,6 +176,56 @@ int page_unmap(page_table_t *root, uintptr_t virtual_address)
     page_table_l1->pages[p1_index] = 0;
 
     __asm__ __volatile__("invlpg (%0)" ::"r"(virtual_address) : "memory");
+
+    return 0;
+}
+
+int page_translate(page_table_t *root, uintptr_t virtual_address, physaddr_t *physical_address)
+{
+    if (root == NULL || physical_address == NULL)
+        return -1;
+
+    const uint16_t p4_index = PAGE_ENTRY_INDEX(virtual_address, P4_INDEX_SHIFT);
+    const uint16_t p3_index = PAGE_ENTRY_INDEX(virtual_address, P3_INDEX_SHIFT);
+    const uint16_t p2_index = PAGE_ENTRY_INDEX(virtual_address, P2_INDEX_SHIFT);
+    const uint16_t p1_index = PAGE_ENTRY_INDEX(virtual_address, P1_INDEX_SHIFT);
+
+    page_table_entry_t entry4 = root->pages[p4_index];
+    if ((entry4 & PAGE_TABLE_ENTRY_PRESENT) == 0 ||
+        (entry4 & PAGE_TABLE_ENTRY_PAGE_SIZE) != 0)
+        return -1;
+
+    page_table_t *page_table_l3 = page_table_from_entry(entry4);
+    page_table_entry_t entry3 = page_table_l3->pages[p3_index];
+    if ((entry3 & PAGE_TABLE_ENTRY_PRESENT) == 0 ||
+        (entry3 & PAGE_TABLE_ENTRY_PAGE_SIZE) != 0)
+        return -1;
+
+    page_table_t *page_table_l2 = page_table_from_entry(entry3);
+    page_table_entry_t entry2 = page_table_l2->pages[p2_index];
+    if ((entry2 & PAGE_TABLE_ENTRY_PRESENT) == 0)
+        return -1;
+
+    // Check if the entry2 indicates a large page (2MB) and handle it accordingly.
+    if ((entry2 & PAGE_TABLE_ENTRY_PAGE_SIZE) != 0)
+    {
+        physaddr_t page_base = entry2 & PAGE_2M_ADDRESS_MASK;
+        uintptr_t page_offset = virtual_address & (PAGE_2M_SIZE - 1);
+
+        *physical_address = page_base + page_offset;
+
+        return 0;
+    }
+
+    page_table_t *page_table_l1 = page_table_from_entry(entry2);
+    page_table_entry_t entry1 = page_table_l1->pages[p1_index];
+    if ((entry1 & PAGE_TABLE_ENTRY_PRESENT) == 0)
+        return -1;
+
+    physaddr_t page_base = entry1 & PAGE_4K_ADDRESS_MASK;
+    uintptr_t page_offset = virtual_address & (PAGE_4K_SIZE - 1);
+
+    *physical_address = page_base + page_offset;
 
     return 0;
 }

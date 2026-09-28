@@ -25,7 +25,7 @@
 // or supervisor/kernel (false)
 #define PAGE_TABLE_ENTRY_USER (1ULL << 2)
 
-// Bit representing the page size, 4 MB (true) or 4 KB (false)
+// Bit representing the page size, 2 MiB (true) or 4 KB (false)
 #define PAGE_TABLE_ENTRY_PAGE_SIZE (1ULL << 7)
 
 typedef uint64_t page_table_entry_t;
@@ -57,6 +57,16 @@ int page_map(page_table_t *root, uintptr_t virtual_address, physaddr_t physical_
  * @return 0 on success, non-zero on failure.
  */
 int page_unmap(page_table_t *root, uintptr_t virtual_address);
+
+/**
+ * Translates a virtual address to a physical address using the given page table root.
+ *
+ * @param root The root page table (typically the P4 table).
+ * @param virtual_address The virtual address to translate.
+ * @param physical_address Pointer to store the translated physical address.
+ * @return 0 on success, non-zero on failure.
+ */
+int page_translate(page_table_t *root, uintptr_t virtual_address, physaddr_t *physical_address);
 
 void paging_init();
 
