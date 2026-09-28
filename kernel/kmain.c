@@ -3,10 +3,11 @@
 #include <interrupts.h>
 #include <mm.h>
 #include <paging.h>
+#include <mm/frame.h>
 #include "idt.h"
 #include "driver/ps2.h"
 
-#include <mm/slab.h>
+extern page_table_t page_table_l4;
 
 void kmain(physaddr_t address)
 {
@@ -24,24 +25,29 @@ void kmain(physaddr_t address)
 
     paging_init();
 
-    slab_cache_t cache;
-    if (slab_cache_init(&cache, "example_cache", sizeof(uint64_t), 0) != 0)
-        panic("Failed to initialize slab cache\n");
+    physaddr_t physical = (physaddr_t)frame_alloc(0, 0);
+    if (physical == 0)
+        panic("Failed to allocate paging test frame\n");
 
-    uint64_t *value = slab_cache_alloc(&cache);
+    uintptr_t virtual = 0xFFFF900000000000ULL;
 
-    if (value == NULL)
-        panic("Failed to allocate from slab cache\n");
+    if (page_map(&page_table_l4, virtual, physical, PAGE_TABLE_ENTRY_WRITE) != 0)
+        panic("Failed to map paging test page\n");
 
-    *value = 42;
-    kprintf("Allocated value: %u\n", *value);
+    volatile uint64_t *mapped = (volatile uint64_t *)virtual;
+    volatile uint64_t *direct = (volatile uint64_t *)phys_to_kern(physical);
 
-    if (slab_cache_free(&cache, value) != 0)
-    {
-        panic("Failed to free object back to slab cache\n");
-    }
+    *mapped = 0x123456789ABCDEF0ULL;
 
-    kprintf("Finished slab cache test\n");
+    if (*direct != 0x123456789ABCDEF0ULL)
+        panic("Mapped page does not alias physical frame\n");
+
+    if (page_unmap(&page_table_l4, virtual) != 0)
+        panic("Failed to unmap paging test page\n");
+
+    frame_free((void *)physical, 0);
+
+    kprintf("Paging map/unmap test passed\n");
 
     // Magic breakpoint
     __asm__ __volatile__("xchgw %bx, %bx");

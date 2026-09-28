@@ -1,115 +1,195 @@
 #include <paging.h>
-#include <addresses.h>
+#include <mm/frame.h>
+#include <string.h>
 
 extern page_table_t page_table_l4;
 extern page_table_t page_table_l3;
 
 #define fault_address_get(virt) \
-    __asm__ __volatile__("mov %%cr2, %0" : "=r" (virt));
+    __asm__ __volatile__("mov %%cr2, %0" : "=r"(virt));
 
 #define P1_INDEX_SHIFT 12
 #define P2_INDEX_SHIFT 21
 #define P3_INDEX_SHIFT 30
 #define P4_INDEX_SHIFT 39
 
-#define get_entry_index(address, shift) (((address) >> (shift)) & 0x1FFUL)
+#define PAGE_ENTRY_INDEX(address, shift) \
+    (((uintptr_t)(address) >> (shift)) & 0x1FFULL)
 
-#define KERNEL_LOGICAL_BASE 0xFFFF800000000000
-#define PTE_ADDR_MASK (~(0xFFF0000000000FFFUL))
+#define PAGE_ADDRESS_MASK 0x000FFFFFFFFFF000ULL
 
-static inline virtaddr_t phys_to_virt(physaddr_t p)
+/**
+ * Retrieves the page table at the given index from the specified page table.
+ *
+ * @param pg The page table to retrieve the entry from.
+ * @param index The index of the entry.
+ * @return A pointer to the page table at the specified index.
+ */
+static inline page_table_t *page_table_from_entry(page_table_entry_t entry)
 {
-	if (p == (physaddr_t)NULL)
-		return NULL;
-	return (virtaddr_t)(p + KERNEL_VIRTUAL_ADDRESS);
+    physaddr_t physical = entry & PAGE_ADDRESS_MASK;
+    return phys_to_kern(physical);
 }
 
-static inline page_table_t *get_page_table(page_table_t *pg, uint16_t index) {
-    page_table_entry_t entry = pg->pages[index];
+/**
+ * Creates a new page table and maps it to the specified physical address.
+ *
+ * @param physical The physical address to map the new page table to.
+ * @return A pointer to the newly created page table, or NULL on failure.
+ */
+static page_table_t *page_table_create(physaddr_t *physical_out)
+{
+    physaddr_t physical = (physaddr_t)frame_alloc(0, 0);
 
-    return phys_to_virt((entry & PTE_ADDR_MASK));
-}
+    if (physical == 0)
+        return NULL;
 
-void *page_map(void *virt, void *phys, unsigned int flags) {
-    const uintptr_t virt_page = (uintptr_t)virt & ~(PAGE_SIZE - 1);
-
-    const uint16_t p4_index = get_entry_index(virt_page, P4_INDEX_SHIFT);
-	const uint16_t p3_index = get_entry_index(virt_page, P3_INDEX_SHIFT);
-	const uint16_t p2_index = get_entry_index(virt_page, P2_INDEX_SHIFT);
-	const uint16_t p1_index = get_entry_index(virt_page, P1_INDEX_SHIFT);
-
-    kprintf("Indexes: %u, %u, %u, %u\n", p4_index, p3_index, p2_index, p1_index);
-
-    page_table_entry_t entry3 = page_table_l4.pages[p4_index];
-
-    kprintf("Entry 3: 0x%p\n", entry3);
-
-    // page_table_t *page_table_l3 = get_page_table(&page_table_l4, p4_index);
-    // page_table_t *page_table_l2 = get_page_table(page_table_l3, p3_index);
-    // page_table_t *page_table_l1 = get_page_table(page_table_l2, p2_index);
-
-    // kprintf("P1 Table Address: 0x%p\n", page_table_l1);
-
-    if((entry3 & 0b1) == 0) {
-        kprintf("P3 NOT PRESENT\n");
+    page_table_t *table = phys_to_kern(physical);
+    if (table == NULL)
+    {
+        frame_free((void *)physical, 0);
+        return NULL;
     }
 
-    page_table_t *page_table_l3_fake = phys_to_virt((entry3 & PTE_ADDR_MASK));
-    kprintf("P3 Fake Table Address: 0x%p\n", page_table_l3_fake);
-    kprintf("P3 Real Table Address: 0x%p\n", &page_table_l3);
+    memset(table, 0, PAGE_SIZE);
 
-    page_table_entry_t entry2 = page_table_l3_fake->pages[p3_index];
-
-    kprintf("Entry 2: 0x%p\n", entry2);
-
-    if((entry2 & 0b1) == 0) {
-        kprintf("P2 NOT PRESENT\n");
-    }
-
-    page_table_t *page_table_l2 = phys_to_virt((entry2 & PTE_ADDR_MASK));
-    kprintf("P2 Table Address: 0x%p\n", page_table_l2);
-
-    page_table_entry_t entry1 = page_table_l2->pages[p2_index];
-    kprintf("Entry 1: 0x%p\n", entry1);
-
-    if((entry1 & 0b1) == 0) {
-        kprintf("P1 NOT PRESENT\n");
-    }
-
-    // page_table_t *page_table_l1 = phys_to_virt((entry1 & PTE_ADDR_MASK));
-    // kprintf("P1 Table Address: 0x%p\n", page_table_l1);
-
-    // page_table_entry_t entry0 = page_table_l1->pages[p1_index];
-    // kprintf("Entry 0: 0x%p\n", entry1);
-
-    // if((entry0 & 0b1) == 0) {
-    //     kprintf("P0 NOT PRESENT\n");
-    // }
-
-    // pte_t entry = pgtab->pages[index];
-	// if ((entry & PAGE_PRESENT) == 0)
-	// 	return NULL;
-	// return phys_to_virt((entry & PTE_ADDR_MASK));
-
-    return virt;
+    *physical_out = physical;
+    return table;
 }
 
-void page_fault_handler(isr_context_t *regs) {
-    uintptr_t virt;
-    fault_address_get(virt);
+/**
+ * Retrieves the next level page table from the given parent page table at the specified index.
+ * If the next level page table does not exist, it will be created and mapped with the provided flags.
+ *
+ * @param parent The parent page table.
+ * @param index The index of the entry in the parent page table.
+ * @param flags The flags to use when creating a new page table if necessary.
+ * @return A pointer to the next level page table, or NULL on failure.
+ */
+static page_table_t *page_table_next(page_table_t *parent, uint16_t index, uint64_t flags)
+{
+    page_table_entry_t entry = parent->pages[index];
 
-    kprintf("Address: %p\n", virt);
+    if ((entry & PAGE_TABLE_ENTRY_PRESENT) != 0)
+    {
+        if ((entry & PAGE_TABLE_ENTRY_PAGE_SIZE) != 0)
+        {
+            return NULL;
+        }
 
-    // TODO: Check permissions
+        return page_table_from_entry(entry);
+    }
 
-    page_map(virt, 0, 0);
+    physaddr_t physical;
+    page_table_t *child = page_table_create(&physical);
 
-    panic("PANIC ERROR: %p\n", (regs->info & 0xFFFFFFFF));
+    if (child == NULL)
+        return NULL;
+
+    uint64_t table_flags = PAGE_TABLE_ENTRY_PRESENT | PAGE_TABLE_ENTRY_WRITE;
+
+    if ((flags & PAGE_TABLE_ENTRY_USER) != 0)
+        table_flags |= PAGE_TABLE_ENTRY_USER;
+
+    parent->pages[index] = physical | table_flags;
+
+    return child;
 }
 
-void paging_init() {
+int page_map(page_table_t *root, uintptr_t virtual_address, physaddr_t physical_address, unsigned int flags)
+{
+    if (root == NULL)
+        return -1;
+
+    if ((virtual_address & (PAGE_SIZE - 1)) != 0)
+        return -1;
+
+    if ((physical_address & (PAGE_SIZE - 1)) != 0)
+        return -1;
+
+    const uint16_t p4_index = PAGE_ENTRY_INDEX(virtual_address, P4_INDEX_SHIFT);
+    const uint16_t p3_index = PAGE_ENTRY_INDEX(virtual_address, P3_INDEX_SHIFT);
+    const uint16_t p2_index = PAGE_ENTRY_INDEX(virtual_address, P2_INDEX_SHIFT);
+    const uint16_t p1_index = PAGE_ENTRY_INDEX(virtual_address, P1_INDEX_SHIFT);
+
+    page_table_t *page_table_l3 = page_table_next(root, p4_index, flags);
+
+    if (page_table_l3 == NULL)
+        return -1;
+
+    page_table_t *page_table_l2 = page_table_next(page_table_l3, p3_index, flags);
+
+    if (page_table_l2 == NULL)
+        return -1;
+
+    page_table_t *page_table_l1 = page_table_next(page_table_l2, p2_index, flags);
+
+    if (page_table_l1 == NULL)
+        return -1;
+
+    if ((page_table_l1->pages[p1_index] & PAGE_TABLE_ENTRY_PRESENT) != 0)
+        return -1;
+
+    page_table_l1->pages[p1_index] = (physical_address & PAGE_ADDRESS_MASK) | PAGE_TABLE_ENTRY_PRESENT | flags;
+
+    __asm__ volatile("invlpg (%0)" ::"r"(virtual_address) : "memory");
+
+    return 0;
+}
+
+int page_unmap(page_table_t *root, uintptr_t virtual_address)
+{
+    if (root == NULL)
+        return -1;
+
+    if ((virtual_address & (PAGE_SIZE - 1)) != 0)
+        return -1;
+
+    const uint16_t p4_index = PAGE_ENTRY_INDEX(virtual_address, P4_INDEX_SHIFT);
+    const uint16_t p3_index = PAGE_ENTRY_INDEX(virtual_address, P3_INDEX_SHIFT);
+    const uint16_t p2_index = PAGE_ENTRY_INDEX(virtual_address, P2_INDEX_SHIFT);
+    const uint16_t p1_index = PAGE_ENTRY_INDEX(virtual_address, P1_INDEX_SHIFT);
+
+    page_table_entry_t entry4 = root->pages[p4_index];
+    if ((entry4 & PAGE_TABLE_ENTRY_PRESENT) == 0 ||
+        (entry4 & PAGE_TABLE_ENTRY_PAGE_SIZE) != 0)
+        return -1;
+
+    page_table_t *page_table_l3 = page_table_from_entry(entry4);
+    page_table_entry_t entry3 = page_table_l3->pages[p3_index];
+    if ((entry3 & PAGE_TABLE_ENTRY_PRESENT) == 0 ||
+        (entry3 & PAGE_TABLE_ENTRY_PAGE_SIZE) != 0)
+        return -1;
+
+    page_table_t *page_table_l2 = page_table_from_entry(entry3);
+    page_table_entry_t entry2 = page_table_l2->pages[p2_index];
+    if ((entry2 & PAGE_TABLE_ENTRY_PRESENT) == 0 ||
+        (entry2 & PAGE_TABLE_ENTRY_PAGE_SIZE) != 0)
+        return -1;
+
+    page_table_t *page_table_l1 = page_table_from_entry(entry2);
+    if ((page_table_l1->pages[p1_index] & PAGE_TABLE_ENTRY_PRESENT) == 0)
+        return -1;
+
+    page_table_l1->pages[p1_index] = 0;
+
+    __asm__ __volatile__("invlpg (%0)" ::"r"(virtual_address) : "memory");
+
+    return 0;
+}
+
+void page_fault_handler(isr_context_t *regs)
+{
+    uintptr_t virtual_address;
+    fault_address_get(virtual_address);
+
+    panic("Page fault at address: %p, error: %p", virtual_address, regs->info & 0xFFFFFFFF);
+}
+
+void paging_init()
+{
     isr_info_t page_fault_info = {
-        .type = ISR_IRQ,
+        .type = ISR_EXCEPTION,
         .handler = page_fault_handler,
     };
 
