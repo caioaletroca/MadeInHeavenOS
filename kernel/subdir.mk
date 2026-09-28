@@ -3,4 +3,4 @@ kprintf.c \
 kmalloc.c \
 kmain.c
 
-dirs += arch/$(ARCH) cpu driver mm sys
+dirs += arch/$(ARCH) cpu driver mm sys selftest
