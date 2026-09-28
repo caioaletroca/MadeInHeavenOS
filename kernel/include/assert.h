@@ -3,6 +3,9 @@
 
 #include <panic.h>
 
+/**
+ * Asserts that the given condition is true. If the condition is false, the kernel will panic with an error message.
+ */
 #define KASSERT(condition)                                                                     \
     do                                                                                         \
     {                                                                                          \

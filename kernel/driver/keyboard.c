@@ -42,8 +42,6 @@ void ps2_keyboard_irq_handler(isr_context_t *regs) {
 }
 
 void ps2_keyboard_init() {
-
-
     isr_info_t ps2_keyboard_info = {
         .type = ISR_IRQ,
         .handler = ps2_keyboard_irq_handler,

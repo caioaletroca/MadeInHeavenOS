@@ -12,6 +12,12 @@ typedef unsigned short          multiboot_uint16_t;
 typedef unsigned int            multiboot_uint32_t;
 typedef unsigned long long      multiboot_uint64_t;
 
+// Multiboot Tags Types
+#define MULTIBOOT_TAG_ALIGN 8
+#define MULTIBOOT_TAG_END   0
+#define MULTIBOOT_TAG_MMAP  6
+
+// Multiboot Memory Types
 #define MULTIBOOT_MEMORY_AVAILABLE           1
 #define MULTIBOOT_MEMORY_RESERVED            2
 #define MULTIBOOT_MEMORY_ACPI_RECLAIMABLE    3
