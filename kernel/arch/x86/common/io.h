@@ -3,9 +3,11 @@
 
 #include <stdint.h>
 
-#define out_asm(port, value) __asm__ __volatile__ ("out %%al, %%dx" : : "a" (value), "Nd" (port))
+// #define out_asm(port, value) __asm__ __volatile__ ("out %%al, %%dx" : : "a" (value), "Nd" (port))
+#define out_asm(port, value) __asm__ __volatile__ ("out %b0, %w1" : : "a" (value), "Nd" (port))
 
-#define in_asm(port, value) __asm__ __volatile__ ("in %%dx, %%al" : "=a" (value) : "Nd" (port))
+#define in_asm(port, value) __asm__ __volatile__ ("in %w1, %b0" : "=a" (value) : "Nd" (port))
+// #define in_asm(port, value) __asm__ __volatile__ ("in %%dx, %%al" : "=a" (value) : "Nd" (port))
 
 /**
  * @brief Write on byte to an output port

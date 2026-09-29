@@ -1,4 +1,6 @@
+ARCH_FAMILY := x86
 ARCH := x86_64
+PLATFORM := pc
 
 libc := ../libc/build/$(ARCH)/libc.a
 libk := ../libc/build/$(ARCH)/libk.a
@@ -19,7 +21,7 @@ CFLAGS := -O2 -g -std=gnu11 -mcmodel=kernel -mno-red-zone -mno-ms-bitfields -Wal
 # CFLAGS		+= -Wall -Werror -Wextra -Wparentheses -Wmissing-declarations -Wunreachable-code -Wunused 
 # CFLAGS		+= -Wmissing-field-initializers -Wmissing-prototypes -Wpointer-arith -Wswitch-enum
 # CFLAGS		+= -Wredundant-decls -Wshadow -Wstrict-prototypes -Wswitch-default -Wuninitialized
-CPPFLAGS = -Iinclude --sysroot=$(SYSROOT_DIR) -isystem $(INCLUDE_DIR)
+CPPFLAGS = -Iinclude -Iarch/$(ARCH_FAMILY)/common -Iarch/$(ARCH_FAMILY)/$(ARCH) -Iplatform/$(PLATFORM) --sysroot=$(SYSROOT_DIR) -isystem $(INCLUDE_DIR)
 ASFLAGS := -f elf64
 LDFLAGS = -fno-PIC --sysroot=$(SYSROOT_DIR) -L$(LIB_DIR)
 LDFLAGS_EXTRA := -nostdlib -lk -lgcc
@@ -28,7 +30,10 @@ LDFLAGS_EXTRA := -nostdlib -lk -lgcc
 # Folders and paths
 BINARY_DIR := build/$(ARCH)
 SOURCE_DIR := .
-ARCH_DIR := $(SOURCE_DIR)/arch/${ARCH}
+ARCH_FAMILY_DIR := $(SOURCE_DIR)/arch/$(ARCH_FAMILY)
+ARCH_COMMON_DIR := $(ARCH_FAMILY_DIR)/common
+ARCH_DIR := $(ARCH_FAMILY_DIR)/$(ARCH)
+PLATFORM_DIR := $(SOURCE_DIR)/platform/$(PLATFORM)
 SYSROOT_DIR := /root/env/sysroot
 USR_DIR := $(SYSROOT_DIR)/usr
 INCLUDE_DIR := $(USR_DIR)/include

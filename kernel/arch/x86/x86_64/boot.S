@@ -284,6 +284,8 @@ page_table_l3:
 	.space PAGE_SIZE
 page_table_l2:
 	.space PAGE_SIZE
+# page_table_l1:
+# 	.space PAGE_SIZE
 stack_bottom:
 	.space PAGE_SIZE * 4
 stack_top:

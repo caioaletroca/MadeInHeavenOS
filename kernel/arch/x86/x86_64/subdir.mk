@@ -7,11 +7,7 @@ boot_utils.S \
 crti.S \
 crtn.S \
 header.S \
-vga.c \
 screen.c \
 isr_stubs.S \
 isr.c \
-idt.c \
-pic.c \
-pit.c \
-ps2.c
+idt.c

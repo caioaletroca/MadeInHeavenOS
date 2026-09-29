@@ -2,7 +2,7 @@ include ../common.mk
 
 ###########################################
 # Folders and Flags
-ARCH_BINARY_DIR := $(BINARY_DIR)/arch/$(ARCH)
+ARCH_BINARY_DIR := $(BINARY_DIR)/arch/$(ARCH_FAMILY)/$(ARCH)
 CPPFLAGS += -D__is_kernel
 
 ###########################################
