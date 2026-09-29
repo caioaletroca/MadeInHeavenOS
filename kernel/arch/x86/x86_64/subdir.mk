@@ -7,7 +7,7 @@ boot_utils.S \
 crti.S \
 crtn.S \
 header.S \
-screen.c \
 isr_stubs.S \
+context_switch.S \
 isr.c \
 idt.c
