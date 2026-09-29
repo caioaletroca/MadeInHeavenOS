@@ -1,3 +1,3 @@
 local_sources := \
-mm.c \
+thread.c \
 scheduler.c
