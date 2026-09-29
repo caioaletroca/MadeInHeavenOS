@@ -13,4 +13,5 @@ isr_stubs.S \
 isr.c \
 idt.c \
 pic.c \
+pit.c \
 ps2.c

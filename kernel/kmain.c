@@ -6,6 +6,7 @@
 #include <mm/frame.h>
 #include "idt.h"
 #include "driver/ps2.h"
+#include "driver/timer.h"
 #include "selftest/mm.h"
 
 /**
@@ -22,6 +23,7 @@ void kmain(physaddr_t address)
     interrupts_init();
 
     ps2_init();
+    timer_init(100);
 
     enable_interrupts();
 
@@ -34,8 +36,18 @@ void kmain(physaddr_t address)
     // Magic breakpoint
     __asm__ __volatile__("xchgw %bx, %bx");
 
+    uint64_t last_seconds = 0;
+
     while (1)
     {
         __asm__ __volatile__("hlt");
+
+        uint64_t seconds = timer_ticks() / 100;
+
+        if (seconds != last_seconds)
+        {
+            last_seconds = seconds;
+            kprintf("Timer: %u seconds\n", seconds);
+        }
     }
 }
