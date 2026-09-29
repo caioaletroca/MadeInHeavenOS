@@ -1,19 +1,19 @@
-ARCH_FAMILY := x86
-ARCH := x86_64
-PLATFORM := pc
+ARCH_FAMILY ?= x86
+ARCH ?= x86_64
+PLATFORM ?= pc
+HOST ?= x86_64-mihos
 
-libc := ../libc/build/$(ARCH)/libc.a
-libk := ../libc/build/$(ARCH)/libk.a
+BUILD_ID := $(HOST)/$(ARCH)-$(PLATFORM)
+BINARY_DIR := build/$(BUILD_ID)
+
+libc := ../libc/$(BINARY_DIR)/libc.a
+libk := ../libc/$(BINARY_DIR)/libk.a
 
 #####################################################################
 # Common Programs and Flags
-DEFAULT_HOST := x86_64-mihos
-
-HOST := ${DEFAULT_HOST}
-
-CC := ${HOST}-gcc
-AR := ${HOST}-ar
-AS := ${HOST}-as
+CC := $(HOST)-gcc
+AR := $(HOST)-ar
+OBJDUMP ?= $(HOST)-objdump
 RM := rm -rf
 
 CFLAGS := -O2 -g -std=gnu11 -mcmodel=kernel -mno-red-zone -mno-ms-bitfields -Wall -Wextra
@@ -22,19 +22,18 @@ CFLAGS := -O2 -g -std=gnu11 -mcmodel=kernel -mno-red-zone -mno-ms-bitfields -Wal
 # CFLAGS		+= -Wmissing-field-initializers -Wmissing-prototypes -Wpointer-arith -Wswitch-enum
 # CFLAGS		+= -Wredundant-decls -Wshadow -Wstrict-prototypes -Wswitch-default -Wuninitialized
 CPPFLAGS = -Iinclude -Iarch/$(ARCH_FAMILY)/common -Iarch/$(ARCH_FAMILY)/$(ARCH) -Iplatform/$(PLATFORM) --sysroot=$(SYSROOT_DIR) -isystem $(INCLUDE_DIR)
-ASFLAGS := -f elf64
 LDFLAGS = -fno-PIC --sysroot=$(SYSROOT_DIR) -L$(LIB_DIR)
 LDFLAGS_EXTRA := -nostdlib -lk -lgcc
 
 #####################################################################
 # Folders and paths
-BINARY_DIR := build/$(ARCH)
 SOURCE_DIR := .
+PROJECT_ROOT ?= $(abspath ..)
 ARCH_FAMILY_DIR := $(SOURCE_DIR)/arch/$(ARCH_FAMILY)
 ARCH_COMMON_DIR := $(ARCH_FAMILY_DIR)/common
 ARCH_DIR := $(ARCH_FAMILY_DIR)/$(ARCH)
 PLATFORM_DIR := $(SOURCE_DIR)/platform/$(PLATFORM)
-SYSROOT_DIR := /root/env/sysroot
+SYSROOT_DIR ?= $(PROJECT_ROOT)/sysroot
 USR_DIR := $(SYSROOT_DIR)/usr
 INCLUDE_DIR := $(USR_DIR)/include
 BOOT_DIR := $(USR_DIR)/boot
@@ -45,7 +44,6 @@ LIB_DIR := $(USR_DIR)/lib
 src_to_bin_dir = $(patsubst $(SOURCE_DIR)%,$(BINARY_DIR)%,$1)
 
 define include_dir
-$(shell mkdir -p $(call src_to_bin_dir,$1))
 dirs :=
 local_sources :=
 include $1/subdir.mk
@@ -61,10 +59,18 @@ depends = $(patsubst %.o,%.d,$(objects))
 # Makefile template declarations
 $(eval $(call include_dir,$(SOURCE_DIR)))
 
-.PHONY: all clean purge
-.SUFFIXES: .o .c .asm
+.PHONY: all clean purge print-config
+.SUFFIXES: .o .c .S
 
 all:
+
+print-config:
+	@echo ARCH_FAMILY=$(ARCH_FAMILY)
+	@echo ARCH=$(ARCH)
+	@echo PLATFORM=$(PLATFORM)
+	@echo HOST=$(HOST)
+	@echo BINARY_DIR=$(BINARY_DIR)
+	@echo SYSROOT_DIR=$(SYSROOT_DIR)
 
 clean:
 	$(RM) $(BINARY_DIR)
@@ -73,13 +79,9 @@ purge:
 	$(RM) build
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.c
-	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
+	mkdir -p $(@D)
+	$(CC) -MMD -MP -c $< -o $@ $(CPPFLAGS) $(CFLAGS)
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.S
-	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
-
-%.o: %.c
-	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
-
-$(BINARY_DIR)/%: $(SOURCE_DIR)/%.c
-	@echo $^
+	mkdir -p $(@D)
+	$(CC) -MMD -MP -c $< -o $@ $(CPPFLAGS) $(CFLAGS)

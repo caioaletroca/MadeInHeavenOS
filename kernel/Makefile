@@ -9,6 +9,8 @@ CPPFLAGS += -D__is_kernel
 
 kernel := $(BINARY_DIR)/kernel
 
+.PHONY: all install install-headers install-kernel
+
 all: install
 
 install: install-headers install-kernel
@@ -26,24 +28,27 @@ $(ARCH_BINARY_DIR)/crtbegin.o \
 $(ARCH_BINARY_DIR)/crtend.o \
 
 LINK_LIST=\
-$(libk) \
-$(objects) \
 $(ARCH_BINARY_DIR)/crtbegin.o \
+$(objects) \
+$(libk) \
 $(LDFLAGS_EXTRA) \
 $(ARCH_BINARY_DIR)/crtend.o \
 
 $(kernel): $(GCC_GENERATED_OBJS) $(objects) $(libk) $(ARCH_BINARY_DIR)/linker.lds.i
+	mkdir -p $(@D)
 	$(CC) -n -T $(ARCH_BINARY_DIR)/linker.lds.i -o $@ $(CFLAGS) $(LDFLAGS) $(LINK_LIST)
 
 $(ARCH_BINARY_DIR)/linker.lds.i: $(ARCH_DIR)/linker.lds
-	$(CC) -E -P -x c $(CPPFLAGS) $(ARCH_DIR)/linker.lds -o $(ARCH_BINARY_DIR)/linker.lds.i
+	mkdir -p $(@D)
+	$(CC) -E -P -x c $(CPPFLAGS) $(ARCH_DIR)/linker.lds -o $@
 
 $(ARCH_BINARY_DIR)/crtbegin.o $(ARCH_BINARY_DIR)/crtend.o:
+	mkdir -p $(@D)
 	OBJ=`$(CC) $(CFLAGS) $(LDFLAGS) -print-file-name=$(@F)` && cp "$$OBJ" $@
 
 -include $(GCC_GENERATED_OBJS:.o=.d)
 
-ifneq ($(MAKECMDGOALS),clean)
+ifeq ($(filter clean purge,$(MAKECMDGOALS)),)
 ifneq ($(strip $(depends)),)
 -include $(depends)
 endif
