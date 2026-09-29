@@ -1,14 +1,17 @@
 #include <driver/timer.h>
 #include "io.h"
 
+// Programmable Interval Timer (PIT) driver for the PC platform
 #define PIT_COMMAND 0x43
 #define PIT_CHANNEL0 0x40
 
+// PIT operating modes
 #define PIT_MODE0 0x30
 #define PIT_MODE1 0x30
 #define PIT_MODE2 0x34
 #define PIT_MODE3 0x36
 
+// PIT base frequency in Hz
 #define PIT_FREQUENCY 1193182
 
 void pit_set_frequency(uint32_t frequency)
