@@ -3,6 +3,14 @@ ARCH ?= x86_64
 PLATFORM ?= pc
 HOST ?= x86_64-mihos
 
+# Per-arch toolchain flags. Resolved relative to this file, so it works
+# from every subproject (libc/, kernel/, grub/). Must stay before any include.
+ARCH_CONFIG := $(dir $(lastword $(MAKEFILE_LIST)))config/$(ARCH).mk
+ifeq ($(wildcard $(ARCH_CONFIG)),)
+$(error Unsupported ARCH '$(ARCH)': missing $(ARCH_CONFIG))
+endif
+include $(ARCH_CONFIG)
+
 BUILD_ID := $(HOST)/$(ARCH)-$(PLATFORM)
 BINARY_DIR := build/$(BUILD_ID)
 
@@ -16,7 +24,7 @@ AR := $(HOST)-ar
 OBJDUMP ?= $(HOST)-objdump
 RM := rm -rf
 
-CFLAGS := -O2 -g -std=gnu11 -mcmodel=kernel -mno-red-zone -mno-ms-bitfields -Wall -Wextra
+CFLAGS := -O2 -g -std=gnu11 -Wall -Wextra $(ARCH_CFLAGS)
 # CFLAGS		+= -ffreestanding -mno-red-zone -Iinclude  -Wpacked -Wpadded
 # CFLAGS		+= -Wall -Werror -Wextra -Wparentheses -Wmissing-declarations -Wunreachable-code -Wunused 
 # CFLAGS		+= -Wmissing-field-initializers -Wmissing-prototypes -Wpointer-arith -Wswitch-enum
