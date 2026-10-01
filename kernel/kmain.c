@@ -9,20 +9,22 @@
 #include <driver/timer.h>
 #include <sched/thread.h>
 #include <sched/scheduler.h>
+#include <boot_info.h>
 
 #include "selftest/mm.h"
 #include "selftest/scheduler.h"
 
 static thread_t boot_thread;
+static boot_info_t boot_info;
 
 /**
  * Kernel main entry point.
  *
- * @param address Physical address of the multiboot information structure.
+ * @param boot_handoff The boot handoff information passed to the kernel.
  */
-void kmain(physaddr_t address)
+void kmain(uintptr_t boot_handoff)
 {
-    struct multiboot_info *info = (struct multiboot_info *)phys_to_kern(address);
+    platform_boot_info_init(boot_handoff, &boot_info);
 
     kprintf("MiHOS\n");
 
@@ -30,7 +32,7 @@ void kmain(physaddr_t address)
 
     platform_init();
 
-    mmap_init(info);
+    mmap_init(&boot_info);
 
     scheduler_init(&boot_thread);
 

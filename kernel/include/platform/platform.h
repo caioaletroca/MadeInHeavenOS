@@ -2,10 +2,18 @@
 #define _PLATFORM_PLATFORM_H_
 
 #include <stdint.h>
+#include <boot_info.h>
 
-/*
- * Platform contract: every board under kernel/platform/ implements this.
+/**
+ * @brief Translate the bootloader handoff into a boot_info_t.
+ *
+ * @param handoff Value passed by the arch entry code to kmain (on PC: the
+ *                physical address of the Multiboot2 information structure).
+ * @param info    Output structure, fully overwritten.
+ *
+ * @note Runs first in kmain, before any other initialization.
  */
+void platform_boot_info_init(uintptr_t handoff, boot_info_t *boot_info);
 
 /**
  * @brief Initialize the interrupt controller and on-board devices.
