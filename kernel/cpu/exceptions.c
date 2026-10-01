@@ -34,30 +34,34 @@ static const char *const exception_messages[32] = {
     "Hypervisor Injection",
     "VMM Communication",
     "Security",
-    "(Reserved exception 31)"
-};
+    "(Reserved exception 31)"};
 
 // TODO: For now, panic in all exceptions
-static void exception_handler(isr_context_t *regs) {
+static void exception_handler(isr_context_t *regs)
+{
     uint8_t int_no = (uint8_t)(regs->info >> 32) & 0xFF;
-    
-    if(int_no < 32) {
+
+    if (int_no < 32)
+    {
         panic(
             "Exception: %s\n"
             "\trip: %p, rsp: %p\n"
             "\tint_no: %u, err_code: %u",
             exception_messages[int_no],
-            (void *)regs->rip, (void *)regs->rsp,
-            int_no, (regs->info & 0xFFFFFFFF)
-        );
+            (void *)regs->rip,
+            (void *)regs->rsp,
+            int_no, (regs->info & 0xFFFFFFFF));
     }
-    else {
+    else
+    {
         kprintf("IRQ: %u\n", int_no);
     }
 }
 
-void exception_init() {
-    for(uint8_t i = 0; i < 32; i++) {
+void exception_init()
+{
+    for (uint8_t i = 0; i < 32; i++)
+    {
         isr_info_t info = {
             .type = ISR_EXCEPTION,
             .handler = exception_handler,

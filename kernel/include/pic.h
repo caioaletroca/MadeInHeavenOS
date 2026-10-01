@@ -2,6 +2,7 @@
 #define _ARCH_X86_64_PIC_H_
 
 #include <stdint.h>
+#include <vectors.h>
 
 #define PIC1 0x20 /* IO base address for master PIC */
 #define PIC2 0xA0 /* IO base address for slave PIC */
@@ -22,7 +23,7 @@
 #define ICW4_BUF_MASTER 0x0C /* Buffered mode/master */
 #define ICW4_SFNM 0x10       /* Special fully nested (not) */
 
-#define PIC1_VECTOR_OFFSET 0x20
+#define PIC1_VECTOR_OFFSET VECTOR_IRQ_BASE
 #define PIC2_VECTOR_OFFSET 0x28
 
 /**

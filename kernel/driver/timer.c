@@ -1,11 +1,14 @@
-#include "isr.h"
 #include <driver/timer.h>
+#include <sched/scheduler.h>
+#include "isr.h"
 
 static volatile uint64_t ticks;
 
 static void timer_irq_handler(isr_context_t *context)
 {
+    (void)context;
     ticks++;
+    scheduler_tick();
 }
 
 void timer_init(uint32_t frequency)

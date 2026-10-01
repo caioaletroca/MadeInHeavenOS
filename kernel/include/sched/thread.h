@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/list.h>
+#include "idt.h"
 
 typedef void (*thread_entry_t)(void);
 
@@ -43,6 +44,11 @@ typedef struct thread
  * @return 0 on success, or a negative error code on failure.
  */
 int thread_init(thread_t *thread, void *stack, size_t stack_size, thread_entry_t entry);
+
+/**
+ * @brief Start the execution of the current thread. This function should never return.
+ */
+void thread_start(void);
 
 __attribute__((noreturn)) void thread_exit(void);
 

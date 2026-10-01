@@ -8,6 +8,6 @@ crti.S \
 crtn.S \
 header.S \
 isr_stubs.S \
-context_switch.S \
+thread_entry.S \
 isr.c \
 idt.c

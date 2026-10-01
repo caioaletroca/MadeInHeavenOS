@@ -13,6 +13,8 @@
 #include "selftest/mm.h"
 #include "selftest/scheduler.h"
 
+static thread_t boot_thread;
+
 /**
  * Kernel main entry point.
  *
@@ -27,11 +29,14 @@ void kmain(physaddr_t address)
     interrupts_init();
 
     ps2_init();
+
+    mmap_init(info);
+
+    scheduler_init(&boot_thread);
+
     timer_init(100);
 
     enable_interrupts();
-
-    mmap_init(info);
 
     paging_init();
 

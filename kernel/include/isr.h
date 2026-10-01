@@ -7,16 +7,22 @@
 
 typedef struct isr_context
 {
-    // Register pushed by implementation
+    // Pushed by isr_common (last push = lowest address = first field)
     uint64_t rax;
-    uint64_t rdi;
-    uint64_t rsi;
-    uint64_t rdx;
+    uint64_t rbx;
     uint64_t rcx;
+    uint64_t rdx;
+    uint64_t rsi;
+    uint64_t rdi;
+    uint64_t rbp;
     uint64_t r8;
     uint64_t r9;
     uint64_t r10;
     uint64_t r11;
+    uint64_t r12;
+    uint64_t r13;
+    uint64_t r14;
+    uint64_t r15;
 
     // Information pushed by isr implementations
     // First 8 low bytes is error code
@@ -56,6 +62,11 @@ typedef struct
  */
 void isr_set_info(uint8_t vector, isr_info_t *info);
 
-void isr_handler(isr_context_t *regs);
+/**
+ * @brief Common ISR handler called by assembly stubs
+ * @param ctx Pointer to the ISR context
+ * @return Pointer to the ISR context
+ */
+isr_context_t *isr_handler(isr_context_t *ctx);
 
 #endif

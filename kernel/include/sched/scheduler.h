@@ -2,16 +2,15 @@
 #define _SCHEDULER_H_
 
 #include <sched/thread.h>
+#include <vectors.h>
+#include "isr.h"
+
+#define SCHEDULER_YIELD_VECTOR VECTOR_SCHEDULER_YIELD
 
 /**
- * @brief Perform a context switch between two threads.
- *
- * @param previous_stack_pointer Pointer to the stack pointer of the currently running thread.
- * @param next_stack_pointer Pointer to the stack pointer of the thread to switch to.
- *
- * @note This function does not return to the previous thread until it is switched back to.
+ * @brief Trigger a scheduler tick, indicating that the current thread's time slice has expired.
  */
-void context_switch(uintptr_t *previous_stack_pointer, uintptr_t next_stack_pointer);
+void scheduler_tick(void);
 
 /**
  * @brief Initialize the scheduler with the boot thread.
@@ -31,6 +30,15 @@ void scheduler_init(thread_t *boot_thread);
  * @return 0 on success, or a negative error code on failure.
  */
 int scheduler_add(thread_t *thread);
+
+/**
+ * @brief Handle scheduler-related tasks during an interrupt.
+ *
+ * @param context Pointer to the ISR context of the interrupt.
+ *
+ * @return Pointer to the ISR context after handling the interrupt.
+ */
+isr_context_t *scheduler_on_interrupt(isr_context_t *context);
 
 /**
  * @brief Yield the CPU to the next thread in the scheduler's run queue.
