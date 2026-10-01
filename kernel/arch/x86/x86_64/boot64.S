@@ -14,7 +14,7 @@
 
 .code64
 
-#include "memory.h"
+#include <asm/memory.h>
 
 .section .text
 .type boot64, @function

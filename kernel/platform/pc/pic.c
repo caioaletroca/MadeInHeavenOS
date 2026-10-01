@@ -1,5 +1,5 @@
 #include "pic.h"
-#include "io.h"
+#include <x86/io.h>
 
 void pic_disable(void)
 {

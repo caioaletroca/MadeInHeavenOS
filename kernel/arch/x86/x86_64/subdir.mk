@@ -9,5 +9,9 @@ crtn.S \
 header.S \
 isr_stubs.S \
 thread_entry.S \
+arch.c \
+context.c \
+exceptions.c \
+paging.c \
 isr.c \
 idt.c

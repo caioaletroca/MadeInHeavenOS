@@ -1,6 +1,5 @@
-#include "idt.h"
-#include "io.h"
-#include <kprintf.h>
+#include <x86/gdt.h>
+#include <x86/idt.h>
 
 #define ISR_NAME(index) isr_##index
 
@@ -30,14 +29,6 @@ __attribute__((aligned(16))) static idt_entry_t idt_entries[IDT_ENTRIES];
 void idt_load()
 {
 	__asm__ __volatile__("lidt %0" : : "m"(idt_reg));
-}
-
-/**
- * @brief Enable CPU interrupts
- */
-void enable_interrupts()
-{
-	__asm__ __volatile__("sti");
 }
 
 /**

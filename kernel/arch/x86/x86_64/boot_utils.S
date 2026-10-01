@@ -5,7 +5,7 @@
 .globl sse_error_message
 .code32
 
-#include "memory.h"
+#include <asm/memory.h>
 #define VGA_MEMORY	0xB8000
 
 .section .text

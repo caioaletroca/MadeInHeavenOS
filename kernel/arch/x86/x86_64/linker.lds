@@ -1,4 +1,4 @@
-#include "memory.h"
+#include <asm/memory.h>
 
 ENTRY(_start)
 OUTPUT_FORMAT(elf64-x86-64)

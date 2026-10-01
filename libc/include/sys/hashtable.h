@@ -71,7 +71,7 @@ static inline unsigned long hash_64(long key) {
  * @param table     Hash table double pointer
 */
 static inline void hash_table_init(hash_table_t **table) {
-    memset(table, 0, sizeof(hash_table_t));
+    memset(table, 0, sizeof(hash_table_t) * 32);
 }
 
 /**
@@ -115,7 +115,7 @@ static inline void hash_table_delete(hash_table_t *node) {
  * @param key       Key for the node
  * @return          The node found
 */
-static inline hash_table_t hash_table_lookup(hash_table_t * const *table, long long key) {
+static inline hash_table_t *hash_table_lookup(hash_table_t * const *table, long long key) {
     return table[hash(key)];
 }
 

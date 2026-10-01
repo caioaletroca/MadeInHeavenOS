@@ -1,6 +1,7 @@
 #include <sched/scheduler.h>
 #include <sys/list.h>
-#include <irq_flags.h>
+#include <arch/context.h>
+#include <asm/irq_flags.h>
 #include <panic.h>
 
 static volatile int scheduler_enabled = 0;
@@ -10,12 +11,6 @@ static list_t ready_queue;
 static thread_t *current_thread;
 
 // TODO: Implement Two-level thread scheduling like Linux/xv6.
-
-static void scheduler_yield_handler(isr_context_t *context)
-{
-    (void)context;
-    need_reschedule = 1;
-}
 
 /**
  * Get the next ready thread from the ready queue.
@@ -81,11 +76,6 @@ void scheduler_init(thread_t *boot_thread)
     current_thread->state = THREAD_RUNNING;
     list_init(&current_thread->run_link);
 
-    isr_info_t yield_info = {
-        .type = ISR_IRQ,
-        .handler = scheduler_yield_handler};
-    isr_set_info(SCHEDULER_YIELD_VECTOR, &yield_info);
-
     scheduler_enabled = 1;
 }
 
@@ -95,13 +85,13 @@ int scheduler_add(thread_t *thread)
         return -1;
 
     // Insert the thread into the ready queue.
-    uint64_t flags = irq_save();
+    irq_flags_t flags = irq_save();
     list_insert_before(&ready_queue, &thread->run_link);
     irq_restore(flags);
     return 0;
 }
 
-isr_context_t *scheduler_on_interrupt(isr_context_t *context)
+void *scheduler_on_interrupt(void *context)
 {
     need_reschedule = 0;
 
@@ -109,19 +99,24 @@ isr_context_t *scheduler_on_interrupt(isr_context_t *context)
         return context;
 
     // Save the current thread's context.
-    current_thread->stack_pointer = (uintptr_t)context;
+    current_thread->context = context;
 
     // Determine the next thread to run.
     thread_t *next_thread = scheduler_next_thread();
 
     // Return the context of the next thread to run.
-    return (isr_context_t *)next_thread->stack_pointer;
+    return next_thread->context;
+}
+
+void scheduler_request_reschedule(void)
+{
+    need_reschedule = 1;
 }
 
 void scheduler_tick(void)
 {
     if (scheduler_enabled)
-        need_reschedule = 1;
+        scheduler_request_reschedule();
 }
 
 int scheduler_need_reschedule(void)
@@ -131,8 +126,7 @@ int scheduler_need_reschedule(void)
 
 void scheduler_yield(void)
 {
-    // Trigger a software interrupt to yield the CPU to the scheduler.
-    __asm__ __volatile__("int %0" : : "i"(SCHEDULER_YIELD_VECTOR));
+    arch_yield();
 }
 
 thread_t *scheduler_current(void)

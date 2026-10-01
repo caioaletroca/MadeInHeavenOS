@@ -3,13 +3,6 @@
 
 #include <stdint.h>
 
-#define KERNEL_CODE_SELECTOR 0x08
-#define KERNEL_DATA_SELECTOR 0x10
-
-#define RFLAGS_RESERVED_BIT 0x0000000000000002ULL
-#define RFLAGS_INTERRUPT_ENABLE 0x0000000000000200ULL
-#define RFLAGS_INITIAL (RFLAGS_RESERVED_BIT | RFLAGS_INTERRUPT_ENABLE)
-
 #define IDT_ENTRIES 256
 
 // Gate attribute byte: P | DPL(2) | 0 | Type(4)
@@ -56,13 +49,8 @@ typedef struct
 void idt_init(void);
 
 /**
- * @brief Loads IDT structure and enable interrupts
+ * @brief Loads IDT structure
  */
 void idt_load(void);
-
-/**
- * @brief Enable interrupts
- */
-void enable_interrupts(void);
 
 #endif

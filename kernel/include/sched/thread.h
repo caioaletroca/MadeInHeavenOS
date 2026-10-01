@@ -4,7 +4,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/list.h>
-#include "idt.h"
 
 typedef void (*thread_entry_t)(void);
 
@@ -27,7 +26,7 @@ typedef struct thread
     uint32_t id;
     void *stack;
     size_t stack_size;
-    uintptr_t stack_pointer;
+    void *context; // Saved execution context (opaque, arch-defined)
     thread_entry_t entry;
     thread_state_t state;
     list_t run_link;

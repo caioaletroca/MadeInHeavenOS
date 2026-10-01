@@ -5,6 +5,18 @@ include ../common.mk
 ARCH_BINARY_DIR := $(BINARY_DIR)/arch/$(ARCH_FAMILY)/$(ARCH)
 CPPFLAGS += -D__is_kernel
 
+# Header visibility
+#   Every object:            include/ (generic + arch/platform contracts)
+#                            arch/<family>/include (<asm/...>, the arch public interface)
+#   arch/ and platform/ only: arch/<family>/common/include (<x86/...>, arch-private)
+# Generic code that includes an arch-private header fails to compile.
+ARCH_PUBLIC_INCLUDE := arch/$(ARCH_FAMILY)/include
+ARCH_PRIVATE_INCLUDE := arch/$(ARCH_FAMILY)/common/include
+
+CPPFLAGS += -I$(ARCH_PUBLIC_INCLUDE)
+
+$(BINARY_DIR)/arch/%.o $(BINARY_DIR)/platform/%.o: CPPFLAGS += -I$(ARCH_PRIVATE_INCLUDE)
+
 ###########################################
 
 kernel := $(BINARY_DIR)/kernel

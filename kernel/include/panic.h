@@ -4,11 +4,6 @@
 #include <kprintf.h>
 
 /**
- * Halts the system by disabling interrupts and executing the HLT instruction.
- */
-#define halt() __asm__ __volatile__("cli; hlt");
-
-/**
  * Prints a panic message and halts the system.
  *
  * @param fmt The format string for the panic message.

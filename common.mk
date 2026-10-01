@@ -21,7 +21,7 @@ CFLAGS := -O2 -g -std=gnu11 -mcmodel=kernel -mno-red-zone -mno-ms-bitfields -Wal
 # CFLAGS		+= -Wall -Werror -Wextra -Wparentheses -Wmissing-declarations -Wunreachable-code -Wunused 
 # CFLAGS		+= -Wmissing-field-initializers -Wmissing-prototypes -Wpointer-arith -Wswitch-enum
 # CFLAGS		+= -Wredundant-decls -Wshadow -Wstrict-prototypes -Wswitch-default -Wuninitialized
-CPPFLAGS = -Iinclude -Iarch/$(ARCH_FAMILY)/common -Iarch/$(ARCH_FAMILY)/$(ARCH) -Iplatform/$(PLATFORM) --sysroot=$(SYSROOT_DIR) -isystem $(INCLUDE_DIR)
+CPPFLAGS = -Iinclude --sysroot=$(SYSROOT_DIR) -isystem $(INCLUDE_DIR)
 LDFLAGS = -fno-PIC --sysroot=$(SYSROOT_DIR) -L$(LIB_DIR)
 LDFLAGS_EXTRA := -nostdlib -lk -lgcc
 

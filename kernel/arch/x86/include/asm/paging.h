@@ -1,14 +1,11 @@
 #ifndef _PAGING_H_
 #define _PAGING_H_
 
-#include <memory.h>
+#include <asm/memory.h>
 #include <addresses.h>
-#include <isr.h>
 
-/*
- * Memory page size
- */
-#define PAGE_SIZE 0x1000
+// TODO: Replace with an arch-neutral MMU contract (include/arch/mmu.h);
+// generic users still see x86 page tables and PTE bits through this header.
 
 /**
  * Page Table/Directory entry flags

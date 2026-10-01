@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <multiboot2.h>
-#include <memory.h>
+#include <asm/memory.h>
 #include <util.h>
 
 /**

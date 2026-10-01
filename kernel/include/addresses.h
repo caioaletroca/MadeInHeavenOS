@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <memory.h>
+#include <asm/memory.h>
 
 typedef uintptr_t physaddr_t;
 typedef void *virtaddr_t;

@@ -2,6 +2,8 @@
 #include <sched/thread.h>
 #include <kprintf.h>
 #include <driver/timer.h>
+#include <panic.h>
+#include <asm/cpu.h>
 
 #define THREAD_STACK_SIZE (16 * 1024)
 #define PREEMPT_TEST_ITERATIONS 1000000
@@ -66,7 +68,5 @@ __attribute__((noreturn)) void scheduler_selftest(void)
     kprintf("Scheduler preemption self-test completed successfully\n");
 
     for (;;)
-    {
-        __asm__ __volatile__("hlt");
-    }
+        cpu_idle();
 }

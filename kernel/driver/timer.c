@@ -1,27 +1,18 @@
 #include <driver/timer.h>
+#include <platform/platform.h>
 #include <sched/scheduler.h>
-#include "isr.h"
 
 static volatile uint64_t ticks;
 
-static void timer_irq_handler(isr_context_t *context)
+void timer_tick(void)
 {
-    (void)context;
     ticks++;
     scheduler_tick();
 }
 
 void timer_init(uint32_t frequency)
 {
-    isr_info_t timer_info = {
-        .type = ISR_IRQ,
-        .handler = timer_irq_handler,
-    };
-
-    isr_set_info(PIC_IRQ_VECTOR(PIC_IRQ_TIMER), &timer_info);
-    pic_irq_enable(PIC_IRQ_TIMER);
-
-    pit_set_frequency(frequency);
+    platform_timer_init(frequency);
 }
 
 uint64_t timer_ticks(void)

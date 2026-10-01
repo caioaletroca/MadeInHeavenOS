@@ -1,4 +1,5 @@
 #include "driver/ps2.h"
+#include "driver/keyboard.h"
 
 void ps2_init() {
     // TODO: Initialise USB controllers

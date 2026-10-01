@@ -1,5 +1,5 @@
 #include <driver/ps2.h>
-#include "io.h"
+#include <x86/io.h>
 
 static inline uint8_t ps2_read_status() {
     return inb(PS2_STATUS);

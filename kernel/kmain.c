@@ -1,12 +1,12 @@
 #include <addresses.h>
 #include <kprintf.h>
-#include <interrupts.h>
 #include <mm.h>
-#include <paging.h>
 #include <mm/frame.h>
-#include "idt.h"
-#include "driver/ps2.h"
-#include "driver/timer.h"
+#include <arch/arch.h>
+#include <asm/cpu.h>
+#include <asm/irq_flags.h>
+#include <platform/platform.h>
+#include <driver/timer.h>
 #include <sched/thread.h>
 #include <sched/scheduler.h>
 
@@ -26,28 +26,23 @@ void kmain(physaddr_t address)
 
     kprintf("MiHOS\n");
 
-    interrupts_init();
+    arch_init();
 
-    ps2_init();
+    platform_init();
 
     mmap_init(info);
 
     scheduler_init(&boot_thread);
 
-    timer_init(100);
+    timer_init(TIMER_FREQUENCY_HZ);
 
-    enable_interrupts();
-
-    paging_init();
+    irq_enable();
 
     mm_selftest();
     scheduler_selftest();
 
-    // Magic breakpoint
-    __asm__ __volatile__("xchgw %bx, %bx");
+    cpu_breakpoint();
 
-    while (1)
-    {
-        __asm__ __volatile__("hlt");
-    }
+    for (;;)
+        cpu_idle();
 }

@@ -1,6 +1,8 @@
-#include <paging.h>
+#include <asm/paging.h>
 #include <mm/frame.h>
+#include <panic.h>
 #include <string.h>
+#include <x86/isr.h>
 
 extern page_table_t page_table_l4;
 

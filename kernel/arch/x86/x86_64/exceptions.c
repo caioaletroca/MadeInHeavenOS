@@ -1,6 +1,6 @@
-#include "exceptions.h"
-#include "isr.h"
-#include "panic.h"
+#include <panic.h>
+#include <x86/exceptions.h>
+#include <x86/isr.h>
 
 static const char *const exception_messages[32] = {
     "Division by zero",

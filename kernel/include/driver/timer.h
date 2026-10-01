@@ -3,6 +3,14 @@
 
 #include <stdint.h>
 
+// System tick frequency in Hz
+#define TIMER_FREQUENCY_HZ 100
+
+/**
+ * @brief Account one timer tick. Called by the platform timer IRQ.
+ */
+void timer_tick(void);
+
 /**
  * @brief Initializes the system timer with the specified frequency.
  *

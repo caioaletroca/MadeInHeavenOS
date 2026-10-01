@@ -2,7 +2,7 @@
 #include <addresses.h>
 #include <assert.h>
 #include <panic.h>
-#include <paging.h>
+#include <asm/paging.h>
 #include <mm/frame.h>
 #include <kprintf.h>
 

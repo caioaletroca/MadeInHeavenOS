@@ -1,8 +1,8 @@
-#ifndef _ARCH_X86_64_PIC_H_
-#define _ARCH_X86_64_PIC_H_
+#ifndef _PLATFORM_PC_PIC_H_
+#define _PLATFORM_PC_PIC_H_
 
 #include <stdint.h>
-#include <vectors.h>
+#include <x86/vectors.h>
 
 #define PIC1 0x20 /* IO base address for master PIC */
 #define PIC2 0xA0 /* IO base address for slave PIC */

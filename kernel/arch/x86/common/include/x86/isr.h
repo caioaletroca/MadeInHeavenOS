@@ -2,8 +2,6 @@
 #define _ARCH_X86_64_ISR_H_
 
 #include <stdint.h>
-#include "pic.h"
-#include "panic.h"
 
 typedef struct isr_context
 {

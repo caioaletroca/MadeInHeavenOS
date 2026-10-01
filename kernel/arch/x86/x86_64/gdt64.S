@@ -8,7 +8,7 @@
 .extern ist_stack1
 .extern ist_stack2
 
-#include "memory.h"
+#include <asm/memory.h>
 
 # GDT Access Byte bits
 #define GDT_ACCESS_BYTE_P_BIT 			0b10000000

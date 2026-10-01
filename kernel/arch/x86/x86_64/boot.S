@@ -26,7 +26,7 @@
 	out %al, %dx
 .endm
 
-#include "memory.h"
+#include <asm/memory.h>
 #define VGA_MEMORY	0xB8000
 
 .section .text
