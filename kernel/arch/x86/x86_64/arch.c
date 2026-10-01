@@ -1,5 +1,5 @@
 #include <arch/arch.h>
-#include <asm/paging.h>
+#include <x86/paging.h>
 #include <sched/scheduler.h>
 #include <x86/exceptions.h>
 #include <x86/idt.h>

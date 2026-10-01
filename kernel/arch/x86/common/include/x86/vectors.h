@@ -4,6 +4,7 @@
 // 0x00–0x1F: CPU exceptions (reserved by Intel)
 #define VECTOR_EXCEPTION_BASE 0x00
 #define VECTOR_EXCEPTION_COUNT 32
+#define VECTOR_EXCEPTION_PAGE_FAULT 14
 
 // 0x20–0x2F: legacy PIC IRQs (remapped)
 #define VECTOR_IRQ_BASE 0x20

@@ -1,8 +1,9 @@
-#include <asm/paging.h>
+#include <x86/paging.h>
+#include <x86/isr.h>
+#include <x86/vectors.h>
 #include <mm/frame.h>
 #include <panic.h>
 #include <string.h>
-#include <x86/isr.h>
 
 extern page_table_t page_table_l4;
 
@@ -100,7 +101,7 @@ static page_table_t *page_table_next(page_table_t *parent, uint16_t index, uint6
     return child;
 }
 
-int page_map(page_table_t *root, uintptr_t virtual_address, physaddr_t physical_address, unsigned int flags)
+static int page_map(page_table_t *root, uintptr_t virtual_address, physaddr_t physical_address, unsigned int flags)
 {
     if (root == NULL)
         return -1;
@@ -141,7 +142,7 @@ int page_map(page_table_t *root, uintptr_t virtual_address, physaddr_t physical_
     return 0;
 }
 
-int page_unmap(page_table_t *root, uintptr_t virtual_address)
+static int page_unmap(page_table_t *root, uintptr_t virtual_address)
 {
     if (root == NULL)
         return -1;
@@ -182,7 +183,7 @@ int page_unmap(page_table_t *root, uintptr_t virtual_address)
     return 0;
 }
 
-int page_translate(page_table_t *root, uintptr_t virtual_address, physaddr_t *physical_address)
+static int page_translate(page_table_t *root, uintptr_t virtual_address, physaddr_t *physical_address)
 {
     if (root == NULL || physical_address == NULL)
         return -1;
@@ -232,7 +233,7 @@ int page_translate(page_table_t *root, uintptr_t virtual_address, physaddr_t *ph
     return 0;
 }
 
-void page_fault_handler(isr_context_t *regs)
+static void page_fault_handler(isr_context_t *regs)
 {
     uintptr_t virtual_address;
     fault_address_get(virtual_address);
@@ -240,12 +241,65 @@ void page_fault_handler(isr_context_t *regs)
     panic("Page fault at address: %p, error: %p", virtual_address, regs->info & 0xFFFFFFFF);
 }
 
+/* ---- Architecture contract (include/arch/mmu.h) ---- */
+
+static mmu_root_t kernel_root;
+
+static uint64_t mmu_flags_to_pte(unsigned int flags)
+{
+    uint64_t pte = 0;
+
+    if (flags & MMU_WRITE)
+        pte |= PAGE_TABLE_ENTRY_WRITE;
+    if (flags & MMU_USER)
+        pte |= PAGE_TABLE_ENTRY_USER;
+    if (flags & MMU_NOCACHE)
+        pte |= PAGE_TABLE_ENTRY_CACHE_DISABLE;
+
+    // TODO: Honor MMU_EXEC with the NX bit once EFER.NXE is enabled in boot;
+    // until then every mapping is executable.
+
+    return pte;
+}
+
+mmu_root_t *arch_mmu_kernel_root(void)
+{
+    return &kernel_root;
+}
+
+int arch_mmu_map(mmu_root_t *root, uintptr_t virtual_address, physaddr_t physical_address, unsigned int flags)
+{
+    if (root == NULL)
+        return -1;
+
+    return page_map(root->top, virtual_address, physical_address, mmu_flags_to_pte(flags));
+}
+
+int arch_mmu_unmap(mmu_root_t *root, uintptr_t virtual_address)
+{
+    if (root == NULL)
+        return -1;
+
+    return page_unmap(root->top, virtual_address);
+}
+
+int arch_mmu_translate(mmu_root_t *root, uintptr_t virtual_address, physaddr_t *physical_address)
+{
+    if (root == NULL)
+        return -1;
+
+    return page_translate(root->top, virtual_address, physical_address);
+}
+
 void paging_init()
 {
+    kernel_root.top = &page_table_l4;
+    kernel_root.top_physical = (physaddr_t)&page_table_l4 - KERNEL_VIRTUAL_ADDRESS;
+
     isr_info_t page_fault_info = {
         .type = ISR_EXCEPTION,
         .handler = page_fault_handler,
     };
 
-    isr_set_info(14, &page_fault_info);
+    isr_set_info(VECTOR_EXCEPTION_PAGE_FAULT, &page_fault_info);
 }
