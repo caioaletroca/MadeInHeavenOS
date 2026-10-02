@@ -34,8 +34,6 @@ static void worker_b_entry(void)
 
 __attribute__((noreturn)) void scheduler_selftest(void)
 {
-    kprintf("Scheduler preemption self-test running\n");
-
     if (thread_init(&worker_a_thread, worker_a_stack, sizeof(worker_a_stack), worker_a_entry) != 0)
         panic("Failed to initialize worker A thread");
 
