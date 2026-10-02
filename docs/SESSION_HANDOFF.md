@@ -11,20 +11,23 @@ Working x86-64 PC kernel with:
 - 4 KiB page map/unmap/translate behind an arch-neutral MMU contract
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
+- Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
+- Blocking primitives: wait queues, `thread_sleep`, semaphores, mutexes
+- Generic input events; PS/2 scancode set 2 decoder feeding a blocking reader thread
 - Kernel split into generic code, arch contracts and platform contracts, enforced by the build
-- MM and scheduler self-tests passing in Bochs
+- MM, preemption and sync self-tests passing in Bochs
 
 Latest commits:
 
 ```text
+63f16a2 feat(driver): add input events and PS/2 set 2 keyboard decoder
+ef2923b feat(sched): add blocking primitives and thread lifecycle
+9360111 fix(mm): make kmalloc and frame allocator preemption-safe
+4bc55dd docs(architecture): document memory management in handoff
 b919366 test(sched): drop scheduler self-test start banner
 d5cd3a9 feat(mm): replace bump kmalloc with slab-backed allocator
-094b1d1 docs(architecture): update session handoff
 da6b47d build(make): move arch compiler flags to per-arch config
 b7c841b refactor(mm): add arch-neutral MMU contract
-e0f58e0 refactor(boot): parse Multiboot2 into generic boot_info
-39ba3e6 Mini rework for multi arch build
-6bccc91 feat(sched): add timer-driven preemptive scheduling
 ```
 
 ## Architecture
@@ -68,7 +71,7 @@ Platform-private headers (`pic.h`, `vga.h`, `multiboot2.h`) are quote-included f
 | Entry → `kmain(uintptr_t boot_handoff)` | `boot.S`, `boot64.S` (passes Multiboot2 address in `%rdi`) |
 | Linker script defining `_kernel_physical_end` | `x86_64/linker.lds` |
 | `<asm/memory.h>`: `PAGE_SIZE`, `KERNEL_VIRTUAL_ADDRESS`, `KERNEL_DIRECT_MAP_SIZE`, `KERNEL_SELFTEST_VIRTUAL_BASE` | `arch/x86/include/asm/memory.h` |
-| `<asm/irq_flags.h>`: `irq_save/restore/enable/disable`, `irq_flags_t` | inline `pushfq/cli/sti` |
+| `<asm/irq_flags.h>`: `irq_save/restore/enable/disable/enabled`, `irq_flags_t` | inline `pushfq/cli/sti` |
 | `<asm/cpu.h>`: `cpu_idle/cpu_halt/cpu_breakpoint` | inline `hlt`, Bochs magic breakpoint |
 | `arch_init()` | `arch.c`: IDT, exceptions, page fault handler, yield vector |
 | `arch_thread_context_init()`, `arch_yield()` | `context.c` + `thread_entry.S` trampoline |
@@ -84,9 +87,10 @@ Platform-private headers (`pic.h`, `vga.h`, `multiboot2.h`) are quote-included f
 ### Boot sequence (`kmain`)
 
 ```text
-platform_boot_info_init → arch_init → platform_init (PIC, PS/2)
-→ mm_init(&boot_info) [mmap_init + kmalloc_init] → scheduler_init
-→ timer_init(TIMER_FREQUENCY_HZ) → irq_enable → mm_selftest → scheduler_selftest
+platform_boot_info_init → arch_init → input_init → platform_init (PIC, PS/2, keyboard IRQ)
+→ mm_init(&boot_info) [mmap_init + kmalloc_init] → scheduler_init [idle thread]
+→ threads_init [reaper] → thread_create(keyboard_reader)
+→ timer_init(TIMER_FREQUENCY_HZ) → irq_enable → mm_selftest → scheduler_selftest [+ sync tests]
 ```
 
 ## Memory management
@@ -114,6 +118,8 @@ boot_info regions ──▶ mmap_init ──▶ zones (one buddy system each) �
   (page aligned). `kfree` tries `slab_free` first, then frees the page block by its recorded order.
   Slab objects are never page aligned, page allocations always are.
 - Address helpers: `phys_to_kern()` / `kern_to_phys()` (direct map at `KERNEL_VIRTUAL_ADDRESS`).
+- **Locking:** `kmalloc/kfree/kzalloc` and `frame_alloc/frame_free` run under `irq_save`, so they are
+  preemption-safe and callable from IRQ handlers (single CPU).
 
 ## Scheduler
 
@@ -128,6 +134,55 @@ boot_info regions ──▶ mmap_init ──▶ zones (one buddy system each) �
   (keeps SysV 16-byte alignment).
 - Ready queue guarded with `irq_save/irq_restore`. IRQ gates 32–47 are interrupt gates (IF cleared).
 - EOI is sent before switching threads.
+
+### Threads
+
+- `thread_create(entry, arg)`: `kzalloc`'d `thread_t` + 16 KiB `kmalloc`'d stack, flagged
+  `THREAD_FLAG_OWNED`. `thread_init(...)` sets up threads on caller-owned memory (idle, tests).
+- IDs come from a global counter (boot thread = 0).
+- `entry(arg)` returning → `thread_start` → `thread_exit()`.
+- **Invariant:** `run_link` is in exactly one list — ready queue, a wait queue, the sleep queue or
+  the zombie list — or none (the running thread, exited static threads).
+- **Idle thread** (static stack, `cpu_idle` loop) runs only when nothing is ready; never queued.
+- **Reaper:** `thread_exit` disables IRQs for good, marks the thread `TERMINATED`, and (if owned)
+  puts it on `zombie_list` + `semaphore_up(zombie_count)`, then yields. The reaper thread sleeps on
+  that semaphore and frees stack + struct. IF=0 guarantees the exiting thread is off its stack first.
+
+### Blocking and synchronization (`sched/wait.c`, `sched/sync.c`)
+
+- Single CPU: disabling interrupts is the global lock (no preemption, no handlers).
+- `scheduler_block(list)`: current → `BLOCKED`, onto the list, `arch_yield()`. Must be called with
+  IRQs off; returns after wake-up still with IRQs off (IF is saved per thread in its frame).
+- `scheduler_wake(thread)`: `BLOCKED` → `READY` onto the ready queue; requests an immediate
+  reschedule when the CPU is idling. Safe from IRQ handlers.
+- Usage pattern (Mesa semantics, prevents lost wake-ups):
+  ```c
+  irq_flags_t flags = irq_save();
+  while (!condition)
+      wait_queue_sleep(&queue);
+  irq_restore(flags);
+  ```
+- `wait_queue_t`: FIFO list of sleepers; `wake_one` / `wake_all` are IRQ-safe.
+- `semaphore_t` = `count` + wait queue. `down` waits for and consumes one unit; `up` adds one unit
+  and wakes one waiter (non-blocking, IRQ-safe, never loses signals).
+- `mutex_t` = `owner` + wait queue; not recursive, only the owner may unlock.
+- `thread_sleep(ticks)`: sleep queue checked on every `scheduler_tick` (own tick counter).
+- **Never block in IRQ context** (`semaphore_down`, `mutex_lock`, `thread_sleep`): it would block the
+  interrupted thread. Only `up`/`wake`/`input_report_key` are allowed there.
+
+## Input
+
+```text
+IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pressed)
+     → driver/input.c ring buffer (128 events) + semaphore → input_get_event() (blocking, threads)
+```
+
+- `keycode_t` (`include/driver/input.h`) names physical key positions on a US layout, not characters
+  (`KEY_SEMICOLON` types 'ç' on ABNT2). Covers 104 keys, ABNT2 extras (`KEY_102ND`, `KEY_RO`,
+  `KEY_KP_COMMA`), keypad, media and ACPI keys.
+- Decoder handles `E0` extended keys, `F0` releases, Print Screen fake shifts and the 8-byte Pause
+  sequence (reported as press + release).
+- Full buffer drops events. A `keyboard_reader` thread in `kmain` currently prints the events.
 
 ## Interrupt vectors (`x86/vectors.h`)
 
@@ -148,6 +203,8 @@ boot_info regions ──▶ mmap_init ──▶ zones (one buddy system each) �
   allocator; sort/merge underflowed on empty maps.
 - Old bump `kmalloc` returned physical addresses as pointers (worked only through a leftover
   identity mapping); memory above the 1 GiB direct map was handed to zones.
+- `scheduler_wake` checked `current_thread->state` instead of the woken thread's, so wake-ups
+  were silently dropped; thread entries were called without their argument.
 
 ## Recommended next steps
 
@@ -156,17 +213,22 @@ boot_info regions ──▶ mmap_init ──▶ zones (one buddy system each) �
 Frame API on `physaddr_t`, `mmap_release_regions` fix, boot allocator replacing `KERNEL_HEAP_SIZE`,
 per-frame ownership, on-slab headers, `kmalloc`/`kfree`.
 
-### Step 3 — Threads and synchronization (next)
+### Step 3 — Threads and synchronization (done)
 
-- `thread_create(entry, arg)` with allocated stacks, unique IDs, reaper for terminated threads.
-- Wait queues + `THREAD_BLOCKED`, `thread_sleep(ticks)`, mutex, semaphore.
-- Keyboard IRQ → ring buffer + wake reader (no `kprintf` in IRQ context).
-- Consider the two-level (Linux/xv6) context switch once blocking makes yield frequent.
+Allocator locking + `kzalloc`, `thread_create` with arguments and IDs, idle thread, wait queues,
+sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 
-### Step 4 — User mode
+### Step 4 — User mode (next)
 
 `address_space_t` (builds on `mmu_root`), ring-3 GDT segments + TSS `rsp0` update on switch,
 `int 0x80` syscalls (`IDT_GATE_USER_INTERRUPT`), first user program, user faults kill the process.
+
+### Console / keyboard layer (can come before or alongside step 4)
+
+- Move `driver/ps2.c` / `ps2.h` into `platform/pc`.
+- Console layer: keymap (US, ABNT2) from keycodes to characters, modifiers / Caps Lock, line editing
+  (echo, backspace, line buffering), blocking `console_read()`. Basis for the shell and `read()`.
+- Thread-safe output (mutex around the tty) replacing direct `kprintf` from many threads.
 
 ### Optional — second arch skeleton
 
@@ -180,12 +242,16 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `MMU_EXEC` ignored: NX not enabled (`EFER.NXE`), every mapping is executable.
 - Slab pages are never returned to the buddy allocator (no empty-slab reclamation, no cache destroy).
 - `kmalloc` above 1024 B rounds up to a power-of-two number of pages (internal waste).
-- `kmalloc`/slab have no locking; only safe because callers do not allocate from IRQ context yet.
 - `frame_free`/`frame_lookup` walk the zone list linearly.
-- Terminated thread stacks are not reclaimed; `thread->id` is always 0.
-- No SMP; `irq_save` is the only synchronization.
-- `driver/ps2.c` / `driver/ps2.h` are PC-only code in the generic `driver/` dir;
-  `ps2.h` defines a `static` array in a header.
+- No SMP; `irq_save` is the only synchronization (becomes spinlocks + `irq_save` on SMP).
+- `kprintf`/tty are not thread-safe: concurrent prints can interleave or corrupt the cursor.
+- No `in_interrupt()` guard: blocking from an IRQ handler is not detected.
+- No `thread_join`; a `thread_t *` from `thread_create` is only valid until that thread exits.
+- Sleep queue is scanned linearly on every tick.
+- Every block/yield goes through `int`/`iretq`; consider the two-level (Linux/xv6) context switch
+  if blocking becomes frequent (hidden behind `arch_yield`).
+- `ps2.h` declares `static` device state in a header, duplicated in every includer.
+- `driver/ps2.c` / `driver/ps2.h` are PC-only code in the generic `driver/` dir.
 - `<asm/...>` lives at family level (`arch/x86/include`) but uses x86_64-only instructions.
 - Kernel `install-headers` copies internal headers into the sysroot (stale copies can hide
   include errors → use a clean build after moving headers).
