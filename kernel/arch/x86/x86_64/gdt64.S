@@ -3,6 +3,7 @@
 .globl data
 .globl tss
 .globl gdt64_pointer
+.globl gdt64_pointer_high
 
 .extern tss64_size
 .extern ist_stack1
@@ -91,3 +92,9 @@ gdt64:
 gdt64_pointer:
 	.word . - gdt64 - 1 					# Length
 	.long gdt64 - KERNEL_VIRTUAL_ADDRESS	# Address
+
+# Same GDT, but with its virtual address (8-byte base), usable after
+# the identity map is removed
+gdt64_pointer_high:
+	.word gdt64_pointer - gdt64 - 1			# Length
+	.quad gdt64								# Address

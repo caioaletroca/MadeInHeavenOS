@@ -10,6 +10,7 @@
 .extern data
 .extern tss
 .extern gdt64_pointer
+.extern gdt64_pointer_high
 .extern tss64
 
 .code64
@@ -19,34 +20,6 @@
 .section .text
 .type boot64, @function
 boot64:
-    # Load TSS descriptor into GDT base address
-    movq (gdt64 - KERNEL_VIRTUAL_ADDRESS), %rdi
-
-    # Offset with the TSS, to get the TSS address
-	addq $tss, %rdi
-
-    # Get TSS descriptor address
-	movq (tss64 - KERNEL_VIRTUAL_ADDRESS), %rax
-
-    # Insert base (low), 2 bytes
-	movw %ax, 2(%rdi)
-
-    # Insert base (middle), 1 byte
-	shrq $16, %rax
-	movb %al, 4(%rdi)
-
-    # Insert base high, 1 byte
-	shrq $8, %rax
-	movb %al, 7(%rdi)
-
-    # Insert base highest, 4 bytes
-	shrq $8, %rax
-	movl %eax, 8(%rdi)
-
-    # Load GDT again, but now since it's on 64 bits
-    # the address will be correct
-	lgdt (gdt64_pointer - KERNEL_VIRTUAL_ADDRESS)
-
     # Indirect jump to for non-relative jump
     movabsq $boot64_high, %rax
 	jmp *%rax
@@ -66,10 +39,13 @@ boot64_high:
     mov %ax, %fs
     mov %ax, %gs
 	
-	# Unmap the kernel from low memory
-    movq page_table_l4, %rax
-    movq $0, (%rax)
-	movq page_table_l3, %rax
+	# Point GDTR at the GDT's virtual address; the current GDTR base is
+    # physical and stops resolving once low memory is unmapped
+	lgdt gdt64_pointer_high(%rip)
+
+	# Unmap the kernel from low memory. L4[0] and L4[511] share one L3
+	# table, so only the L4 entry may be cleared.
+	leaq page_table_l4(%rip), %rax
     movq $0, (%rax)
 
     # Flush whole TLB
