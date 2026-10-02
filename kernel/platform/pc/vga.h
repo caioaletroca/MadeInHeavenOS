@@ -8,8 +8,9 @@
 #define VGA_HEIGHT 25
 #define VGA_WIDTH 80
 
-enum vga_color {
-    VGA_COLOR_BLACK = 0,
+enum vga_color
+{
+	VGA_COLOR_BLACK = 0,
 	VGA_COLOR_BLUE = 1,
 	VGA_COLOR_GREEN = 2,
 	VGA_COLOR_CYAN = 3,
@@ -27,12 +28,25 @@ enum vga_color {
 	VGA_COLOR_WHITE = 15,
 };
 
-static inline uint8_t vga_entry_color(enum vga_color fg, enum vga_color bg) {
+/**
+ * Create a VGA color byte from foreground and background colors
+ */
+static inline uint8_t vga_entry_color(enum vga_color fg, enum vga_color bg)
+{
 	return fg | bg << 4;
 }
 
-static inline uint16_t vga_entry(unsigned char c, uint8_t color) {
-	return (uint16_t) c | (uint16_t) color << 8;
+/**
+ * Create a VGA entry (character + color)
+ */
+static inline uint16_t vga_entry(unsigned char c, uint8_t color)
+{
+	return (uint16_t)c | (uint16_t)color << 8;
 }
+
+/**
+ * Set the VGA cursor position
+ */
+void vga_set_cursor(uint16_t pos);
 
 #endif
