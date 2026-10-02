@@ -1,3 +1,5 @@
 local_sources := \
 thread.c \
-scheduler.c
+scheduler.c \
+wait.c \
+sync.c

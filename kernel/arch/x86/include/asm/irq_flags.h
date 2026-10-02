@@ -17,6 +17,18 @@ static inline void irq_enable(void)
 }
 
 /**
+ * @brief Check if maskable interrupts are enabled on the current CPU.
+ *
+ * @return Non-zero if interrupts are enabled, zero otherwise.
+ */
+static inline int irq_enabled(void)
+{
+    irq_flags_t flags;
+    __asm__ __volatile__("pushfq\n\tpopq %0" : "=r"(flags) : : "memory");
+    return (flags & IRQ_FLAGS_ENABLED) != 0;
+}
+
+/**
  * @brief Disable maskable interrupts on the current CPU.
  */
 static inline void irq_disable(void)

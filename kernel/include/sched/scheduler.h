@@ -2,6 +2,7 @@
 #define _SCHEDULER_H_
 
 #include <sched/thread.h>
+#include <sys/list.h>
 
 /**
  * @brief Trigger a scheduler tick, indicating that the current thread's time slice has expired.
@@ -24,6 +25,29 @@ void scheduler_init(thread_t *boot_thread);
  * @return 0 on success, or a negative error code on failure.
  */
 int scheduler_add(thread_t *thread);
+
+/**
+ * @brief Block the current thread, removing it from the scheduler's run queue.
+ *
+ * @param queue Pointer to the list representing the queue to block the current thread on.
+ */
+void scheduler_block(list_t *queue);
+
+/**
+ * @brief Wake the specified thread, adding it back to the scheduler's run queue.
+ *
+ * @param thread Pointer to the thread to wake.
+ */
+void scheduler_wake(thread_t *thread);
+
+/**
+ * @brief Block the current thread for at least `ticks` scheduler ticks.
+ *
+ * @param ticks Number of scheduler ticks to sleep.
+ *
+ * @note The actual sleep duration may be longer than the specified number of ticks due to scheduling delays.
+ */
+void scheduler_sleep(uint64_t ticks);
 
 /**
  * @brief Ask for a context switch at the next interrupt exit.

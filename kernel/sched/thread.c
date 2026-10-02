@@ -1,16 +1,60 @@
 #include <sched/thread.h>
 #include <sched/scheduler.h>
+#include <sched/sync.h>
 #include <arch/context.h>
+#include <asm/irq_flags.h>
+#include <mm/kmalloc.h>
 #include <panic.h>
+
+static uint32_t next_thread_id = 1;
+static list_t zombie_list;
+static semaphore_t zombie_count;
+
+static uint32_t thread_alloc_id(void)
+{
+    irq_flags_t flags = irq_save();
+    uint32_t id = next_thread_id++;
+    irq_restore(flags);
+
+    return id;
+}
+
+static void thread_reaper(void *arg)
+{
+    (void)arg;
+
+    for (;;)
+    {
+        semaphore_down(&zombie_count);
+        irq_flags_t flags = irq_save();
+
+        thread_t *zombie = list_container(zombie_list.next, thread_t, run_link);
+        list_delete(&zombie->run_link);
+
+        irq_restore(flags);
+
+        kfree(zombie->stack);
+        kfree(zombie);
+    }
+}
 
 void thread_start(void)
 {
     thread_t *thread = scheduler_current();
-    thread->entry();
+    thread->entry(thread->arg);
     thread_exit();
 }
 
-int thread_init(thread_t *thread, void *stack, size_t stack_size, thread_entry_t entry)
+void threads_init(void)
+{
+    list_init(&zombie_list);
+    semaphore_init(&zombie_count, 0);
+
+    if (thread_create(thread_reaper, NULL) == NULL)
+        panic("threads_init: failed to create thread reaper");
+}
+
+int thread_init(thread_t *thread, void *stack, size_t stack_size, thread_entry_t entry, void *arg)
 {
     if (thread == NULL || stack == NULL || entry == NULL)
         return -1;
@@ -19,23 +63,63 @@ int thread_init(thread_t *thread, void *stack, size_t stack_size, thread_entry_t
     if (context == NULL)
         return -1;
 
-    // TODO: Assign a unique thread ID. For now, we just set it to 0.
-    thread->id = 0;
+    // Assign a unique thread ID.
+    thread->id = thread_alloc_id();
+    thread->flags = 0;
     thread->stack = stack;
     thread->stack_size = stack_size;
     thread->entry = entry;
+    thread->arg = arg;
     thread->state = THREAD_READY;
     thread->context = context;
+    thread->wake_tick = 0;
     list_init(&thread->run_link);
 
     return 0;
 }
 
+thread_t *thread_create(thread_entry_t entry, void *arg)
+{
+    thread_t *thread = kmalloc(sizeof(thread_t));
+    void *stack = kmalloc(THREAD_STACK_SIZE);
+
+    if (thread == NULL || stack == NULL || thread_init(thread, stack, THREAD_STACK_SIZE, entry, arg) != 0)
+    {
+        kfree(stack);
+        kfree(thread);
+        return NULL;
+    }
+
+    thread->flags |= THREAD_FLAG_OWNED;
+
+    if (scheduler_add(thread) != 0)
+    {
+        panic("thread_create: new thread rejected by the scheduler");
+    }
+
+    return thread;
+}
+
+void thread_sleep(uint64_t ticks)
+{
+    scheduler_sleep(ticks);
+}
+
 __attribute__((noreturn)) void thread_exit(void)
 {
-    thread_t *thread = scheduler_current();
+    // Never restored: this thread does not run again, and with IF=0 the
+    // reaper cannot free our stack before we have switched away from it.
+    (void)irq_save();
 
-    thread->state = THREAD_TERMINATED;
+    thread_t *self = scheduler_current();
+    self->state = THREAD_TERMINATED;
+
+    if (self->flags & THREAD_FLAG_OWNED)
+    {
+        list_insert_before(&zombie_list, &self->run_link);
+        semaphore_up(&zombie_count);
+    }
+
     scheduler_yield();
 
     panic("Terminated thread was resumed\n");

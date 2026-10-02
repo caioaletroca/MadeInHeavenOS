@@ -34,6 +34,7 @@ void kmain(uintptr_t boot_handoff)
     mm_init(&boot_info);
 
     scheduler_init(&boot_thread);
+    threads_init();
 
     timer_init(TIMER_FREQUENCY_HZ);
 
