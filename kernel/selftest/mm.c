@@ -1,10 +1,11 @@
 #include "selftest/mm.h"
 #include <addresses.h>
 #include <assert.h>
-#include <panic.h>
 #include <arch/mmu.h>
 #include <asm/memory.h>
 #include <mm/frame.h>
+#include <mm/kmalloc.h>
+#include <panic.h>
 #include <kprintf.h>
 
 /**
@@ -16,7 +17,7 @@ static void mm_page_map_unmap_test(void)
 
     KASSERT(root != NULL);
 
-    physaddr_t physical = (physaddr_t)frame_alloc(0, 0);
+    physaddr_t physical = frame_alloc(0, 0);
     if (physical == 0)
         panic("Failed to allocate paging test frame\n");
 
@@ -36,7 +37,7 @@ static void mm_page_map_unmap_test(void)
     if (arch_mmu_unmap(root, virtual) != 0)
         panic("Failed to unmap paging test page\n");
 
-    frame_free((void *)physical, 0);
+    frame_free(physical, 0);
 }
 
 /**
@@ -48,8 +49,8 @@ static void mm_page_translate_test(void)
     mmu_root_t *root = arch_mmu_kernel_root();
     KASSERT(root != NULL);
 
-    physaddr_t physical_a = (physaddr_t)frame_alloc(0, 0);
-    physaddr_t physical_b = (physaddr_t)frame_alloc(0, 0);
+    physaddr_t physical_a = frame_alloc(0, 0);
+    physaddr_t physical_b = frame_alloc(0, 0);
 
     uintptr_t virtual_a = KERNEL_SELFTEST_VIRTUAL_BASE;
     uintptr_t virtual_b = virtual_a + PAGE_SIZE;
@@ -88,17 +89,74 @@ static void mm_page_translate_test(void)
     // Verify that virtual_b is no longer mapped
     KASSERT(arch_mmu_translate(root, virtual_b, &translated_b) != 0);
 
-    frame_free((void *)physical_a, 0);
-    frame_free((void *)physical_b, 0);
+    frame_free(physical_a, 0);
+    frame_free(physical_b, 0);
+}
+
+/**
+ * Tests the kernel memory allocator (kmalloc and kfree) for various allocation sizes,
+ * alignment, reuse of freed objects, and large allocations.
+ */
+static void mm_kmalloc_test(void)
+{
+    // Every size class, written end to end
+    for (size_t size = 1; size <= 4096 * 3; size = size * 2 + 1)
+    {
+        uint8_t *block = kmalloc(size);
+        KASSERT(block != NULL);
+        KASSERT(((uintptr_t)block & 15) == 0);
+
+        for (size_t i = 0; i < size; i++)
+            block[i] = (uint8_t)i;
+        for (size_t i = 0; i < size; i++)
+            KASSERT(block[i] == (uint8_t)i);
+
+        kfree(block);
+    }
+
+    // Freed slab objects are reused
+    void *first = kmalloc(64);
+    kfree(first);
+    void *second = kmalloc(64);
+    KASSERT(first == second);
+    kfree(second);
+
+    // Many live objects span several slabs and stay distinct
+    void *objects[200];
+    for (size_t i = 0; i < 200; i++)
+    {
+        objects[i] = kmalloc(32);
+        KASSERT(objects[i] != NULL);
+        *(size_t *)objects[i] = i;
+    }
+    for (size_t i = 0; i < 200; i++)
+    {
+        KASSERT(*(size_t *)objects[i] == i);
+        kfree(objects[i]);
+    }
+
+    // Large allocations are page aligned
+    void *large = kmalloc(5000);
+    KASSERT(large != NULL && ((uintptr_t)large & (PAGE_SIZE - 1)) == 0);
+    kfree(large);
+
+    kfree(NULL);
+    KASSERT(kmalloc(0) == NULL);
+
+    // Small sizes come from slab caches: never page aligned (header owns offset 0)
+    void *small = kmalloc(16);
+    KASSERT(small != NULL);
+    KASSERT(((uintptr_t)small & (PAGE_SIZE - 1)) != 0);
+    kfree(small);
 }
 
 void mm_selftest(void)
 {
-    kprintf("Running memory management self-test...\n");
-
     mm_page_map_unmap_test();
 
     mm_page_translate_test();
 
-    kprintf("Paging map/unmap test passed\n");
+    mm_kmalloc_test();
+
+    kprintf("MM self-test completed successfully\n");
 }

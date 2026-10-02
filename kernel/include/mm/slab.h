@@ -19,6 +19,8 @@ typedef struct slab_cache
     list_t empty_slabs;
     list_t partial_slabs;
     list_t full_slabs;
+
+    uint64_t offset;
 } slab_cache_t;
 
 /**
@@ -48,5 +50,13 @@ void *slab_cache_alloc(slab_cache_t *cache);
  * @return 0 on success, or -1 if an error occurs.
  */
 int slab_cache_free(slab_cache_t *cache, void *object);
+
+/**
+ * Frees an object back to its owning slab.
+ *
+ * @param object The object to be freed.
+ * @return 0 on success, or -1 if an error occurs.
+ */
+int slab_free(void *object);
 
 #endif

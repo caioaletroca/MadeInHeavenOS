@@ -1,10 +1,9 @@
-#include <addresses.h>
-#include <kprintf.h>
-#include <mm.h>
-#include <mm/frame.h>
 #include <arch/arch.h>
 #include <asm/cpu.h>
 #include <asm/irq_flags.h>
+#include <addresses.h>
+#include <kprintf.h>
+#include <mm.h>
 #include <platform/platform.h>
 #include <driver/timer.h>
 #include <sched/thread.h>
@@ -32,7 +31,7 @@ void kmain(uintptr_t boot_handoff)
 
     platform_init();
 
-    mmap_init(&boot_info);
+    mm_init(&boot_info);
 
     scheduler_init(&boot_thread);
 

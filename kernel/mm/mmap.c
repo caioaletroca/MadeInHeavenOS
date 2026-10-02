@@ -1,10 +1,11 @@
 #include <mm.h>
 #include <mm/mmap.h>
 #include <util.h>
+#include <kprintf.h>
 
 #define MMAP_MAX_REGIONS 128
 
-extern const uintptr_t _kernel_physical_end;
+extern const char _kernel_physical_end;
 
 mmap_region_t available[MMAP_MAX_REGIONS];
 mmap_region_t reserved[MMAP_MAX_REGIONS];
@@ -13,20 +14,41 @@ static mmap_t memory_map = {
     .available = {.length = 0, .regions = available},
     .reserved = {.length = 0, .regions = reserved}};
 
-// TODO: See what to do with this function, maybe remove?
-static void mmap_free(mmap_type_t *type)
+/**
+ * Checks if the given memory range is available according to the boot information.
+ *
+ * @param info The boot information containing memory regions.
+ * @param start The start address of the memory range.
+ * @param end The end address of the memory range.
+ * @return true if the memory range is available, false otherwise.
+ */
+static bool mmap_is_available(const boot_info_t *info, physaddr_t start, physaddr_t end)
+{
+    for (size_t i = 0; i < info->memory_region_count; i++)
+    {
+        const boot_memory_region_t *region = &info->memory_regions[i];
+
+        if (region->type == BOOT_MEMORY_AVAILABLE && start >= region->base && end <= region->base + region->length)
+            return true;
+    }
+    return false;
+}
+
+/**
+ * Releases every frame of the given regions to the frame allocator.
+ * Zones start fully allocated; this is what populates their free lists.
+ */
+static void mmap_release_regions(const mmap_type_t *type)
 {
 
-    for (size_t i = 0; i < type->length - 1; i++)
+    for (size_t i = 0; i < type->length; i++)
     {
         uintptr_t start = type->regions[i].base;
         uintptr_t end = start + type->regions[i].size - 1;
-        uintptr_t current = start;
 
-        while (current < end)
+        for (physaddr_t current = start; current < end; current += PAGE_SIZE)
         {
             frame_free(current, 0);
-            current += PAGE_SIZE;
         }
     }
 }
@@ -40,6 +62,9 @@ static void mmap_swap_region(mmap_region_t *x, mmap_region_t *y)
 
 static void mmap_sort_region(mmap_type_t *type)
 {
+    if (type->length < 2)
+        return;
+
     bool swapped = false;
 
     // Loops through all regions
@@ -69,6 +94,9 @@ static void mmap_sort_region(mmap_type_t *type)
 
 static void mmap_merge_region(mmap_type_t *type)
 {
+    if (type->length < 2)
+        return;
+
     size_t i = type->length - 1;
 
     // Loops in descending order through all regions
@@ -105,7 +133,7 @@ static void mmap_split_region(mmap_type_t *type, size_t frame_size)
         unsigned int order_max = _fnzb(frame_num);
 
         // The new size needs to be divisible by 2^(order_max)
-        size_t new_size = (1 << order_max) * frame_size;
+        size_t new_size = ((size_t)1 << order_max) * frame_size;
 
         // Update the current region
         type->regions[i].size = new_size;
@@ -150,9 +178,48 @@ static void mmap_register_region(mmap_type_t *type, size_t frame_size)
     }
 }
 
+/**
+ * Calculate the size of the metadata required for the memory map.
+ * This includes the size of frame structures, zone structures, and other bookkeeping data.
+ *
+ * @param info Pointer to the boot information structure containing memory regions.
+ * @return The total size of the metadata required.
+ */
+static size_t mmap_metadata_size(const boot_info_t *info)
+{
+    size_t frames = 0;
+
+    for (size_t i = 0; i < info->memory_region_count; i++)
+    {
+        const boot_memory_region_t *region = &info->memory_regions[i];
+
+        if (region->type != BOOT_MEMORY_AVAILABLE || region->base >= KERNEL_DIRECT_MAP_SIZE)
+            continue;
+
+        physaddr_t end = region->base + region->length;
+        if (end > KERNEL_DIRECT_MAP_SIZE)
+            end = KERNEL_DIRECT_MAP_SIZE;
+
+        frames += (end - region->base) / PAGE_SIZE;
+    }
+
+    const size_t orders = sizeof(unsigned long) * 8;
+    const size_t per_zone = sizeof(zone_t) + orders * sizeof(free_list_t) + orders * sizeof(unsigned long) + 4 * 16;
+
+    return frames * sizeof(frame_t) + frames / 8 + MMAP_MAX_REGIONS * per_zone + PAGE_SIZE;
+}
+
 void mmap_init(const boot_info_t *info)
 {
-    uintptr_t kern_end = (uintptr_t)&_kernel_physical_end + KERNEL_HEAP_SIZE;
+    physaddr_t kernel_end = ALIGN_UP((uintptr_t)&_kernel_physical_end, PAGE_SIZE);
+    size_t boot_size = ALIGN_UP(mmap_metadata_size(info), PAGE_SIZE);
+
+    if (!mmap_is_available(info, kernel_end, kernel_end + boot_size))
+        panic("mmap: no room for %u bytes of boot metadata after the kernel", (unsigned int)boot_size);
+
+    boot_alloc_init(kernel_end, boot_size);
+
+    physaddr_t usable_start = kernel_end + boot_size;
 
     for (size_t i = 0; i < info->memory_region_count; i++)
     {
@@ -160,29 +227,28 @@ void mmap_init(const boot_info_t *info)
         if (region->type != BOOT_MEMORY_AVAILABLE)
             continue;
 
-        // Region entirely below the kernel image + bootstrap heap
-        if (region->base + region->length < kern_end)
-        {
-            mmap_insert_region(&memory_map.reserved, region->base, region->length);
-        }
-        // Now, if the zone overlaps with the kernel, relocate the base address
-        // to be after the Kernel
-        else if (region->base < kern_end)
-        {
-            uintptr_t base = ALIGN_UP(kern_end, PAGE_SIZE);
-            uintptr_t end = ALIGN_DOWN(region->base + region->length, PAGE_SIZE);
+        physaddr_t start = region->base;
+        physaddr_t end = region->base + region->length;
 
-            if (end > base)
-                mmap_insert_region(&memory_map.available, base, end - base);
-        }
-        // The entry is available
-        else
-        {
-            uintptr_t base = ALIGN_UP(region->base, PAGE_SIZE);
-            size_t length = ALIGN_DOWN(region->length, PAGE_SIZE);
+        if (end > KERNEL_DIRECT_MAP_SIZE)
+            end = KERNEL_DIRECT_MAP_SIZE;
 
-            mmap_insert_region(&memory_map.available, base, length);
+        if (end <= usable_start)
+        {
+            if (start < end)
+                mmap_insert_region(&memory_map.reserved, start, end - start);
+
+            continue;
         }
+
+        if (start < usable_start)
+            start = usable_start;
+
+        start = ALIGN_UP(start, PAGE_SIZE);
+        end = ALIGN_DOWN(end, PAGE_SIZE);
+
+        if (start < end)
+            mmap_insert_region(&memory_map.available, start, end - start);
     }
 
     mmap_sort_region(&memory_map.available);
@@ -192,7 +258,7 @@ void mmap_init(const boot_info_t *info)
 
     mmap_register_region(&memory_map.available, PAGE_SIZE);
 
-    mmap_free(&memory_map.available);
+    mmap_release_regions(&memory_map.available);
 }
 
 static void mmap_log(mmap_t *ctx)

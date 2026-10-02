@@ -3,4 +3,7 @@ buddy.c \
 zone.c \
 frame.c \
 slab.c \
-mmap.c
+boot_alloc.c \
+kmalloc.c \
+mmap.c \
+mm.c

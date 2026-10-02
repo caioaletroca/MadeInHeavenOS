@@ -7,7 +7,7 @@
 // Unused kernel virtual range, reserved for self-tests
 #define KERNEL_SELFTEST_VIRTUAL_BASE 0xFFFF900000000000ULL
 
-// TODO: Make this better, maybe this is not enough
-#define KERNEL_HEAP_SIZE 0x1000000
+// Physical range [0, KERNEL_DIRECT_MAP_SIZE) is mapped at KERNEL_VIRTUAL_ADDRESS
+#define KERNEL_DIRECT_MAP_SIZE 0x40000000ULL
 
 #endif

@@ -30,6 +30,7 @@ typedef struct slab
 {
     list_t link;
 
+    slab_cache_t *cache;
     void *memory;
     physaddr_t physical;
 
@@ -55,26 +56,6 @@ static bool slab_contains(const slab_cache_t *cache, const slab_t *slab, const v
     uintptr_t address = (uintptr_t)object;
     uintptr_t end = start + slab->capacity * cache->stride;
     return address >= start && address < end && ((address - start) % cache->stride == 0);
-}
-
-/**
- * Finds the slab in the given list that contains the specified object.
- *
- * @param head The head of the list of slabs to search.
- * @param cache The slab cache containing the slabs.
- * @param object The object to find the owning slab for.
- * @return A pointer to the slab containing the object, or NULL if not found.
- */
-static slab_t *slab_list_find(list_t *head, const slab_cache_t *cache, const void *object)
-{
-    list_t *node;
-    list_for_each(node, head)
-    {
-        slab_t *slab = list_container(node, slab_t, link);
-        if (slab_contains(cache, slab, object))
-            return slab;
-    }
-    return NULL;
 }
 
 /**
@@ -128,6 +109,20 @@ static bool slab_validate(const slab_cache_t *cache, const slab_t *slab)
     return true;
 }
 
+/**
+ * Retrieves the slab associated with a given object.
+ *
+ * @param object The object for which to find the containing slab.
+ * @return A pointer to the slab containing the object, or NULL if not found.
+ */
+static slab_t *slab_from_object(const void *object)
+{
+    physaddr_t page = ALIGN_DOWN(kern_to_phys(object), PAGE_SIZE);
+    frame_t *frame = frame_lookup(page);
+
+    return frame ? frame->slab : NULL;
+}
+
 int slab_cache_init(slab_cache_t *cache, const char *name, size_t object_size, size_t alignment)
 {
     if (cache == NULL || object_size == 0)
@@ -155,7 +150,12 @@ int slab_cache_init(slab_cache_t *cache, const char *name, size_t object_size, s
     cache->object_size = object_size;
     cache->alignment = alignment;
     cache->stride = stride;
-    cache->capacity = PAGE_SIZE / cache->stride;
+    cache->offset = ALIGN_UP(sizeof(slab_t), alignment);
+
+    if (cache->offset + stride > PAGE_SIZE)
+        return -1;
+
+    cache->capacity = (PAGE_SIZE - cache->offset) / cache->stride;
 
     if (cache->capacity == 0)
         return -1;
@@ -167,7 +167,7 @@ int slab_cache_init(slab_cache_t *cache, const char *name, size_t object_size, s
     KASSERT(cache->stride >= cache->object_size);
     KASSERT(cache->stride >= sizeof(slab_free_object_t));
     KASSERT(cache->capacity > 0);
-    KASSERT(cache->capacity * cache->stride <= PAGE_SIZE);
+    KASSERT(cache->offset + cache->capacity * cache->stride <= PAGE_SIZE);
     KASSERT((cache->alignment & (cache->alignment - 1)) == 0);
 
     return 0;
@@ -191,44 +191,44 @@ static void slab_build_free_objects(const slab_cache_t *cache, slab_t *slab)
 /**
  * Creates a new slab for the given slab cache.
  *
- * @param cache The slab cache to create the slab for.
+ * @param cache The slab cache for which to create the slab.
  * @return A pointer to the newly created slab, or NULL if creation fails.
  */
 static slab_t *slab_create(slab_cache_t *cache)
 {
-    physaddr_t physical = (physaddr_t)frame_alloc(0, 0);
+    physaddr_t physical = frame_alloc(0, 0);
 
     if (physical == 0)
         return NULL;
 
-    void *memory = phys_to_kern(physical);
+    uint8_t *page = phys_to_kern(physical);
+    slab_t *slab = (slab_t *)page;
 
-    if (memory == NULL)
-    {
-        frame_free((void *)physical, 0);
-        return NULL;
-    }
-
-    slab_t *slab = kmalloc(sizeof(slab_t));
-
-    if (slab == NULL)
-    {
-        frame_free((void *)physical, 0);
-        return NULL;
-    }
-
+    slab->cache = cache;
     slab->physical = physical;
-    slab->memory = memory;
+    slab->memory = page + cache->offset;
     slab->capacity = cache->capacity;
     slab->inuse = 0;
     slab->state = SLAB_EMPTY;
     slab->free_objects = NULL;
+
+    frame_lookup(physical)->slab = slab;
 
     list_init(&slab->link);
     slab_build_free_objects(cache, slab);
     list_insert_after(&cache->empty_slabs, &slab->link);
 
     return slab;
+}
+
+int slab_free(void *object)
+{
+    slab_t *slab = slab_from_object(object);
+
+    if (slab == NULL)
+        return -1;
+
+    return slab_cache_free(slab->cache, object);
 }
 
 /**
@@ -325,27 +325,6 @@ void *slab_cache_alloc(slab_cache_t *cache)
 }
 
 /**
- * Finds the slab that owns the specified object within the given slab cache.
- *
- * @param cache The slab cache containing the slabs.
- * @param object The object to find the owning slab for.
- * @return A pointer to the slab containing the object, or NULL if not found.
- */
-static slab_t *slab_cache_find_owner(slab_cache_t *cache, const void *object)
-{
-    list_t *lists[] = {&cache->partial_slabs, &cache->empty_slabs, &cache->full_slabs};
-
-    for (size_t i = 0; i < sizeof(lists) / sizeof(lists[0]); i++)
-    {
-        slab_t *slab = slab_list_find(lists[i], cache, object);
-        if (slab != NULL)
-            return slab;
-    }
-
-    return NULL;
-}
-
-/**
  * Returns an object to the specified slab, marking it as free.
  *
  * @param slab The slab to return the object to.
@@ -365,9 +344,9 @@ int slab_cache_free(slab_cache_t *cache, void *object)
     if (cache == NULL || object == NULL)
         return -1;
 
-    slab_t *slab = slab_cache_find_owner(cache, object);
+    slab_t *slab = slab_from_object(object);
 
-    if (slab == NULL)
+    if (slab == NULL || slab->cache != cache || !slab_contains(cache, slab, object))
         return -1;
 
     if (slab->inuse == 0)

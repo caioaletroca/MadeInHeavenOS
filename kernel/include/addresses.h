@@ -11,14 +11,28 @@ typedef void *kernaddr_t;
 
 /**
  * Convert a physical address to a kernel one
- * 
+ *
  * @param address	Physical address
  * @return			Kernel address
-*/
-static inline kernaddr_t phys_to_kern(physaddr_t address) {
+ */
+static inline kernaddr_t phys_to_kern(physaddr_t address)
+{
 	if (address == (physaddr_t)NULL)
 		return NULL;
 	return (kernaddr_t)(address + KERNEL_VIRTUAL_ADDRESS);
+}
+
+/**
+ * Convert a kernel address to a physical one
+ *
+ * @param address	Kernel address
+ * @return			Physical address
+ */
+static inline physaddr_t kern_to_phys(kernaddr_t address)
+{
+	if (address == NULL)
+		return (physaddr_t)NULL;
+	return (physaddr_t)(address - KERNEL_VIRTUAL_ADDRESS);
 }
 
 #endif

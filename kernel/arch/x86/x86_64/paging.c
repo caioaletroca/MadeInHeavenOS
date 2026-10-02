@@ -44,7 +44,7 @@ static inline page_table_t *page_table_from_entry(page_table_entry_t entry)
  */
 static page_table_t *page_table_create(physaddr_t *physical_out)
 {
-    physaddr_t physical = (physaddr_t)frame_alloc(0, 0);
+    physaddr_t physical = frame_alloc(0, 0);
 
     if (physical == 0)
         return NULL;
@@ -52,7 +52,7 @@ static page_table_t *page_table_create(physaddr_t *physical_out)
     page_table_t *table = phys_to_kern(physical);
     if (table == NULL)
     {
-        frame_free((void *)physical, 0);
+        frame_free(physical, 0);
         return NULL;
     }
 
