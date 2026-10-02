@@ -12,7 +12,6 @@
 #include <stdint.h>
 #include <addresses.h>
 #include <string.h>
-#include <kmalloc.h>
 #include <sys/list.h>
 #include <util.h>
 

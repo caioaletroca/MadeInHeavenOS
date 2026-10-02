@@ -2,7 +2,6 @@
 #include <mm/slab.h>
 #include <mm/frame.h>
 #include <asm/memory.h>
-#include <kmalloc.h>
 #include <util.h>
 
 /**

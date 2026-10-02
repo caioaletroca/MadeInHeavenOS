@@ -5,7 +5,6 @@
 #include <stdint.h>
 #include <addresses.h>
 #include <mm/zone.h>
-#include <kmalloc.h>
 
 /**
  * Adds a memory zone to the frame allocator

@@ -1,5 +1,6 @@
 #include <mm/frame.h>
 #include <mm/boot_alloc.h>
+#include <asm/irq_flags.h>
 
 static zone_t *zone_list;
 
@@ -26,6 +27,8 @@ int frame_zone_add(physaddr_t address, size_t size, size_t frame_size)
 
 physaddr_t frame_alloc(unsigned int order, unsigned int flags)
 {
+    irq_flags_t irq_flags = irq_save();
+
     for (zone_t *zone = zone_list; zone != NULL; zone = zone->next)
     {
         if ((zone->flags & flags) != flags)
@@ -35,10 +38,12 @@ physaddr_t frame_alloc(unsigned int order, unsigned int flags)
 
         if (address != 0)
         {
+            irq_restore(irq_flags);
             return address;
         }
     }
 
+    irq_restore(irq_flags);
     return 0; // No suitable frame found
 }
 
@@ -46,6 +51,8 @@ void frame_free(physaddr_t address, unsigned int order)
 {
     if (address == 0)
         return;
+
+    irq_flags_t irq_flags = irq_save();
 
     // Loop through all registered zones
     for (zone_t *zone = zone_list; zone != NULL; zone = zone->next)
@@ -61,6 +68,8 @@ void frame_free(physaddr_t address, unsigned int order)
             }
         }
     }
+
+    irq_restore(irq_flags);
 }
 
 frame_t *frame_lookup(physaddr_t address)

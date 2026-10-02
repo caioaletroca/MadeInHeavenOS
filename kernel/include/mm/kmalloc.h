@@ -23,4 +23,12 @@ void *kmalloc(size_t size);
  */
 void kfree(void *ptr);
 
+/**
+ * Allocates a block of memory of the specified size and initializes it to zero.
+ *
+ * @param size The size of the memory block to allocate.
+ * @return A pointer to the allocated and zero-initialized memory, or NULL if allocation fails.
+ */
+void *kzalloc(size_t size);
+
 #endif /* _KMALLOC_H_ */

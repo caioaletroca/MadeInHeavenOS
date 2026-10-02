@@ -1,9 +1,10 @@
-#include <kmalloc.h>
+#include <mm/kmalloc.h>
 #include <addresses.h>
 #include <mm/frame.h>
 #include <mm/slab.h>
 #include <mm/boot_alloc.h>
 #include <panic.h>
+#include <asm/irq_flags.h>
 #include <util.h>
 
 #define KMALLOC_MIN_SHIFT 4  // 16 bytes
@@ -62,19 +63,30 @@ void *kmalloc(size_t size)
     if (size == 0)
         return NULL;
 
+    irq_flags_t flags = irq_save();
+
     if (size <= KMALLOC_MAX_SIZE)
-        return slab_cache_alloc(&kmalloc_caches[kmalloc_class(size)]);
+    {
+        void *ptr = slab_cache_alloc(&kmalloc_caches[kmalloc_class(size)]);
+        irq_restore(flags);
+        return ptr;
+    }
 
     unsigned int order = kmalloc_page_order(size);
     physaddr_t physical = frame_alloc(order, 0);
 
     if (physical == 0)
+    {
+        irq_restore(flags);
         return NULL;
+    }
 
     // Remember the order on the head frame so kfree() can find it
     frame_t *frame = frame_lookup(physical);
     frame->order = order;
     frame->slab = NULL;
+
+    irq_restore(flags);
 
     return phys_to_kern(physical);
 }
@@ -84,8 +96,13 @@ void kfree(void *ptr)
     if (ptr == NULL)
         return;
 
+    irq_flags_t flags = irq_save();
+
     if (slab_free(ptr) == 0)
+    {
+        irq_restore(flags);
         return;
+    }
 
     // Not a slab object: must be the head of a page allocation
     physaddr_t physical = kern_to_phys(ptr);
@@ -95,4 +112,15 @@ void kfree(void *ptr)
         panic("kfree: invalid pointer %p", ptr);
 
     frame_free(physical, frame->order);
+    irq_restore(flags);
+}
+
+void *kzalloc(size_t size)
+{
+    void *ptr = kmalloc(size);
+
+    if (ptr != NULL)
+        memset(ptr, 0, size);
+
+    return ptr;
 }
