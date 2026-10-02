@@ -1,6 +1,6 @@
+#include "keyboard.h"
 #include <arch/irq.h>
-#include <driver/keyboard.h>
-#include <driver/ps2.h>
+#include "ps2.h"
 #include <driver/input.h>
 #include <x86/io.h>
 #include "pic.h"

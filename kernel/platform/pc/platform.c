@@ -1,5 +1,5 @@
 #include <platform/platform.h>
-#include <driver/ps2.h>
+#include "ps2.h"
 #include "pic.h"
 
 void platform_init(void)
