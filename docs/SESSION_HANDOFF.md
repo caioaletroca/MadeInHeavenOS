@@ -6,7 +6,8 @@ Working x86-64 PC kernel with:
 
 - Docker generic → custom MiHOS cross-toolchain pipeline (build only runs inside the Docker image)
 - GRUB/Multiboot2 boot, higher-half kernel
-- Physical memory map, zones, buddy allocator, minimal slab allocator
+- Physical memory map, zones, buddy allocator, early boot allocator
+- `kmalloc`/`kfree` on slab size classes (16–1024 B) with buddy pages above that
 - 4 KiB page map/unmap/translate behind an arch-neutral MMU contract
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
@@ -16,13 +17,14 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+b919366 test(sched): drop scheduler self-test start banner
+d5cd3a9 feat(mm): replace bump kmalloc with slab-backed allocator
+094b1d1 docs(architecture): update session handoff
 da6b47d build(make): move arch compiler flags to per-arch config
 b7c841b refactor(mm): add arch-neutral MMU contract
 e0f58e0 refactor(boot): parse Multiboot2 into generic boot_info
 39ba3e6 Mini rework for multi arch build
 6bccc91 feat(sched): add timer-driven preemptive scheduling
-0595d72 refactor(platform): move VGA display backend
-fdb9433 feat(sched): add cooperative kernel threads
 ```
 
 ## Architecture
@@ -65,7 +67,7 @@ Platform-private headers (`pic.h`, `vga.h`, `multiboot2.h`) are quote-included f
 |---|---|
 | Entry → `kmain(uintptr_t boot_handoff)` | `boot.S`, `boot64.S` (passes Multiboot2 address in `%rdi`) |
 | Linker script defining `_kernel_physical_end` | `x86_64/linker.lds` |
-| `<asm/memory.h>`: `PAGE_SIZE`, `KERNEL_VIRTUAL_ADDRESS`, `KERNEL_SELFTEST_VIRTUAL_BASE` | `arch/x86/include/asm/memory.h` |
+| `<asm/memory.h>`: `PAGE_SIZE`, `KERNEL_VIRTUAL_ADDRESS`, `KERNEL_DIRECT_MAP_SIZE`, `KERNEL_SELFTEST_VIRTUAL_BASE` | `arch/x86/include/asm/memory.h` |
 | `<asm/irq_flags.h>`: `irq_save/restore/enable/disable`, `irq_flags_t` | inline `pushfq/cli/sti` |
 | `<asm/cpu.h>`: `cpu_idle/cpu_halt/cpu_breakpoint` | inline `hlt`, Bochs magic breakpoint |
 | `arch_init()` | `arch.c`: IDT, exceptions, page fault handler, yield vector |
@@ -83,9 +85,35 @@ Platform-private headers (`pic.h`, `vga.h`, `multiboot2.h`) are quote-included f
 
 ```text
 platform_boot_info_init → arch_init → platform_init (PIC, PS/2)
-→ mmap_init(&boot_info) → scheduler_init → timer_init(TIMER_FREQUENCY_HZ)
-→ irq_enable → mm_selftest → scheduler_selftest
+→ mm_init(&boot_info) [mmap_init + kmalloc_init] → scheduler_init
+→ timer_init(TIMER_FREQUENCY_HZ) → irq_enable → mm_selftest → scheduler_selftest
 ```
+
+## Memory management
+
+```text
+boot_info regions ──▶ mmap_init ──▶ zones (one buddy system each) ──▶ frame_alloc/free (physaddr_t)
+                        │                                                  │
+                        └─ boot_alloc: zone_t, frame_t[], bitmaps          ├─▶ slab caches ─▶ kmalloc ≤ 1024 B
+                           (sealed by kmalloc_init)                        └─▶ kmalloc > 1024 B (2^order pages)
+```
+
+- **Physical layout:** `[kernel image][boot metadata][usable memory …]`. The boot metadata reservation
+  is computed from the memory map (`mmap_metadata_size`), not a fixed size. Only memory inside
+  `KERNEL_DIRECT_MAP_SIZE` (1 GiB) is handed to zones.
+- **Bootstrap:** zones start fully allocated (`refs = 1`); `mmap_release_regions` frees every frame
+  to build the free lists.
+- **Boot allocator** (`mm/boot_alloc.c`): zeroed, permanent bump allocations for allocator metadata.
+  `boot_alloc_seal()` (called by `kmalloc_init`) makes later use panic.
+- **Frame API:** `frame_alloc/frame_free` take and return `physaddr_t` (0 = failure; frame 0 is never
+  in a zone). `frame_lookup(phys)` returns the `frame_t`, which records `order` (head of a page
+  allocation) and `slab` (owning slab page).
+- **Slab:** one-page slabs with the `slab_t` header at offset 0 of its own page; objects start at
+  `cache->offset`. Owner lookup is O(1) through `frame_lookup(...)->slab`. Double frees are detected.
+- **kmalloc:** classes 16, 32, …, 1024 B (16-byte aligned); larger sizes use whole buddy blocks
+  (page aligned). `kfree` tries `slab_free` first, then frees the page block by its recorded order.
+  Slab objects are never page aligned, page allocations always are.
+- Address helpers: `phys_to_kern()` / `kern_to_phys()` (direct map at `KERNEL_VIRTUAL_ADDRESS`).
 
 ## Scheduler
 
@@ -116,17 +144,19 @@ platform_boot_info_init → arch_init → platform_init (PIC, PS/2)
 - `buddy_alloc()` did not remove the block from the free list → duplicate frames.
 - Preemption draft: missing `SS:RSP` in the iret frame, reversed `isr_context_t` order,
   mixed cooperative/interrupt frame formats → fixed by unifying on interrupt frames.
+- `mmap_free` looped to `length - 1`, so the last available region never reached the buddy
+  allocator; sort/merge underflowed on empty maps.
+- Old bump `kmalloc` returned physical addresses as pointers (worked only through a leftover
+  identity mapping); memory above the 1 GiB direct map was handed to zones.
 
 ## Recommended next steps
 
-### Step 2 — Memory management debt (next)
+### Step 2 — Memory management debt (done)
 
-- Replace bump-only `kmalloc` with slab size classes (e.g. 16–2048 B) and buddy fallback for larger
-  sizes; then remove `KERNEL_HEAP_SIZE`.
-- Re-audit `mmap_free()` (possible final-region/underflow issue; loop uses `length - 1`).
-- Switch the frame API from `void *` to `physaddr_t`.
+Frame API on `physaddr_t`, `mmap_release_regions` fix, boot allocator replacing `KERNEL_HEAP_SIZE`,
+per-frame ownership, on-slab headers, `kmalloc`/`kfree`.
 
-### Step 3 — Threads and synchronization
+### Step 3 — Threads and synchronization (next)
 
 - `thread_create(entry, arg)` with allocated stacks, unique IDs, reaper for terminated threads.
 - Wait queues + `THREAD_BLOCKED`, `thread_sleep(ticks)`, mutex, semaphore.
@@ -145,11 +175,13 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 ## Known technical debt
 
-- `KERNEL_HEAP_SIZE` fixed bootstrap reservation; `kmalloc` is bump-only.
 - `page_unmap` does not reclaim empty intermediate tables.
-- Direct map covers only the first 1 GiB.
+- Direct map covers only the first 1 GiB; RAM above it is ignored (clamped in `mmap_init`).
 - `MMU_EXEC` ignored: NX not enabled (`EFER.NXE`), every mapping is executable.
-- Frame API uses `void *` for physical addresses.
+- Slab pages are never returned to the buddy allocator (no empty-slab reclamation, no cache destroy).
+- `kmalloc` above 1024 B rounds up to a power-of-two number of pages (internal waste).
+- `kmalloc`/slab have no locking; only safe because callers do not allocate from IRQ context yet.
+- `frame_free`/`frame_lookup` walk the zone list linearly.
 - Terminated thread stacks are not reclaimed; `thread->id` is always 0.
 - No SMP; `irq_save` is the only synchronization.
 - `driver/ps2.c` / `driver/ps2.h` are PC-only code in the generic `driver/` dir;
