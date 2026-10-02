@@ -10,6 +10,11 @@ static uint32_t next_thread_id = 1;
 static list_t zombie_list;
 static semaphore_t zombie_count;
 
+/**
+ * Allocate a unique thread ID.
+ *
+ * Guarantees that each thread receives a unique ID even with interrupts disabled.
+ */
 static uint32_t thread_alloc_id(void)
 {
     irq_flags_t flags = irq_save();
@@ -19,6 +24,13 @@ static uint32_t thread_alloc_id(void)
     return id;
 }
 
+/**
+ * Reaper thread function.
+ *
+ * This function runs in a dedicated thread and is responsible for freeing
+ * the resources of terminated threads. It waits for threads to appear in
+ * the zombie list and then deallocates their stacks and thread structures.
+ */
 static void thread_reaper(void *arg)
 {
     (void)arg;
