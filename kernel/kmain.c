@@ -3,10 +3,12 @@
 #include <asm/irq_flags.h>
 #include <addresses.h>
 #include <kprintf.h>
-#include <mm.h>
+#include <mm/mm.h>
 #include <driver/input.h>
-#include <platform/platform.h>
+#include <driver/tty.h>
 #include <driver/timer.h>
+#include <driver/console.h>
+#include <platform/platform.h>
 #include <sched/thread.h>
 #include <sched/scheduler.h>
 #include <boot_info.h>
@@ -17,17 +19,6 @@
 static thread_t boot_thread;
 static boot_info_t boot_info;
 
-static void keyboard_reader(void *arg)
-{
-    (void)arg;
-
-    for (;;)
-    {
-        input_event_t event = input_get_event();
-        kprintf("Key=%u %s\n", event.key, event.pressed ? "pressed" : "released");
-    }
-}
-
 /**
  * Kernel main entry point.
  *
@@ -35,6 +26,8 @@ static void keyboard_reader(void *arg)
  */
 void kmain(uintptr_t boot_handoff)
 {
+    tty_init();
+
     platform_boot_info_init(boot_handoff, &boot_info);
 
     kprintf("MiHOS\n");
@@ -49,7 +42,7 @@ void kmain(uintptr_t boot_handoff)
 
     scheduler_init(&boot_thread);
     threads_init();
-    thread_create(keyboard_reader, NULL);
+    console_init(&keymap_abnt2);
 
     timer_init(TIMER_FREQUENCY_HZ);
 
