@@ -13,21 +13,23 @@ Working x86-64 PC kernel with:
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
 - Blocking primitives: wait queues, `thread_sleep`, semaphores, mutexes
-- Generic input events; PS/2 scancode set 2 decoder feeding a blocking reader thread
+- Generic input events; PS/2 scancode set 2 decoder feeding the console thread
+- Console: US and ABNT2 keymaps with dead keys, line discipline, blocking `console_read()`
+- UTF-8 tty drawing CP437 glyphs on VGA text mode with a hardware cursor; `kprintf` is atomic per call
 - Kernel split into generic code, arch contracts and platform contracts, enforced by the build
-- MM, preemption and sync self-tests passing in Bochs
+- MM, preemption and sync self-tests passing in Bochs; keyboard verified in Bochs and QEMU
 
 Latest commits:
 
 ```text
+1c6630d feat(driver): add keymaps and console line discipline
+8c8d133 feat(driver): decode UTF-8 in tty and draw CP437 glyphs
+903b968 refactor(platform): move PS/2 controller into platform/pc
+fd16b81 docs(sched): document thread ID allocation and reaper
+34fa82f docs(architecture): document threads, sync and input in handoff
 63f16a2 feat(driver): add input events and PS/2 set 2 keyboard decoder
 ef2923b feat(sched): add blocking primitives and thread lifecycle
 9360111 fix(mm): make kmalloc and frame allocator preemption-safe
-4bc55dd docs(architecture): document memory management in handoff
-b919366 test(sched): drop scheduler self-test start banner
-d5cd3a9 feat(mm): replace bump kmalloc with slab-backed allocator
-da6b47d build(make): move arch compiler flags to per-arch config
-b7c841b refactor(mm): add arch-neutral MMU contract
 ```
 
 ## Architecture
@@ -44,12 +46,14 @@ kernel/
 │   │   └── mmu.h                 #   arch_mmu_kernel_root/map/unmap/translate, MMU_* flags
 │   ├── platform/platform.h       # contract every board implements
 │   ├── boot_info.h               # protocol-independent boot data
-│   └── sched/ mm/ driver/ ...
+│   ├── unicode.h                 # codepoint_t
+│   ├── driver/                   # input, keymap, console, tty, screen, timer
+│   └── sched/ mm/ ...
 ├── arch/x86/
 │   ├── include/asm/              # PUBLIC arch interface: irq_flags.h cpu.h memory.h
 │   ├── common/include/x86/       # PRIVATE: cpu gdt idt io isr paging vectors exceptions
 │   └── x86_64/                   # boot, ISR stubs, arch.c, context.c, isr.c, paging.c, ...
-├── platform/pc/                  # pic, pit, ps2, keyboard, vga, multiboot2, platform.c
+├── platform/pc/                  # pic, pit, ps2, keyboard, vga, screen (CP437), multiboot2, platform.c
 ├── sched/ mm/ driver/ sys/ selftest/
 └── kmain.c
 ```
@@ -62,7 +66,8 @@ kernel/
 | `arch/` and `platform/` only | additionally `<x86/...>` |
 
 A generic file including `<x86/...>` fails to compile. Inline asm must not appear outside `arch/`.
-Platform-private headers (`pic.h`, `vga.h`, `multiboot2.h`) are quote-included from the same directory.
+Platform-private headers (`pic.h`, `vga.h`, `ps2.h`, `keyboard.h`, `multiboot2.h`) are quote-included
+from the same directory.
 
 ### Arch contract (what a new arch must provide)
 
@@ -87,9 +92,9 @@ Platform-private headers (`pic.h`, `vga.h`, `multiboot2.h`) are quote-included f
 ### Boot sequence (`kmain`)
 
 ```text
-platform_boot_info_init → arch_init → input_init → platform_init (PIC, PS/2, keyboard IRQ)
+tty_init → platform_boot_info_init → arch_init → input_init → platform_init (PIC, PS/2, keyboard IRQ)
 → mm_init(&boot_info) [mmap_init + kmalloc_init] → scheduler_init [idle thread]
-→ threads_init [reaper] → thread_create(keyboard_reader)
+→ threads_init [reaper] → console_init(&keymap_abnt2) [console thread]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → mm_selftest → scheduler_selftest [+ sync tests]
 ```
 
@@ -170,19 +175,39 @@ boot_info regions ──▶ mmap_init ──▶ zones (one buddy system each) �
 - **Never block in IRQ context** (`semaphore_down`, `mutex_lock`, `thread_sleep`): it would block the
   interrupted thread. Only `up`/`wake`/`input_report_key` are allowed there.
 
-## Input
+## Input and console
 
 ```text
 IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pressed)
-     → driver/input.c ring buffer (128 events) + semaphore → input_get_event() (blocking, threads)
+     → driver/input.c ring (128 events) → console thread (only consumer of input_get_event)
+     → keymap_translate → dead keys / Ctrl → line discipline → console ring → console_read()
+                                                            └→ echo → tty_write
 ```
 
 - `keycode_t` (`include/driver/input.h`) names physical key positions on a US layout, not characters
   (`KEY_SEMICOLON` types 'ç' on ABNT2). Covers 104 keys, ABNT2 extras (`KEY_102ND`, `KEY_RO`,
-  `KEY_KP_COMMA`), keypad, media and ACPI keys.
+  `KEY_KP_COMMA`), keypad, media and ACPI keys. Full input buffer drops events.
 - Decoder handles `E0` extended keys, `F0` releases, Print Screen fake shifts and the 8-byte Pause
-  sequence (reported as press + release).
-- Full buffer drops events. A `keyboard_reader` thread in `kmain` currently prints the events.
+  sequence (reported as press + release). Read the data port exactly once per IRQ.
+- **Keymaps** (`driver/keymap.c`): `normal`/`shift`/`altgr` tables of `codepoint_t`. `keymap_translate`
+  is stateless: it returns a code point, `KEYMAP_DEAD | accent` for a dead key, or 0. Level order
+  AltGr → Shift → normal, each falling back when empty. Caps Lock flips Shift on lowercase letters
+  only; keypad digits and `KP_DOT` type nothing with Num Lock off. `keymap_compose(accent, base)`
+  looks up dead key compositions (`´a → á`, `~a → ã`, `´c → ç`).
+- **Console** (`driver/console.c`): one thread owns all key state (`down[]`, Caps/Num Lock toggled on
+  the press edge so typematic repeat is ignored, pending accent). The line discipline handles echo,
+  backspace (removes a whole UTF-8 sequence, erases one cell with `"\b \b"`), Ctrl+U, Ctrl+C (drops
+  the line, no signals yet) and Ctrl+D (EOF). Tab, Esc and arrows are ignored.
+- **Console ring** (xv6 / Linux `n_tty` style): `read_index ≤ write_index ≤ edit_index`, free-running
+  indices over a power-of-two buffer. Readers consume `[read, write)`, the console thread edits
+  `[write, edit)`. Ordinary input leaves one byte free so `\n`/EOF can always commit. `console_read`
+  is canonical: at most one line per call; EOF is consumed only when it comes first, so the next
+  read returns 0.
+- **Output:** `tty_write` decodes UTF-8 (U+FFFD for malformed/overlong) and runs under `irq_save`,
+  so each `kprintf` is atomic and callable from IRQs, panic and early boot. The PC `screen_glyph`
+  maps code points to CP437 and falls back to the unaccented letter (`ã → a`).
+- The console's read/write signatures already match `read`/`write`; in step 4 they become the first
+  `file_ops_t` behind fds 0–2.
 
 ## Interrupt vectors (`x86/vectors.h`)
 
@@ -205,6 +230,10 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
   identity mapping); memory above the 1 GiB direct map was handed to zones.
 - `scheduler_wake` checked `current_thread->state` instead of the woken thread's, so wake-ups
   were silently dropped; thread entries were called without their argument.
+- `ps2_interface_test` stored the second port's result in slot 0; `ps2.h` defined the device table
+  `static` in every includer.
+- VGA frame buffer was written through its physical address (leftover identity mapping).
+- Debug code reading port `0x60` twice stole the next scancode byte, so releases decoded as presses.
 
 ## Recommended next steps
 
@@ -223,12 +252,14 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 `address_space_t` (builds on `mmu_root`), ring-3 GDT segments + TSS `rsp0` update on switch,
 `int 0x80` syscalls (`IDT_GATE_USER_INTERRUPT`), first user program, user faults kill the process.
 
-### Console / keyboard layer (can come before or alongside step 4)
+Add the file layer with it: `file_t` + `file_ops_t { read, write }`, a per-process fd table with
+0–2 on the console, and `read`/`write` syscalls dispatching through `fd->ops`. libc `FILE` then
+gets an `fd` and flushes through `write`.
 
-- Move `driver/ps2.c` / `ps2.h` into `platform/pc`.
-- Console layer: keymap (US, ABNT2) from keycodes to characters, modifiers / Caps Lock, line editing
-  (echo, backspace, line buffering), blocking `console_read()`. Basis for the shell and `read()`.
-- Thread-safe output (mutex around the tty) replacing direct `kprintf` from many threads.
+### Console / keyboard layer (done)
+
+PS/2 moved into `platform/pc`, UTF-8 tty with CP437 glyphs and hardware cursor, atomic `kprintf`,
+US/ABNT2 keymaps with dead keys, line discipline, blocking `console_read()`.
 
 ### Optional — second arch skeleton
 
@@ -237,6 +268,15 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 ## Known technical debt
 
+**Open bugs (fix first):**
+
+- `console_store` indexes with `% (CONSOLE_BUFFER_SIZE - 1)` while every other access uses
+  `% CONSOLE_BUFFER_SIZE`: reads and writes diverge after 1023 bytes of total input.
+- `console_read` checks `CTRL('C')` instead of `CTRL('D')` for EOF: EOF never ends a read and `0x04`
+  is returned as data.
+
+**Debt:**
+
 - `page_unmap` does not reclaim empty intermediate tables.
 - Direct map covers only the first 1 GiB; RAM above it is ignored (clamped in `mmap_init`).
 - `MMU_EXEC` ignored: NX not enabled (`EFER.NXE`), every mapping is executable.
@@ -244,18 +284,27 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `kmalloc` above 1024 B rounds up to a power-of-two number of pages (internal waste).
 - `frame_free`/`frame_lookup` walk the zone list linearly.
 - No SMP; `irq_save` is the only synchronization (becomes spinlocks + `irq_save` on SMP).
-- `kprintf`/tty are not thread-safe: concurrent prints can interleave or corrupt the cursor.
 - No `in_interrupt()` guard: blocking from an IRQ handler is not detected.
 - No `thread_join`; a `thread_t *` from `thread_create` is only valid until that thread exits.
 - Sleep queue is scanned linearly on every tick.
 - Every block/yield goes through `int`/`iretq`; consider the two-level (Linux/xv6) context switch
   if blocking becomes frequent (hidden behind `arch_yield`).
-- `ps2.h` declares `static` device state in a header, duplicated in every includer.
-- `driver/ps2.c` / `driver/ps2.h` are PC-only code in the generic `driver/` dir.
 - `<asm/...>` lives at family level (`arch/x86/include`) but uses x86_64-only instructions.
 - Kernel `install-headers` copies internal headers into the sysroot (stale copies can hide
   include errors → use a clean build after moving headers).
 - `ARCH_CFLAGS` (`-mcmodel=kernel`) also applies to the future userland libc.
+- `tty_write` holds IRQs off for the whole write plus a full 4000-byte VGA copy; long user writes
+  will need a mutex and a separate panic path.
+- Screen redraws the whole buffer on every write; scrolling uses `memcpy` on an overlapping range.
+- Single tty UTF-8 decoder state; relies on every write going through the IRQ-off section.
+- Keyboard LEDs never follow Caps/Num Lock (`0xED` not sent; needs a PS/2 command path).
+- No raw mode / termios; Tab, Esc, arrows and Home/End are ignored in line editing.
+- Second-port interface test runs even when no second port was detected (may hang on
+  single-channel controllers).
+- `vsnprintf` has no precision (`%.*s` panics) and `%s` does not bound-check `remain`.
+- libc `FILE`: `stderr` points past `stdio_streams[2]`, `fputc` writes through a NULL buffer,
+  `fwrite` does not reset its per-item counter.
+- Bochs (win32 GUI) sends Left Ctrl for the ABNT2 `/ ?` key, so `KEY_RO` can only be tested on QEMU.
 
 ## Commands
 
@@ -271,6 +320,13 @@ Run Bochs:
 
 ```sh
 bochs -q -f .bochsrc
+```
+
+Run QEMU (verifies keys Bochs drops; `cpu_breakpoint` is a no-op there):
+
+```sh
+qemu-system-x86_64 -cdrom mihos.iso -m 1024 -no-reboot -no-shutdown
+qemu-system-x86_64 -cdrom mihos.iso -m 1024 -no-reboot -no-shutdown -d int,cpu_reset -D qemu.log
 ```
 
 Local, intentionally uncommitted: `.bochsrc`, `bx_enh_dbg.ini`.
