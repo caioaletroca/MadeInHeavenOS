@@ -9,6 +9,8 @@ Working x86-64 PC kernel with:
 - Physical memory map, zones, buddy allocator, early boot allocator
 - `kmalloc`/`kfree` on slab size classes (16–1024 B) with buddy pages above that
 - 4 KiB page map/unmap/translate behind an arch-neutral MMU contract
+- Per-process address spaces: private user half, shared kernel half (`address_space_t`)
+- Ring-3 GDT segments and a loaded TSS (RSP0 + IST stacks); identity map removed after boot
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
@@ -22,14 +24,14 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+5ebcf13 feat(mm): add per-process address spaces
+c9d7865 feat(libc): add memcmp
+abaadbc fix(mm): stop toggle_bit truncating bitmap bits to int
+27f1631 feat(arch): add user segments and load the TSS
+33d2a0a fix(boot): actually remove the identity map
+008c702 docs(architecture): document console layer in handoff
 1c6630d feat(driver): add keymaps and console line discipline
 8c8d133 feat(driver): decode UTF-8 in tty and draw CP437 glyphs
-903b968 refactor(platform): move PS/2 controller into platform/pc
-fd16b81 docs(sched): document thread ID allocation and reaper
-34fa82f docs(architecture): document threads, sync and input in handoff
-63f16a2 feat(driver): add input events and PS/2 set 2 keyboard decoder
-ef2923b feat(sched): add blocking primitives and thread lifecycle
-9360111 fix(mm): make kmalloc and frame allocator preemption-safe
 ```
 
 ## Architecture
@@ -43,7 +45,8 @@ kernel/
 │   │   ├── arch.h                #   arch_init()
 │   │   ├── context.h             #   arch_thread_context_init(), arch_yield()
 │   │   ├── irq.h                 #   irq_register(irq, handler)
-│   │   └── mmu.h                 #   arch_mmu_kernel_root/map/unmap/translate, MMU_* flags
+│   │   └── mmu.h                 #   arch_mmu_init/kernel_root/map/unmap/translate,
+│   │                             #   arch_mmu_root_create/destroy/activate, MMU_* flags
 │   ├── platform/platform.h       # contract every board implements
 │   ├── boot_info.h               # protocol-independent boot data
 │   ├── unicode.h                 # codepoint_t
@@ -51,8 +54,8 @@ kernel/
 │   └── sched/ mm/ ...
 ├── arch/x86/
 │   ├── include/asm/              # PUBLIC arch interface: irq_flags.h cpu.h memory.h
-│   ├── common/include/x86/       # PRIVATE: cpu gdt idt io isr paging vectors exceptions
-│   └── x86_64/                   # boot, ISR stubs, arch.c, context.c, isr.c, paging.c, ...
+│   ├── common/include/x86/       # PRIVATE: cpu gdt idt io isr paging tss vectors exceptions
+│   └── x86_64/                   # boot, ISR stubs, gdt64.S, tss.c, arch.c, context.c, isr.c, paging.c
 ├── platform/pc/                  # pic, pit, ps2, keyboard, vga, screen (CP437), multiboot2, platform.c
 ├── sched/ mm/ driver/ sys/ selftest/
 └── kmain.c
@@ -75,13 +78,13 @@ from the same directory.
 |---|---|
 | Entry → `kmain(uintptr_t boot_handoff)` | `boot.S`, `boot64.S` (passes Multiboot2 address in `%rdi`) |
 | Linker script defining `_kernel_physical_end` | `x86_64/linker.lds` |
-| `<asm/memory.h>`: `PAGE_SIZE`, `KERNEL_VIRTUAL_ADDRESS`, `KERNEL_DIRECT_MAP_SIZE`, `KERNEL_SELFTEST_VIRTUAL_BASE` | `arch/x86/include/asm/memory.h` |
+| `<asm/memory.h>`: `PAGE_SIZE`, `KERNEL_VIRTUAL_ADDRESS`, `KERNEL_DIRECT_MAP_SIZE`, `KERNEL_SELFTEST_VIRTUAL_BASE`, `USER_BASE`, `USER_STACK_TOP`, `USER_TOP` | `arch/x86/include/asm/memory.h` |
 | `<asm/irq_flags.h>`: `irq_save/restore/enable/disable/enabled`, `irq_flags_t` | inline `pushfq/cli/sti` |
 | `<asm/cpu.h>`: `cpu_idle/cpu_halt/cpu_breakpoint` | inline `hlt`, Bochs magic breakpoint |
-| `arch_init()` | `arch.c`: IDT, exceptions, page fault handler, yield vector |
+| `arch_init()` | `arch.c`: TSS, IDT, exceptions, page fault handler, yield vector |
 | `arch_thread_context_init()`, `arch_yield()` | `context.c` + `thread_entry.S` trampoline |
 | `irq_register()` + dispatch to `scheduler_on_interrupt()` | `isr.c` |
-| `arch_mmu_*` | `paging.c` (`struct mmu_root { top, top_physical }`) |
+| `arch_mmu_*` (incl. root create/destroy/activate) | `paging.c` (`struct mmu_root { top, top_physical }`) |
 | Toolchain flags | `config/<ARCH>.mk` (`ARCH_CFLAGS`) |
 
 ### Platform contract
@@ -92,8 +95,8 @@ from the same directory.
 ### Boot sequence (`kmain`)
 
 ```text
-tty_init → platform_boot_info_init → arch_init → input_init → platform_init (PIC, PS/2, keyboard IRQ)
-→ mm_init(&boot_info) [mmap_init + kmalloc_init] → scheduler_init [idle thread]
+tty_init → platform_boot_info_init → arch_init [TSS first] → input_init → platform_init (PIC, PS/2, keyboard IRQ)
+→ mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init] → scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [console thread]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → mm_selftest → scheduler_selftest [+ sync tests]
 ```
@@ -125,6 +128,46 @@ boot_info regions ──▶ mmap_init ──▶ zones (one buddy system each) �
 - Address helpers: `phys_to_kern()` / `kern_to_phys()` (direct map at `KERNEL_VIRTUAL_ADDRESS`).
 - **Locking:** `kmalloc/kfree/kzalloc` and `frame_alloc/frame_free` run under `irq_save`, so they are
   preemption-safe and callable from IRQ handlers (single CPU).
+- **Zones:** `mmap_split_region` cuts every available region into power-of-two zones (largest first,
+  remainders under 16 frames are dropped). `frame_alloc` tries zones newest-first, i.e. the small
+  zones at the top of RAM. The buddy bitmap holds one bit per pair (XOR of both halves' free state).
+
+### Virtual memory and address spaces
+
+```text
+L4[0..255]   user half    private per address space, every page owned by it
+L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at boot,
+                          arch_mmu_root_create copies the 256 entries into each new root
+```
+
+- The boot identity map (`L4[0]`) is removed in `boot64_high`, after GDTR is reloaded with the GDT's
+  virtual address (`gdt64_pointer_high`). Low physical memory is reachable only through the direct map.
+- **User layout** (`<asm/memory.h>`): `USER_BASE` 4 MiB (page 0 stays unmapped for NULL),
+  `USER_STACK_TOP` `0x00007FFFFFFFF000`, `USER_TOP` `0x0000800000000000` (canonical limit).
+- `address_space_t` (`mm/address_space.c`): `create`, `map` (fresh zeroed frames, `MMU_USER` added),
+  `write` (copies through the direct map, no activation needed), `activate` (NULL = kernel root),
+  `destroy`. **Ownership rule:** everything mapped in the user half is freed with the space, so shared
+  or kernel frames must never be mapped there.
+- `arch_mmu_root_destroy` walks `L4[0..255]` and frees pages and tables; it panics on the active root.
+  `arch_mmu_activate` skips the CR3 reload when the root is already active.
+- Intermediate tables get the USER bit when the mapping has `MMU_USER` (`page_table_next`); the kernel
+  half's L4 entries never do, so ring 3 cannot reach it. SMAP is off, so the kernel reads user pages
+  directly.
+
+### GDT and TSS (`gdt64.S`, `tss.c`)
+
+| Index | Selector | Descriptor |
+|---|---|---|
+| 1 | `0x08` | kernel code |
+| 2 | `0x10` | kernel data |
+| 3 | `0x1B` | user data (DPL 3) |
+| 4 | `0x23` | user code (DPL 3) |
+| 5–6 | `0x28` | TSS (16-byte system descriptor) |
+
+- User data precedes user code because `sysret` loads SS = base + 8 and CS = base + 16.
+- `tss_init()` (first thing in `arch_init`) fills the TSS descriptor base, sets IST1/IST2 to the top of
+  their stacks (no IDT gate uses them yet), `iomap_base = sizeof(tss)` (no ring-3 port I/O), and runs
+  `ltr`. `tss_set_kernel_stack(top)` sets RSP0, the stack the CPU loads on an interrupt from ring 3.
 
 ## Scheduler
 
@@ -234,6 +277,15 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
   `static` in every includer.
 - VGA frame buffer was written through its physical address (leftover identity mapping).
 - Debug code reading port `0x60` twice stole the next scancode byte, so releases decoded as presses.
+- `boot64_high` used `movq page_table_l4, %rax` (loads the **contents**) instead of the address, so the
+  identity map was never removed and the GDT only worked through it. `boot64` patched the TSS
+  descriptor with the same mistake and never ran `ltr`; a 64-bit `lgdt` of a 4-byte-base pointer read
+  garbage once data followed it.
+- `toggle_bit` returned the masked `unsigned long` as `int`, truncating bits 32–63 to 0, so
+  `buddy_free` merged with buddies still in use. Only zones with more than 32 pairs per order were hit
+  (every zone but the four smallest), including during the boot release; it surfaced when 255 page
+  tables pushed allocations past the small top zones. Found by replaying the allocation log through a
+  Python port of `buddy.c`.
 
 ## Recommended next steps
 
@@ -247,14 +299,21 @@ per-frame ownership, on-slab headers, `kmalloc`/`kfree`.
 Allocator locking + `kzalloc`, `thread_create` with arguments and IDs, idle thread, wait queues,
 sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 
-### Step 4 — User mode (next)
+### Step 4 — User mode (in progress)
 
-`address_space_t` (builds on `mmu_root`), ring-3 GDT segments + TSS `rsp0` update on switch,
-`int 0x80` syscalls (`IDT_GATE_USER_INTERRUPT`), first user program, user faults kill the process.
-
-Add the file layer with it: `file_t` + `file_ops_t { read, write }`, a per-process fd table with
-0–2 on the console, and `read`/`write` syscalls dispatching through `fd->ops`. libc `FILE` then
-gets an `fd` and flushes through `write`.
+- **4a (done):** ring-3 GDT segments, TSS loaded from C, identity map really removed.
+- **4b (done):** `address_space_t`, shared kernel half, root create/destroy/activate.
+- **4c (next):** first jump to ring 3. `arch_user_context_init` (frame with `cs = 0x23`,
+  `ss = 0x1B`), a scheduler switch hook calling `tss_set_kernel_stack` + `arch_mmu_activate`, and an
+  embedded machine-code loop in a user page. Test: the timer keeps preempting it.
+- **4d:** `int 0x80` syscalls on an `IDT_GATE_USER_INTERRUPT` gate; ABI `rax` = number, `rdi rsi rdx
+  r10 r8 r9` = arguments, `rax` = result; `write` and `exit` first; validate user pointers against
+  `USER_TOP` and user mappings.
+- **4e:** faults with `(cs & 3) == 3` kill the thread instead of panicking; the reaper destroys the
+  address space (never the active one).
+- **4f:** `process_t` with address space and fd table; file layer (`file_t` + `file_ops_t { read,
+  write }`, console as fds 0–2); ELF loader from a GRUB Multiboot2 module; userland libc (`crt0`,
+  syscall stubs, `FILE` over `fd`, built without `-mcmodel=kernel`).
 
 ### Console / keyboard layer (done)
 
@@ -305,6 +364,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - libc `FILE`: `stderr` points past `stdio_streams[2]`, `fputc` writes through a NULL buffer,
   `fwrite` does not reset its per-item counter.
 - Bochs (win32 GUI) sends Left Ctrl for the ABNT2 `/ ?` key, so `KEY_RO` can only be tested on QEMU.
+- No IDT gate uses the IST stacks yet; a double fault on a broken kernel stack still triple-faults.
+- `mmap_split_region` drops region remainders smaller than 16 frames.
+- `address_space_map` leaves already-mapped pages in place when it fails midway (freed on destroy).
+- The buddy allocator has no self-test; a randomized alloc/free check per zone size would have caught
+  the `toggle_bit` truncation immediately.
 
 ## Commands
 
