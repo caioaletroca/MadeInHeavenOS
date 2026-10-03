@@ -5,6 +5,7 @@
 #include <x86/gdt.h>
 #include <x86/isr.h>
 #include <x86/vectors.h>
+#include <x86/tss.h>
 
 extern void thread_entry(void);
 
@@ -29,6 +30,32 @@ void *arch_thread_context_init(void *stack, size_t stack_size)
     context->ss = KERNEL_DATA_SELECTOR;
 
     return context;
+}
+
+void *arch_user_context_init(void *stack, size_t stack_size, uintptr_t entry, uintptr_t user_stack)
+{
+    // Same placement and zeroing as a kernel thread; only the frame differs
+    isr_context_t *context = arch_thread_context_init(stack, stack_size);
+
+    if (context == NULL)
+        return NULL;
+
+    // iretq with RPL 3 selectors drops to ring 3 at entry
+    context->rip = entry;
+    context->cs = USER_CODE_SELECTOR;
+    context->rflags = RFLAGS_USER_THREAD;
+    context->rsp = user_stack;
+    context->ss = USER_DATA_SELECTOR;
+
+    return context;
+}
+
+void arch_thread_switch(void *stack, size_t stack_size)
+{
+    // The CPU loads RSP0 when an interrupt arrives in ring 3. Kernel
+    // threads never run there, so only user threads need it.
+    if (stack != NULL)
+        tss_set_kernel_stack(ALIGN_DOWN((uintptr_t)stack + stack_size, ABI_STACK_ALIGNMENT));
 }
 
 void arch_yield(void)

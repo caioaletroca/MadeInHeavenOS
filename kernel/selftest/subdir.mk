@@ -1,3 +1,4 @@
 local_sources := \
 mm.c \
-scheduler.c
+scheduler.c \
+user.c

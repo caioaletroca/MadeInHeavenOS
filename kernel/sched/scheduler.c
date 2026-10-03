@@ -1,4 +1,5 @@
 #include <sched/scheduler.h>
+#include <mm/address_space.h>
 #include <sys/list.h>
 #include <arch/context.h>
 #include <asm/irq_flags.h>
@@ -134,6 +135,13 @@ void *scheduler_on_interrupt(void *context)
 
     // Determine the next thread to run.
     thread_t *next_thread = scheduler_next_thread();
+
+    // Kernel stack for traps from ring 3, then the thread's address space
+    // (kernel threads run on the kernel root). Both are cheap when unchanged.
+    if (next_thread->space != NULL)
+        arch_thread_switch(next_thread->stack, next_thread->stack_size);
+
+    address_space_activate(next_thread->space);
 
     // Return the context of the next thread to run.
     return next_thread->context;

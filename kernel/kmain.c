@@ -15,6 +15,7 @@
 
 #include "selftest/mm.h"
 #include "selftest/scheduler.h"
+#include "selftest/user.h"
 
 static thread_t boot_thread;
 static boot_info_t boot_info;
@@ -50,6 +51,7 @@ void kmain(uintptr_t boot_handoff)
 
     mm_selftest();
     scheduler_selftest();
+    user_selftest();
 
     cpu_breakpoint();
 

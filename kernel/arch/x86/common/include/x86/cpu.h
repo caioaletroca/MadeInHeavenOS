@@ -10,6 +10,9 @@
 // Initial RFLAGS for a new kernel thread: interrupts enabled
 #define RFLAGS_KERNEL_THREAD (RFLAGS_RESERVED_1 | RFLAGS_IF)
 
+// Initial RFLAGS for a user thread: interrupts enabled, IOPL 0 (no cli/hlt/in/out)
+#define RFLAGS_USER_THREAD (RFLAGS_RESERVED_1 | RFLAGS_IF)
+
 // SysV x86-64 ABI: RSP must be 16-byte aligned before a `call`
 #define ABI_STACK_ALIGNMENT 16
 

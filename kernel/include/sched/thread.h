@@ -25,6 +25,11 @@ typedef enum thread_state
 } thread_state_t;
 
 /**
+ * @brief Forward declaration of the address space structure.
+ */
+struct address_space;
+
+/**
  * @brief Thread structure representing a single thread in the system.
  */
 typedef struct thread
@@ -38,6 +43,8 @@ typedef struct thread
     void *arg; // Argument to pass to the thread entry function
     thread_state_t state;
     uint64_t wake_tick;
+
+    struct address_space *space;
 
     list_t run_link;
 } thread_t;
@@ -56,6 +63,17 @@ void threads_init(void);
  * @return Pointer to the newly created thread, or NULL on failure.
  */
 thread_t *thread_create(thread_entry_t entry, void *arg);
+
+/**
+ * @brief Create a thread that starts in user mode.
+ *
+ * @param space Address space the thread runs in (not owned by the thread).
+ * @param entry User address where execution starts.
+ * @param user_stack Initial user stack pointer.
+ *
+ * @return Pointer to the new thread, or NULL on failure.
+ */
+thread_t *thread_create_user(struct address_space *space, uintptr_t entry, uintptr_t user_stack);
 
 /**
  * @brief Initialize a thread structure with the given stack, stack size, and entry point.

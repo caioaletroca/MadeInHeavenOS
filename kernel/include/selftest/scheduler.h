@@ -6,6 +6,6 @@
 /**
  * Self-test for the scheduler.
  */
-__attribute__((noreturn)) void scheduler_selftest(void);
+void scheduler_selftest(void);
 
 #endif // _SELFTEST_SCHEDULER_H

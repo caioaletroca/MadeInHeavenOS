@@ -94,7 +94,7 @@ static void sync_selftest(void)
     kprintf("Sync self-test completed successfully\n");
 }
 
-__attribute__((noreturn)) void scheduler_selftest(void)
+void scheduler_selftest(void)
 {
     if (thread_init(&worker_a_thread, worker_a_stack, sizeof(worker_a_stack), worker_a_entry, NULL) != 0)
         panic("Failed to initialize worker A thread");
@@ -128,7 +128,4 @@ __attribute__((noreturn)) void scheduler_selftest(void)
     kprintf("Scheduler preemption self-test completed successfully\n");
 
     sync_selftest();
-
-    for (;;)
-        cpu_idle();
 }

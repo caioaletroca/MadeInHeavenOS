@@ -50,6 +50,24 @@ static void thread_reaper(void *arg)
     }
 }
 
+/**
+ * Fill in a thread around an already built context.
+ */
+static void thread_setup(thread_t *thread, void *stack, size_t stack_size, void *context)
+{
+    thread->id = thread_alloc_id();
+    thread->flags = 0;
+    thread->stack = stack;
+    thread->stack_size = stack_size;
+    thread->entry = NULL;
+    thread->arg = NULL;
+    thread->state = THREAD_READY;
+    thread->context = context;
+    thread->wake_tick = 0;
+    thread->space = NULL;
+    list_init(&thread->run_link);
+}
+
 void thread_start(void)
 {
     thread_t *thread = scheduler_current();
@@ -75,17 +93,9 @@ int thread_init(thread_t *thread, void *stack, size_t stack_size, thread_entry_t
     if (context == NULL)
         return -1;
 
-    // Assign a unique thread ID.
-    thread->id = thread_alloc_id();
-    thread->flags = 0;
-    thread->stack = stack;
-    thread->stack_size = stack_size;
+    thread_setup(thread, stack, stack_size, context);
     thread->entry = entry;
     thread->arg = arg;
-    thread->state = THREAD_READY;
-    thread->context = context;
-    thread->wake_tick = 0;
-    list_init(&thread->run_link);
 
     return 0;
 }
@@ -108,6 +118,32 @@ thread_t *thread_create(thread_entry_t entry, void *arg)
     {
         panic("thread_create: new thread rejected by the scheduler");
     }
+
+    return thread;
+}
+
+thread_t *thread_create_user(struct address_space *space, uintptr_t entry, uintptr_t user_stack)
+{
+    thread_t *thread = kmalloc(sizeof(thread_t));
+    void *stack = kmalloc(THREAD_STACK_SIZE);
+    void *context = NULL;
+
+    if (space != NULL && thread != NULL && stack != NULL)
+        context = arch_user_context_init(stack, THREAD_STACK_SIZE, entry, user_stack);
+
+    if (context == NULL)
+    {
+        kfree(stack);
+        kfree(thread);
+        return NULL;
+    }
+
+    thread_setup(thread, stack, THREAD_STACK_SIZE, context);
+    thread->flags |= THREAD_FLAG_OWNED;
+    thread->space = space;
+
+    if (scheduler_add(thread) != 0)
+        panic("thread_create_user: new thread rejected by the scheduler\n");
 
     return thread;
 }
