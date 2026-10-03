@@ -32,10 +32,9 @@ static int toggle_bit(const buddy_system_t *ctx, unsigned int block_index, unsig
     // Exclusive OR (XOR) operation on the word and the bit with the right bit set.
     *word ^= bit;
 
-    // Return the right word zero-ed with only the state of the right bit
-    // If the bit was set, then this should result into a non-zero value
-    // In other way, return the current value
-    return *word & bit;
+    // Return the new state of the bit as 0 or 1. The masked bit can sit
+    // above bit 31, and returning it as int would truncate it to 0
+    return (*word & bit) != 0;
 }
 
 /**
