@@ -11,6 +11,8 @@ Working x86-64 PC kernel with:
 - 4 KiB page map/unmap/translate behind an arch-neutral MMU contract
 - Per-process address spaces: private user half, shared kernel half (`address_space_t`)
 - Ring-3 GDT segments and a loaded TSS (RSP0 + IST stacks); identity map removed after boot
+- User-mode threads (`thread_create_user`) preempted by the timer; `int 0x80` syscalls `write`,
+  `read` and `exit` with user pointer validation
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
@@ -24,14 +26,14 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+c0973c8 feat(sys): add int 0x80 syscalls with write, read and exit
+d8dd7d8 feat(sched): run threads in user mode
+3ed7197 docs(architecture): document address spaces, TSS and buddy fix in handoff
 5ebcf13 feat(mm): add per-process address spaces
 c9d7865 feat(libc): add memcmp
 abaadbc fix(mm): stop toggle_bit truncating bitmap bits to int
 27f1631 feat(arch): add user segments and load the TSS
 33d2a0a fix(boot): actually remove the identity map
-008c702 docs(architecture): document console layer in handoff
-1c6630d feat(driver): add keymaps and console line discipline
-8c8d133 feat(driver): decode UTF-8 in tty and draw CP437 glyphs
 ```
 
 ## Architecture
@@ -99,6 +101,7 @@ tty_init → platform_boot_info_init → arch_init [TSS first] → input_init �
 → mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init] → scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [console thread]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → mm_selftest → scheduler_selftest [+ sync tests]
+→ user_selftest → boot thread idles
 ```
 
 ## Memory management
@@ -168,6 +171,29 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
 - `tss_init()` (first thing in `arch_init`) fills the TSS descriptor base, sets IST1/IST2 to the top of
   their stacks (no IDT gate uses them yet), `iomap_base = sizeof(tss)` (no ring-3 port I/O), and runs
   `ltr`. `tss_set_kernel_stack(top)` sets RSP0, the stack the CPU loads on an interrupt from ring 3.
+
+### User mode and syscalls
+
+- `thread_create_user(space, entry, user_stack)`: kernel stack + `arch_user_context_init` frame
+  (`cs = 0x23`, `ss = 0x1B`, `RFLAGS_USER_THREAD` = IF, IOPL 0). Entering ring 3 is just the normal
+  `isr_common` → `iretq`. `thread_t.space` is NULL for kernel threads; the space is not owned by the
+  thread.
+- On every switch `scheduler_on_interrupt` calls `arch_thread_switch` (RSP0 = top of the kernel stack,
+  user threads only) and `address_space_activate(next->space)` (kernel threads run on the kernel root,
+  so a dead process's root is never active when it is destroyed).
+- **Syscall ABI** (`include/syscall.h`, shared with assembly via `__ASSEMBLER__`): `int $0x80`
+  (DPL 3 interrupt gate, IRQs off on entry), `rax` = number, `rdi rsi rdx r10 r8 r9` = arguments,
+  `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
+  `syscall`/`sysret`.
+- `SYS_EXIT` 0, `SYS_WRITE` 1 (fd 1/2 → console, 256-byte chunks), `SYS_READ` 2 (fd 0, one line).
+  Generic `sys/syscall.c` → `syscall_dispatch`; x86 `syscall.c` unpacks the frame.
+- User memory is only touched through `address_space_read/write` (direct map, user half, mapped
+  pages only), so kernel pointers fail with `-EFAULT` instead of leaking.
+- `exit` and blocking `read` work from inside a syscall: `int 0x81` nests a second frame on the
+  thread's kernel stack.
+- Self-tests (`selftest/user_program.S`, `selftest/user.c`): position-independent programs copied to
+  `USER_BASE` — a counter loop that exits when the kernel sets its `stop` byte, and a hello that also
+  checks a kernel-pointer `write` returns `-EFAULT`.
 
 ## Scheduler
 
@@ -258,7 +284,7 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
 |---|---|
 | 0x00–0x1F | CPU exceptions (page fault = 14) |
 | 0x20–0x2F | PIC IRQs (timer = IRQ 0, keyboard = IRQ 1) |
-| 0x80 | Reserved for syscalls |
+| 0x80 | Syscalls (DPL 3 interrupt gate) |
 | 0x81 | Scheduler yield |
 
 ## Major bugs fixed (history)
@@ -286,6 +312,7 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
   (every zone but the four smallest), including during the boot release; it surfaced when 255 page
   tables pushed allocations past the small top zones. Found by replaying the allocation log through a
   Python port of `buddy.c`.
+- `scheduler_selftest` was `noreturn` and ended in an idle loop, so later self-tests never ran.
 
 ## Recommended next steps
 
@@ -303,14 +330,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 
 - **4a (done):** ring-3 GDT segments, TSS loaded from C, identity map really removed.
 - **4b (done):** `address_space_t`, shared kernel half, root create/destroy/activate.
-- **4c (next):** first jump to ring 3. `arch_user_context_init` (frame with `cs = 0x23`,
-  `ss = 0x1B`), a scheduler switch hook calling `tss_set_kernel_stack` + `arch_mmu_activate`, and an
-  embedded machine-code loop in a user page. Test: the timer keeps preempting it.
-- **4d:** `int 0x80` syscalls on an `IDT_GATE_USER_INTERRUPT` gate; ABI `rax` = number, `rdi rsi rdx
-  r10 r8 r9` = arguments, `rax` = result; `write` and `exit` first; validate user pointers against
-  `USER_TOP` and user mappings.
-- **4e:** faults with `(cs & 3) == 3` kill the thread instead of panicking; the reaper destroys the
-  address space (never the active one).
+- **4c (done):** user threads, RSP0/CR3 switch hook, timer preempts ring 3.
+- **4d (done):** `int 0x80` syscalls `write`/`read`/`exit`, user pointer validation.
+- **4e (next):** in the exception and page fault handlers, `(cs & 3) == 3` prints the fault and
+  calls `thread_exit` instead of `panic`. Test: a user program that reads address 0 or runs `hlt`;
+  the kernel reports it and keeps running. Later the reaper destroys the address space (never the
+  active one).
 - **4f:** `process_t` with address space and fd table; file layer (`file_t` + `file_ops_t { read,
   write }`, console as fds 0–2); ELF loader from a GRUB Multiboot2 module; userland libc (`crt0`,
   syscall stubs, `FILE` over `fd`, built without `-mcmodel=kernel`).
@@ -367,6 +392,12 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - No IDT gate uses the IST stacks yet; a double fault on a broken kernel stack still triple-faults.
 - `mmap_split_region` drops region remainders smaller than 16 frames.
 - `address_space_map` leaves already-mapped pages in place when it fails midway (freed on destroy).
+- Any fault in user mode still panics the kernel (step 4e).
+- Syscalls run with IRQs off for their whole duration (interrupt gate); long writes delay IRQs.
+- The user self-tests leak their two address spaces: without a join or process object nothing knows
+  when the thread is gone.
+- In the counter test the counter shares a cache line with the loop's code, so every increment is
+  handled as self-modifying code (about 25× slower than with the counter in a separate line).
 - The buddy allocator has no self-test; a randomized alloc/free check per zone size would have caught
   the `toggle_bit` truncation immediately.
 
