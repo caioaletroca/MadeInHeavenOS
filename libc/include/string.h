@@ -17,6 +17,16 @@ __BEGIN_DECLS
 void *memcpy(void *dest, const void *src, size_t n);
 
 /**
+ * @brief Compare memory areas.
+ *
+ * @param str1 First memory area.
+ * @param str2 Second memory area.
+ * @param n Number of bytes to compare.
+ * @return An integer less than, equal to, or greater than zero if the first n bytes of str1 is found, respectively, to be less than, to match, or be greater than the first n bytes of str2.
+ */
+int memcmp(const void *str1, const void *str2, size_t n);
+
+/**
  * @brief Copy memory area.
  *
  * @param dest Destination memory area.
