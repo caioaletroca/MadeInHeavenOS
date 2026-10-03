@@ -4,14 +4,10 @@
 
 # Page tables
 .extern page_table_l4
-.extern page_table_l3
 
 # GDT variables
 .extern data
-.extern tss
-.extern gdt64_pointer
 .extern gdt64_pointer_high
-.extern tss64
 
 .code64
 
@@ -38,13 +34,14 @@ boot64_high:
     mov %ax, %es
     mov %ax, %fs
     mov %ax, %gs
-	
-	# Point GDTR at the GDT's virtual address; the current GDTR base is
+
+    # Point GDTR at the GDT's virtual address; the current GDTR base is
     # physical and stops resolving once low memory is unmapped
 	lgdt gdt64_pointer_high(%rip)
-
-	# Unmap the kernel from low memory. L4[0] and L4[511] share one L3
-	# table, so only the L4 entry may be cleared.
+	
+	# Unmap the kernel from low memory. L4[0] and L4[511] share the same
+	# L3 table, so only the L4 entry may be cleared. Note the address
+	# (leaq), not the contents (movq without '$'), of page_table_l4.
 	leaq page_table_l4(%rip), %rax
     movq $0, (%rax)
 

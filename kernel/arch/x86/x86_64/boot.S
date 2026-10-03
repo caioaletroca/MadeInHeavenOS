@@ -1,8 +1,6 @@
 .globl _start
 .globl page_table_l3
 .globl page_table_l4
-.globl ist_stack1
-.globl ist_stack2
 
 .extern boot64
 
@@ -289,8 +287,3 @@ page_table_l2:
 stack_bottom:
 	.space PAGE_SIZE * 4
 stack_top:
-
-ist_stack1:
-	.space PAGE_SIZE
-ist_stack2:
-	.space PAGE_SIZE

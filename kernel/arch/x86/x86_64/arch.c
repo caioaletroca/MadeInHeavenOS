@@ -5,6 +5,7 @@
 #include <x86/idt.h>
 #include <x86/isr.h>
 #include <x86/vectors.h>
+#include <x86/tss.h>
 
 static void scheduler_yield_handler(isr_context_t *context)
 {
@@ -14,6 +15,8 @@ static void scheduler_yield_handler(isr_context_t *context)
 
 void arch_init(void)
 {
+    tss_init();
+
     // Create and fill the IDT
     idt_init();
 
@@ -29,4 +32,8 @@ void arch_init(void)
     isr_set_info(VECTOR_SCHEDULER_YIELD, &yield_info);
 
     idt_load();
+
+    uint16_t task_register;
+    __asm__ __volatile__("str %0" : "=r"(task_register));
+    kprintf("TR = %x\n", task_register);
 }
