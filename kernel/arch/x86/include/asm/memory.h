@@ -10,4 +10,9 @@
 // Physical range [0, KERNEL_DIRECT_MAP_SIZE) is mapped at KERNEL_VIRTUAL_ADDRESS
 #define KERNEL_DIRECT_MAP_SIZE 0x40000000ULL
 
+// User half of the address space: [USER_BASE, USER_TOP)
+#define USER_BASE 0x0000000000400000ULL      // First user page (leaves 0 unmapped for NULL)
+#define USER_STACK_TOP 0x00007FFFFFFFF000ULL // Initial user stack pointer (grows down)
+#define USER_TOP 0x0000800000000000ULL       // End of the canonical lower half
+
 #endif

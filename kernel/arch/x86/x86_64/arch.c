@@ -32,8 +32,4 @@ void arch_init(void)
     isr_set_info(VECTOR_SCHEDULER_YIELD, &yield_info);
 
     idt_load();
-
-    uint16_t task_register;
-    __asm__ __volatile__("str %0" : "=r"(task_register));
-    kprintf("TR = %x\n", task_register);
 }

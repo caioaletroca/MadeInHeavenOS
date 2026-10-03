@@ -2,6 +2,7 @@
 #include <x86/isr.h>
 #include <x86/vectors.h>
 #include <mm/frame.h>
+#include <mm/kmalloc.h>
 #include <panic.h>
 #include <string.h>
 
@@ -289,6 +290,123 @@ int arch_mmu_translate(mmu_root_t *root, uintptr_t virtual_address, physaddr_t *
         return -1;
 
     return page_translate(root->top, virtual_address, physical_address);
+}
+
+static inline physaddr_t cr3_read(void)
+{
+    physaddr_t value;
+    __asm__ __volatile__("mov %%cr3, %0" : "=r"(value));
+    return value & PAGE_4K_ADDRESS_MASK;
+}
+
+static inline void cr3_write(physaddr_t value)
+{
+    __asm__ __volatile__("mov %0, %%cr3" : : "r"(value) : "memory");
+}
+
+/**
+ * Free a user-half page table and everything below it.
+ *
+ * @param physical Physical address of the table.
+ * @param level 3 for an L3 table, down to 1 for an L1 table (whose entries are pages).
+ */
+static void page_table_free(physaddr_t physical, int level)
+{
+    page_table_t *table = phys_to_kern(physical);
+
+    for (unsigned int i = 0; i < PAGE_TABLE_ENTRIES; i++)
+    {
+        page_table_entry_t entry = table->pages[i];
+
+        if ((entry & PAGE_TABLE_ENTRY_PRESENT) == 0)
+            continue;
+
+        if (level > 1 && (entry & PAGE_TABLE_ENTRY_PAGE_SIZE) != 0)
+            panic("page_table_free: Huge page in a user address space\n");
+
+        if (level > 1)
+            page_table_free(entry & PAGE_4K_ADDRESS_MASK, level - 1);
+        else
+            frame_free(entry & PAGE_4K_ADDRESS_MASK, 0);
+    }
+
+    frame_free(physical, 0);
+}
+
+void arch_mmu_init(void)
+{
+    // Address spaces copy the kernel's L4 entries when created. An L4 entry
+    // added later would be missing from all of them, so give every
+    // kernel-half entry its L3 table now (256 pages, 1 MiB).
+    for (unsigned int i = PAGE_TABLE_KERNEL_FIRST; i < PAGE_TABLE_ENTRIES; i++)
+    {
+        if ((page_table_l4.pages[i] & PAGE_TABLE_ENTRY_PRESENT) != 0)
+            continue;
+
+        physaddr_t physical;
+
+        if (page_table_create(&physical) == NULL)
+            panic("arch_mmu_init: Out of memory for kernel page tables\n");
+
+        page_table_l4.pages[i] = physical | PAGE_TABLE_ENTRY_PRESENT | PAGE_TABLE_ENTRY_WRITE;
+    }
+}
+
+mmu_root_t *arch_mmu_root_create(void)
+{
+    mmu_root_t *root = kzalloc(sizeof(*root));
+
+    if (root == NULL)
+        return NULL;
+
+    physaddr_t physical;
+    page_table_t *table = page_table_create(&physical);
+
+    if (table == NULL)
+    {
+        kfree(root);
+        return NULL;
+    }
+
+    // User half stays empty (page_table_create zeroes it); kernel half is shared.
+    // No USER bit on these entries, so ring 3 can never reach the kernel half.
+    for (unsigned int i = PAGE_TABLE_KERNEL_FIRST; i < PAGE_TABLE_ENTRIES; i++)
+        table->pages[i] = page_table_l4.pages[i];
+
+    root->top = table;
+    root->top_physical = physical;
+
+    return root;
+}
+
+void arch_mmu_root_destroy(mmu_root_t *root)
+{
+    if (root == NULL || root == &kernel_root)
+        return;
+
+    if (cr3_read() == root->top_physical)
+        panic("arch_mmu_root_destroy: Attempt to destroy the active page table\n");
+
+    for (unsigned int i = 0; i < PAGE_TABLE_KERNEL_FIRST; i++)
+    {
+        page_table_entry_t entry = root->top->pages[i];
+
+        if ((entry & PAGE_TABLE_ENTRY_PRESENT) != 0)
+            page_table_free(entry & PAGE_4K_ADDRESS_MASK, 3);
+    }
+
+    frame_free(root->top_physical, 0);
+    kfree(root);
+}
+
+void arch_mmu_activate(mmu_root_t *root)
+{
+    if (root == NULL)
+        root = &kernel_root;
+
+    // Reloading CR3 flushes the TLB; skip it when nothing changes
+    if (cr3_read() != root->top_physical)
+        cr3_write(root->top_physical);
 }
 
 void paging_init()

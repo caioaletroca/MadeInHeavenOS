@@ -5,6 +5,8 @@
 #include <asm/memory.h>
 #include <mm/frame.h>
 #include <mm/kmalloc.h>
+#include <mm/address_space.h>
+#include <string.h>
 #include <panic.h>
 #include <kprintf.h>
 
@@ -150,6 +152,42 @@ static void mm_kmalloc_test(void)
     kfree(small);
 }
 
+/**
+ * Tests that an address space maps user pages privately and leaves the
+ * kernel half usable while it is active.
+ */
+static void mm_address_space_test(void)
+{
+    static const char message[] = "user half";
+    physaddr_t physical;
+
+    address_space_t *space = address_space_create();
+    if (space == NULL)
+        panic("Failed to create test address space\n");
+
+    // Two pages, with the write straddling the boundary between them
+    if (address_space_map(space, USER_BASE, 2 * PAGE_SIZE, MMU_WRITE) != 0)
+        panic("Failed to map test user pages\n");
+
+    uintptr_t target = USER_BASE + PAGE_SIZE - 4;
+
+    if (address_space_write(space, target, message, sizeof(message)) != 0)
+        panic("Failed to write test user pages\n");
+
+    // Only the new space sees the user pages
+    if (arch_mmu_translate(arch_mmu_kernel_root(), USER_BASE, &physical) == 0)
+        panic("User page leaked into the kernel root\n");
+
+    address_space_activate(space);
+
+    // Kernel code keeps running (kernel half shared) and sees the user data
+    if (memcmp((const void *)target, message, sizeof(message)) != 0)
+        panic("User pages do not hold the written data\n");
+
+    address_space_activate(NULL);
+    address_space_destroy(space);
+}
+
 void mm_selftest(void)
 {
     mm_page_map_unmap_test();
@@ -157,6 +195,8 @@ void mm_selftest(void)
     mm_page_translate_test();
 
     mm_kmalloc_test();
+
+    mm_address_space_test();
 
     kprintf("MM self-test completed successfully\n");
 }

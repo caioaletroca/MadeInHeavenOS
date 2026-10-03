@@ -56,4 +56,34 @@ int arch_mmu_unmap(mmu_root_t *root, uintptr_t virtual_address);
  */
 int arch_mmu_translate(mmu_root_t *root, uintptr_t virtual_address, uintptr_t *physical_address);
 
+/**
+ * @brief Prepare the kernel half for sharing between address spaces.
+ *
+ * Must run after the frame allocator is up and before the first
+ * arch_mmu_root_create().
+ */
+void arch_mmu_init(void);
+
+/**
+ * @brief Create a translation root with an empty user half and the shared kernel half.
+ *
+ * @return New root, or NULL if out of memory.
+ */
+mmu_root_t *arch_mmu_root_create(void);
+
+/**
+ * @brief Free a root created by arch_mmu_root_create(), including every page
+ * mapped in its user half. Must not be the active root.
+ *
+ * @param root Root to destroy.
+ */
+void arch_mmu_root_destroy(mmu_root_t *root);
+
+/**
+ * @brief Switch the CPU to a translation root.
+ *
+ * @param root Root to activate, or NULL for the kernel root.
+ */
+void arch_mmu_activate(mmu_root_t *root);
+
 #endif // _ARCH_MM_H_

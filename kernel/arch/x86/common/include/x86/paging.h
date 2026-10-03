@@ -8,6 +8,9 @@
 
 #define PAGE_TABLE_ENTRIES 512
 
+// L4 entries [0, 256) map the user half, [256, 512) the kernel half
+#define PAGE_TABLE_KERNEL_FIRST 256
+
 /**
  * Page Table/Directory entry flags
  */
