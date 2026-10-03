@@ -6,6 +6,49 @@
 #include <addresses.h>
 #include <util.h>
 
+/**
+ * Check that [address, address + size) lies inside the user half.
+ */
+static bool address_space_range_valid(uintptr_t address, size_t size)
+{
+    return address >= USER_BASE && address <= USER_TOP && size <= USER_TOP - address;
+}
+
+static int address_space_copy(address_space_t *space, uintptr_t address, void *data, size_t size, bool to_user)
+{
+    uint8_t *kernel = data;
+
+    if (space == NULL || !address_space_range_valid(address, size))
+        return -1;
+
+    while (size > 0)
+    {
+        uintptr_t page = ALIGN_DOWN(address, PAGE_SIZE);
+        size_t offset = address - page;
+        size_t chunk = PAGE_SIZE - offset;
+        physaddr_t physical;
+
+        if (chunk > size)
+            chunk = size;
+
+        if (arch_mmu_translate(space->root, page, &physical) != 0)
+            return -1;
+
+        uint8_t *user = (uint8_t *)phys_to_kern(physical) + offset;
+
+        if (to_user)
+            memcpy(user, kernel, chunk);
+        else
+            memcpy(kernel, user, chunk);
+
+        address += chunk;
+        kernel += chunk;
+        size -= chunk;
+    }
+
+    return 0;
+}
+
 address_space_t *address_space_create(void)
 {
     address_space_t *space = kzalloc(sizeof(address_space_t));
@@ -31,14 +74,6 @@ void address_space_destroy(address_space_t *space)
 
     arch_mmu_root_destroy(space->root);
     kfree(space);
-}
-
-/**
- * Check that [address, address + size) lies inside the user half.
- */
-static bool address_space_range_valid(uintptr_t address, size_t size)
-{
-    return address >= USER_BASE && address <= USER_TOP && size <= USER_TOP - address;
 }
 
 int address_space_map(address_space_t *space, uintptr_t address, size_t size, unsigned int flags)
@@ -72,33 +107,12 @@ int address_space_map(address_space_t *space, uintptr_t address, size_t size, un
 
 int address_space_write(address_space_t *space, uintptr_t address, const void *data, size_t size)
 {
-    const uint8_t *source = data;
+    return address_space_copy(space, address, (void *)data, size, true);
+}
 
-    if (!address_space_range_valid(address, size))
-        return -1;
-
-    while (size > 0)
-    {
-        uintptr_t page = ALIGN_DOWN(address, PAGE_SIZE);
-        size_t offset = address - page;
-        size_t chunk = PAGE_SIZE - offset;
-        physaddr_t physical;
-
-        if (chunk > size)
-            chunk = size;
-
-        if (arch_mmu_translate(space->root, page, &physical) != 0)
-            return -1;
-
-        // Write through the kernel's direct map, so the space need not be active
-        memcpy((uint8_t *)phys_to_kern(physical) + offset, source, chunk);
-
-        address += chunk;
-        source += chunk;
-        size -= chunk;
-    }
-
-    return 0;
+int address_space_read(address_space_t *space, uintptr_t address, void *data, size_t size)
+{
+    return address_space_copy(space, address, data, size, false);
 }
 
 void address_space_activate(address_space_t *space)

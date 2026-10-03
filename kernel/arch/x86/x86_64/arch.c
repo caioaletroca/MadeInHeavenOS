@@ -6,6 +6,7 @@
 #include <x86/isr.h>
 #include <x86/vectors.h>
 #include <x86/tss.h>
+#include <x86/syscall.h>
 
 static void scheduler_yield_handler(isr_context_t *context)
 {
@@ -22,6 +23,7 @@ void arch_init(void)
 
     // CPU exceptions, then the page fault handler on top of them
     exception_init();
+    syscall_init();
     paging_init();
 
     // Software interrupt used by arch_yield()

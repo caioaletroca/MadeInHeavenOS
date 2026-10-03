@@ -46,6 +46,16 @@ int address_space_map(address_space_t *space, uintptr_t address, size_t size, un
 int address_space_write(address_space_t *space, uintptr_t address, const void *data, size_t size);
 
 /**
+ * @brief Copy data out of mapped user pages, without activating the space.
+ *
+ * @param address Page-aligned start, inside [USER_BASE, USER_TOP).
+ * @param data Buffer to copy into.
+ * @param size Bytes to copy (rounded up to whole pages).
+ * @return 0 on success, -1 if part of the range is not mapped user memory.
+ */
+int address_space_read(address_space_t *space, uintptr_t address, void *data, size_t size);
+
+/**
  * @brief Make an address space current, or NULL for the kernel alone.
  */
 void address_space_activate(address_space_t *space);

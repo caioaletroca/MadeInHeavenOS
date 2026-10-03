@@ -1,2 +1,3 @@
 local_sources := \
-panic.c
+panic.c \
+syscall.c

@@ -1,5 +1,6 @@
 #include <x86/gdt.h>
 #include <x86/idt.h>
+#include <x86/vectors.h>
 
 #define ISR_NAME(index) isr_##index
 
@@ -187,7 +188,12 @@ void idt_init(void)
 	IDT_INSTALL_STI(125);
 	IDT_INSTALL_STI(126);
 	IDT_INSTALL_STI(127);
-	IDT_INSTALL_STI(128);
+
+	// Syscalls: the only gate ring 3 may raise (DPL 3); interrupt gate so
+	// syscalls start with IRQs off, like every other kernel entry
+	extern void isr_128(void);
+	idt_entry_init(VECTOR_SYSCALL, (uint64_t)isr_128, IDT_GATE_USER_INTERRUPT);
+
 	IDT_INSTALL_CLI(129); // Scheduler yield interrupt
 	IDT_INSTALL_STI(130);
 	IDT_INSTALL_STI(131);
@@ -315,7 +321,4 @@ void idt_init(void)
 	IDT_INSTALL_STI(253);
 	IDT_INSTALL_STI(254);
 	IDT_INSTALL_STI(255);
-
-	/* Software interrupt (used by syscalls) */
-	// TODO: Add to 128 syscall
 }

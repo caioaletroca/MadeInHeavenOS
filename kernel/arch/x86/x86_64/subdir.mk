@@ -14,4 +14,5 @@ context.c \
 exceptions.c \
 paging.c \
 isr.c \
-idt.c
+idt.c \
+syscall.c
