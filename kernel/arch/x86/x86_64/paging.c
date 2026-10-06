@@ -4,6 +4,8 @@
 #include <mm/frame.h>
 #include <mm/kmalloc.h>
 #include <sched/scheduler.h>
+#include <sched/process.h>
+#include <signal.h>
 #include <kprintf.h>
 #include <panic.h>
 #include <string.h>
@@ -249,7 +251,7 @@ static void page_fault_handler(isr_context_t *regs)
                                                                   : "read",
                 (error_code & 0x1) ? "protection violation" : "not present",
                 (void *)virtual_address, scheduler_current()->id, (void *)regs->rip);
-        thread_exit();
+        process_exit(SIGNAL_EXIT_STATUS(SIGSEGV));
     }
 
     panic("Page fault at address: %p, error: %p", virtual_address, error_code);

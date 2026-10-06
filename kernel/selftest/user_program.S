@@ -75,3 +75,20 @@ user_null_before:
 user_null_after:
     .quad 0
 user_null_end:
+
+/*
+ * Program 4: same as program 3, but runs `hlt`, a privileged instruction,
+ * so the kill goes through the general protection fault path.
+ */
+.globl user_hlt_start, user_hlt_before, user_hlt_after, user_hlt_end
+user_hlt_start:
+    movb $1, user_hlt_before(%rip)
+    hlt                                 # #GP(0) at CPL 3
+    movb $1, user_hlt_after(%rip)
+1:  jmp 1b
+    .balign 8
+user_hlt_before:
+    .quad 0
+user_hlt_after:
+    .quad 0
+user_hlt_end:

@@ -45,6 +45,7 @@ typedef struct thread
     uint64_t wake_tick;
 
     struct address_space *space;
+    struct process *process;
 
     list_t run_link;
 } thread_t;
@@ -67,13 +68,13 @@ thread_t *thread_create(thread_entry_t entry, void *arg);
 /**
  * @brief Create a thread that starts in user mode.
  *
- * @param space Address space the thread runs in (not owned by the thread).
+ * @param process The process the thread belongs to. The thread does not take ownership of the process.
  * @param entry User address where execution starts.
  * @param user_stack Initial user stack pointer.
  *
  * @return Pointer to the new thread, or NULL on failure.
  */
-thread_t *thread_create_user(struct address_space *space, uintptr_t entry, uintptr_t user_stack);
+thread_t *thread_create_user(struct process *process, uintptr_t entry, uintptr_t user_stack);
 
 /**
  * @brief Initialize a thread structure with the given stack, stack size, and entry point.

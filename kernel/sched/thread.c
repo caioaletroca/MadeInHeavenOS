@@ -1,5 +1,6 @@
 #include <sched/thread.h>
 #include <sched/scheduler.h>
+#include <sched/process.h>
 #include <sched/sync.h>
 #include <arch/context.h>
 #include <asm/irq_flags.h>
@@ -41,12 +42,15 @@ static void thread_reaper(void *arg)
         irq_flags_t flags = irq_save();
 
         thread_t *zombie = list_container(zombie_list.next, thread_t, run_link);
+
+        process_t *process = zombie->process;
         list_delete(&zombie->run_link);
 
         irq_restore(flags);
 
         kfree(zombie->stack);
         kfree(zombie);
+        process_release(process);
     }
 }
 
@@ -64,6 +68,7 @@ static void thread_setup(thread_t *thread, void *stack, size_t stack_size, void 
     thread->state = THREAD_READY;
     thread->context = context;
     thread->wake_tick = 0;
+    thread->process = NULL;
     thread->space = NULL;
     list_init(&thread->run_link);
 }
@@ -122,13 +127,13 @@ thread_t *thread_create(thread_entry_t entry, void *arg)
     return thread;
 }
 
-thread_t *thread_create_user(struct address_space *space, uintptr_t entry, uintptr_t user_stack)
+thread_t *thread_create_user(process_t *process, uintptr_t entry, uintptr_t user_stack)
 {
     thread_t *thread = kmalloc(sizeof(thread_t));
     void *stack = kmalloc(THREAD_STACK_SIZE);
     void *context = NULL;
 
-    if (space != NULL && thread != NULL && stack != NULL)
+    if (process != NULL && thread != NULL && stack != NULL)
         context = arch_user_context_init(stack, THREAD_STACK_SIZE, entry, user_stack);
 
     if (context == NULL)
@@ -140,7 +145,8 @@ thread_t *thread_create_user(struct address_space *space, uintptr_t entry, uintp
 
     thread_setup(thread, stack, THREAD_STACK_SIZE, context);
     thread->flags |= THREAD_FLAG_OWNED;
-    thread->space = space;
+    thread->process = process;
+    thread->space = process->space;
 
     if (scheduler_add(thread) != 0)
         panic("thread_create_user: new thread rejected by the scheduler\n");

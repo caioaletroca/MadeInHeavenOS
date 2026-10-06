@@ -2,8 +2,9 @@
 #include <x86/exceptions.h>
 #include <x86/isr.h>
 #include <sched/scheduler.h>
-#include <sched/thread.h>
+#include <sched/process.h>
 #include <kprintf.h>
+#include <signal.h>
 #include <stdbool.h>
 
 static const char *const exception_messages[32] = {
@@ -40,6 +41,26 @@ static const char *const exception_messages[32] = {
     "Security",
     "(Reserved exception 31)"};
 
+// Signal that kills a user thread for each exception, as Linux maps them; 0 means SIGKILL
+static const int exception_signals[32] = {
+    [0] = SIGFPE,   // Division by zero
+    [1] = SIGTRAP,  // Debug
+    [3] = SIGTRAP,  // Breakpoint
+    [4] = SIGSEGV,  // Overflow
+    [5] = SIGSEGV,  // Bound range exceeded
+    [6] = SIGILL,   // Invalid opcode
+    [7] = SIGSEGV,  // Device not available (no FPU state handling yet)
+    [10] = SIGSEGV, // Invalid TSS
+    [11] = SIGBUS,  // Segment not present
+    [12] = SIGBUS,  // Stack-Segment fault
+    [13] = SIGSEGV, // General Protection Fault
+    [14] = SIGSEGV, // Page Fault (handled in paging.c)
+    [16] = SIGFPE,  // x87 Floating-Point
+    [17] = SIGBUS,  // Alignment check
+    [19] = SIGFPE,  // SIMD Floating-Point
+    [21] = SIGSEGV, // Control Protection
+};
+
 /**
  * Check if an exception is considered fatal.
  *
@@ -63,9 +84,17 @@ __attribute__((noreturn)) static void exception_user_handler(isr_context_t *regs
             "\trip: %p, rsp: %p, err_code: %u\n",
             exception_messages[int_no], scheduler_current()->id,
             (void *)regs->rip, (void *)regs->rsp, (unsigned int)(regs->info & 0xFFFFFFFF));
-    thread_exit();
+
+    int signal = exception_signals[int_no] != 0 ? exception_signals[int_no] : SIGKILL;
+
+    process_exit(SIGNAL_EXIT_STATUS(signal));
 }
 
+/**
+ * Handle all exceptions.
+ *
+ * @param regs The ISR context.
+ */
 static void exception_handler(isr_context_t *regs)
 {
     uint8_t int_no = (uint8_t)(regs->info >> 32) & 0xFF;

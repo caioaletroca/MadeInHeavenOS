@@ -3,7 +3,7 @@
 #include <mm/address_space.h>
 #include <sched/scheduler.h>
 #include <sched/thread.h>
-#include <kprintf.h>
+#include <sched/process.h>
 
 // Bytes moved per copy; bounds the kernel stack buffer
 #define SYSCALL_CHUNK_SIZE 256
@@ -71,8 +71,7 @@ static long sys_read(unsigned long fd, uintptr_t buffer, size_t size)
  */
 static long sys_exit(long status)
 {
-    kprintf("Thread %u exited with status %d\n", scheduler_current()->id, (int)status);
-    thread_exit();
+    process_exit((int)status);
 }
 
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
