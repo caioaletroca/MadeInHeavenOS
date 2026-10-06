@@ -11,8 +11,11 @@ Working x86-64 PC kernel with:
 - 4 KiB page map/unmap/translate behind an arch-neutral MMU contract
 - Per-process address spaces: private user half, shared kernel half (`address_space_t`)
 - Ring-3 GDT segments and a loaded TSS (RSP0 + IST stacks); identity map removed after boot
-- User-mode threads (`thread_create_user`) preempted by the timer; `int 0x80` syscalls `write`,
-  `read` and `exit` with user pointer validation
+- User-mode threads preempted by the timer; `int 0x80` syscalls `write`, `read`, `close` and `exit`
+  with user pointer validation
+- Processes (`process_t`) owning their address space and fd table, waitable, refcounted; faults in
+  ring 3 kill the process with 128 + signal instead of panicking
+- Open files (`file_t` + `file_ops_t`), console as the first backend behind fds 0–2
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
@@ -21,19 +24,19 @@ Working x86-64 PC kernel with:
 - Console: US and ABNT2 keymaps with dead keys, line discipline, blocking `console_read()`
 - UTF-8 tty drawing CP437 glyphs on VGA text mode with a hardware cursor; `kprintf` is atomic per call
 - Kernel split into generic code, arch contracts and platform contracts, enforced by the build
-- MM, preemption and sync self-tests passing in Bochs; keyboard verified in Bochs and QEMU
+- MM, preemption, sync and user-mode self-tests passing in Bochs; keyboard verified in Bochs and QEMU
 
 Latest commits:
 
 ```text
+82c4c77 feat(fs): add open files and per-process fd tables
+2d4d48e feat(sched): add processes owning their address space
+d7c5326 feat(arch): kill user threads on faults
+267bef9 fix(driver): wrap edit index and end reads on Ctrl+D
+c2add1d docs(architecture): document user mode and syscalls in handoff
 c0973c8 feat(sys): add int 0x80 syscalls with write, read and exit
 d8dd7d8 feat(sched): run threads in user mode
-3ed7197 docs(architecture): document address spaces, TSS and buddy fix in handoff
 5ebcf13 feat(mm): add per-process address spaces
-c9d7865 feat(libc): add memcmp
-abaadbc fix(mm): stop toggle_bit truncating bitmap bits to int
-27f1631 feat(arch): add user segments and load the TSS
-33d2a0a fix(boot): actually remove the identity map
 ```
 
 ## Architecture
@@ -59,7 +62,7 @@ kernel/
 │   ├── common/include/x86/       # PRIVATE: cpu gdt idt io isr paging tss vectors exceptions
 │   └── x86_64/                   # boot, ISR stubs, gdt64.S, tss.c, arch.c, context.c, isr.c, paging.c
 ├── platform/pc/                  # pic, pit, ps2, keyboard, vga, screen (CP437), multiboot2, platform.c
-├── sched/ mm/ driver/ sys/ selftest/
+├── sched/ mm/ driver/ sys/ fs/ selftest/
 └── kmain.c
 ```
 
@@ -174,10 +177,10 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
 
 ### User mode and syscalls
 
-- `thread_create_user(space, entry, user_stack)`: kernel stack + `arch_user_context_init` frame
-  (`cs = 0x23`, `ss = 0x1B`, `RFLAGS_USER_THREAD` = IF, IOPL 0). Entering ring 3 is just the normal
-  `isr_common` → `iretq`. `thread_t.space` is NULL for kernel threads; the space is not owned by the
-  thread.
+- `thread_create_user(process, entry, user_stack)` (called only by `process_start`): kernel stack +
+  `arch_user_context_init` frame (`cs = 0x23`, `ss = 0x1B`, `RFLAGS_USER_THREAD` = IF, IOPL 0).
+  Entering ring 3 is just the normal `isr_common` → `iretq`. The thread gets `process` and caches
+  `process->space` in `thread_t.space` for the switch; both are NULL for kernel threads.
 - On every switch `scheduler_on_interrupt` calls `arch_thread_switch` (RSP0 = top of the kernel stack,
   user threads only) and `address_space_activate(next->space)` (kernel threads run on the kernel root,
   so a dead process's root is never active when it is destroyed).
@@ -185,15 +188,71 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   (DPL 3 interrupt gate, IRQs off on entry), `rax` = number, `rdi rsi rdx r10 r8 r9` = arguments,
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
-- `SYS_EXIT` 0, `SYS_WRITE` 1 (fd 1/2 → console, 256-byte chunks), `SYS_READ` 2 (fd 0, one line).
+- `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
+  `SYS_CLOSE` 10. Read and write look the fd up in the process's table and call the file's ops;
+  an empty slot, an out-of-range fd or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`.
   Generic `sys/syscall.c` → `syscall_dispatch`; x86 `syscall.c` unpacks the frame.
 - User memory is only touched through `address_space_read/write` (direct map, user half, mapped
   pages only), so kernel pointers fail with `-EFAULT` instead of leaking.
 - `exit` and blocking `read` work from inside a syscall: `int 0x81` nests a second frame on the
   thread's kernel stack.
+- **User faults** (`exceptions.c`, `paging.c`): when the saved CS has RPL 3 (`isr_from_user`, in
+  `x86/isr.h`), the handler prints the fault and calls `process_exit(SIGNAL_EXIT_STATUS(sig))`;
+  in ring 0 it still panics. NMI, `#DF` and `#MC` always panic. `exception_signals[]` follows Linux:
+  `#DE`/x87/SIMD → SIGFPE, `#DB`/`#BP` → SIGTRAP, `#UD` → SIGILL, `#NP`/`#SS`/`#AC` → SIGBUS, the
+  rest (incl. `#GP`, `#PF`) → SIGSEGV, unlisted → SIGKILL. Returning instead would re-run the
+  faulting instruction forever.
 - Self-tests (`selftest/user_program.S`, `selftest/user.c`): position-independent programs copied to
-  `USER_BASE` — a counter loop that exits when the kernel sets its `stop` byte, and a hello that also
-  checks a kernel-pointer `write` returns `-EFAULT`.
+  `USER_BASE`, each started as a process with the console on fds 0–2, waited for, checked through
+  its variables and exit status, then released:
+  - `loop`: counts until the kernel sets `stop`, exits 0 (preemption of ring 3)
+  - `hello`: prints, checks a kernel-pointer `write` returns `-EFAULT`, exits with it
+  - `null` / `hlt`: set `before`, fault (`#PF` / `#GP`), must never set `after`; status 139
+  - `files`: `-EBADF` for empty, out-of-range and closed fds and double close; stdout still works
+    after `close(2)`
+
+### Processes (`sched/process.c`)
+
+```text
+process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ process_start(p, entry, stack)
+     refs = 1 (handle)                                          refs++ (thread), then the thread runs
+```
+
+- `process_t`: pid, state (`RUNNING`/`EXITED`), `exit_status`, `refs`, `space`, `thread` (one per
+  process), `waiters`, `files[16]`. Allocated with `kzalloc`.
+- **Ownership:** the process owns its space (destroyed with it) and one reference on each file in its
+  table. `process_fd_install` takes the caller's file reference on success (lowest free fd, POSIX);
+  on `-EMFILE` the caller keeps it.
+- Create and start are split so fds are installed before the program can run. `process_start` takes
+  the thread's reference *before* creating the thread (it can exit before `thread_create_user`
+  returns) and drops it again if creation fails; the process is then still valid and not running.
+- `process_exit(status)`: records the status, closes every fd (at exit, not release, so pipes can see
+  EOF later), wakes waiters, `thread_exit()`. It never touches the space: this thread still runs on it.
+- The **reaper** drops the thread's reference after freeing stack and struct. `process_release` at
+  `refs == 0` closes any remaining fds (a process that never ran), destroys the space and frees the
+  struct; only the decrement runs with IRQs off. The last release is always on a kernel thread, so the
+  space is never active when destroyed.
+- `process_wait(p)`: Mesa loop on `waiters` until `EXITED`, returns `exit_status`. The struct and
+  space stay valid until the caller's `process_release`, so tests can read the program's variables.
+- **Exit status:** the value passed to `exit` (full `int`, no `& 0xFF` until `waitpid` exists), or
+  128 + signal for faults (`include/signal.h`: Linux signal numbers, no delivery yet).
+- The fd table has no lock: with one thread per process only the creator (before start) and the
+  process itself touch it. Needs one with threads or `fork`.
+
+### Files (`fs/file.c`)
+
+```text
+process->files[fd] ──▶ file_t { ops, flags, refs, private } ──▶ ops->read / write / release
+```
+
+- An fd is an index into the process's table; a `file_t` is an open file (POSIX open file
+  description) that several fds can share. `file_ops_t` takes **kernel** buffers and returns bytes or
+  `-errno`; the syscall layer does every user copy, so backends never see user pointers.
+- `file_create(ops, flags, private)` (refs = 1), `file_get`, `file_put` (at 0: optional `release`,
+  then `kfree`). Refs change under `irq_save`. No offset yet: nothing seeks until a VFS exists.
+- **Console backend** (`driver/console.c`): one `FILE_READ | FILE_WRITE` file created in
+  `console_init`, which keeps its own reference forever. `console_file()` returns a new reference;
+  user programs get it three times, as fds 0, 1 and 2 (like `getty` opening the tty and `dup`ing it).
 
 ## Scheduler
 
@@ -270,13 +329,14 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
 - **Console ring** (xv6 / Linux `n_tty` style): `read_index ≤ write_index ≤ edit_index`, free-running
   indices over a power-of-two buffer. Readers consume `[read, write)`, the console thread edits
   `[write, edit)`. Ordinary input leaves one byte free so `\n`/EOF can always commit. `console_read`
-  is canonical: at most one line per call; EOF is consumed only when it comes first, so the next
-  read returns 0.
+  is canonical: at most one line per call. EOF follows POSIX: it hands over the pending bytes and is
+  always discarded, so a read returns 0 only when EOF starts an empty line (`abc^D` returns `abc`,
+  the next read blocks).
 - **Output:** `tty_write` decodes UTF-8 (U+FFFD for malformed/overlong) and runs under `irq_save`,
   so each `kprintf` is atomic and callable from IRQs, panic and early boot. The PC `screen_glyph`
   maps code points to CP437 and falls back to the unaccented letter (`ã → a`).
-- The console's read/write signatures already match `read`/`write`; in step 4 they become the first
-  `file_ops_t` behind fds 0–2.
+- User programs reach the console through its `file_t` (see Files), never `console_read/write`
+  directly.
 
 ## Interrupt vectors (`x86/vectors.h`)
 
@@ -313,6 +373,10 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
   tables pushed allocations past the small top zones. Found by replaying the allocation log through a
   Python port of `buddy.c`.
 - `scheduler_selftest` was `noreturn` and ended in an idle loop, so later self-tests never ran.
+- `console_store` wrapped with `% (CONSOLE_BUFFER_SIZE - 1)`, so the ring diverged after 1023 bytes;
+  `console_read` looked for Ctrl+C as EOF.
+- `kmalloc`'d `thread_t`/`process_t` left new fields (`process`, `files[]`) as garbage: the reaper
+  "released" a random pointer (#GP on a non-canonical address). Both now come from `kzalloc`.
 
 ## Recommended next steps
 
@@ -332,13 +396,20 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **4b (done):** `address_space_t`, shared kernel half, root create/destroy/activate.
 - **4c (done):** user threads, RSP0/CR3 switch hook, timer preempts ring 3.
 - **4d (done):** `int 0x80` syscalls `write`/`read`/`exit`, user pointer validation.
-- **4e (next):** in the exception and page fault handlers, `(cs & 3) == 3` prints the fault and
-  calls `thread_exit` instead of `panic`. Test: a user program that reads address 0 or runs `hlt`;
-  the kernel reports it and keeps running. Later the reaper destroys the address space (never the
-  active one).
-- **4f:** `process_t` with address space and fd table; file layer (`file_t` + `file_ops_t { read,
-  write }`, console as fds 0–2); ELF loader from a GRUB Multiboot2 module; userland libc (`crt0`,
-  syscall stubs, `FILE` over `fd`, built without `-mcmodel=kernel`).
+- **4e (done):** faults with CS RPL 3 kill the thread instead of panicking (NMI, `#DF`, `#MC`
+  excluded); `null` and `hlt` self-tests.
+- **4f-1 (done):** `process_t` owning the address space, refcount (thread + handle), `process_wait`,
+  exit status (128 + signal for faults); tests wait and release instead of sleeping and leaking.
+- **4f-2 (done):** `file_t` + `file_ops_t`, console backend on fds 0–2, per-process fd table,
+  create/install/start split, fds closed at exit, `SYS_CLOSE`, `files` self-test.
+- **4f-3 (next):** ELF loader. GRUB passes the program as a Multiboot2 module (`module2` in
+  `grub.cfg`, tag type 3: start/end physical address + string); `platform_boot_info_init` records it
+  in `boot_info`. The loader validates the ELF64 header (magic, `ET_EXEC`, `EM_X86_64`), maps every
+  `PT_LOAD` segment with `address_space_map` (flags from `p_flags`), copies `p_filesz` bytes and
+  leaves the rest zeroed (`.bss`), then `process_start` at `e_entry`. Module frames must be kept out
+  of the buddy allocator.
+- **4f-4:** userland libc (`crt0`, syscall stubs, `FILE` over `fd`), built with its own flags (no
+  `-mcmodel=kernel`), and a first real program loaded by 4f-3.
 
 ### Console / keyboard layer (done)
 
@@ -352,12 +423,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 ## Known technical debt
 
-**Open bugs (fix first):**
-
-- `console_store` indexes with `% (CONSOLE_BUFFER_SIZE - 1)` while every other access uses
-  `% CONSOLE_BUFFER_SIZE`: reads and writes diverge after 1023 bytes of total input.
-- `console_read` checks `CTRL('C')` instead of `CTRL('D')` for EOF: EOF never ends a read and `0x04`
-  is returned as data.
+**Open bugs:** none known.
 
 **Debt:**
 
@@ -392,10 +458,13 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - No IDT gate uses the IST stacks yet; a double fault on a broken kernel stack still triple-faults.
 - `mmap_split_region` drops region remainders smaller than 16 frames.
 - `address_space_map` leaves already-mapped pages in place when it fails midway (freed on destroy).
-- Any fault in user mode still panics the kernel (step 4e).
 - Syscalls run with IRQs off for their whole duration (interrupt gate); long writes delay IRQs.
-- The user self-tests leak their two address spaces: without a join or process object nothing knows
-  when the thread is gone.
+- The fd table has no lock (safe only with one thread per process and no `fork`).
+- No self-test proves memory comes back: compare free frames (and the console file's refs) before
+  and after `user_selftest` to catch a missing `process_release` / `file_put`.
+- Fault messages print the thread id, the exit line prints the pid.
+- `process_wait(NULL)` returns -1, which is also a valid exit status (should assert).
+- `process_start` returns -1 instead of an errno on failure.
 - In the counter test the counter shares a cache line with the loop's code, so every increment is
   handled as self-modifying code (about 25× slower than with the counter in a separate line).
 - The buddy allocator has no self-test; a randomized alloc/free check per zone size would have caught
