@@ -1,5 +1,4 @@
 #include <syscall.h>
-#include <driver/console.h>
 #include <mm/address_space.h>
 #include <sched/scheduler.h>
 #include <sched/thread.h>
@@ -17,14 +16,24 @@ static address_space_t *syscall_space(void)
 }
 
 /**
- * write(fd, buffer, size): stdout and stderr both go to the console.
+ * sys_file(fd): returns the file structure associated with the given file descriptor for the current process.
+ */
+static file_t *sys_file(unsigned long fd)
+{
+    process_t *p = scheduler_current()->process;
+    return fd < PROCESS_MAX_FILES ? p->files[fd] : NULL;
+}
+
+/**
+ * write(fd, buffer, size): writes data to the given file descriptor from the specified buffer.
  */
 static long sys_write(unsigned long fd, uintptr_t buffer, size_t size)
 {
     char chunk[SYSCALL_CHUNK_SIZE];
     size_t done = 0;
 
-    if (fd != 1 && fd != 2)
+    file_t *file = sys_file(fd);
+    if (file == NULL || !(file->flags & FILE_WRITE) || file->ops->write == NULL)
         return -EBADF;
 
     while (done < size)
@@ -38,7 +47,12 @@ static long sys_write(unsigned long fd, uintptr_t buffer, size_t size)
         if (address_space_read(syscall_space(), buffer + done, chunk, length) != 0)
             return done > 0 ? (long)done : -EFAULT;
 
-        console_write(chunk, length);
+        long status = file->ops->write(file, chunk, length);
+        if (status < 0)
+        {
+            return done > 0 ? (long)done : status;
+        }
+
         done += length;
     }
 
@@ -46,24 +60,40 @@ static long sys_write(unsigned long fd, uintptr_t buffer, size_t size)
 }
 
 /**
- * read(fd, buffer, size): stdin comes from the console.
+ * read(fd, buffer, size): reads data from the given file descriptor into the specified buffer.
  */
 static long sys_read(unsigned long fd, uintptr_t buffer, size_t size)
 {
     char chunk[SYSCALL_CHUNK_SIZE];
 
-    if (fd != 0)
+    file_t *file = sys_file(fd);
+    if (file == NULL || !(file->flags & FILE_READ) || file->ops->read == NULL)
         return -EBADF;
 
     if (size > SYSCALL_CHUNK_SIZE)
         size = SYSCALL_CHUNK_SIZE;
 
-    size_t length = console_read(chunk, size);
+    long length = file->ops->read(file, chunk, size);
+    if (length < 0)
+        return length;
 
     if (address_space_write(syscall_space(), buffer, chunk, length) != 0)
         return -EFAULT;
 
-    return (long)length;
+    return length;
+}
+
+static long sys_close(unsigned long fd)
+{
+    process_t *p = scheduler_current()->process;
+
+    file_t *file = sys_file(fd);
+    if (file == NULL)
+        return -EBADF;
+
+    p->files[fd] = NULL;
+    file_put(file);
+    return 0;
 }
 
 /**
@@ -86,6 +116,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_exit((long)arg0);
     case SYS_WRITE:
         return sys_write(arg0, arg1, arg2);
+    case SYS_CLOSE:
+        return sys_close(arg0);
     case SYS_READ:
         return sys_read(arg0, arg1, arg2);
     default:

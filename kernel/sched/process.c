@@ -4,6 +4,7 @@
 #include <asm/irq_flags.h>
 #include <mm/kmalloc.h>
 #include <mm/address_space.h>
+#include <syscall.h>
 #include <kprintf.h>
 
 static uint32_t next_pid = 1;
@@ -19,27 +20,74 @@ static uint32_t process_alloc_pid(void)
     return pid;
 }
 
-process_t *process_create(address_space_t *space, uintptr_t entry, uintptr_t user_stack)
+/**
+ * Closes all open file descriptors for the given process.
+ */
+static void process_close_files(process_t *p)
 {
-    process_t *p = kmalloc(sizeof(process_t));
+    if (p == NULL)
+        return;
+
+    for (int i = 0; i < PROCESS_MAX_FILES; i++)
+    {
+        if (p->files[i] != NULL)
+        {
+            file_put(p->files[i]);
+            p->files[i] = NULL;
+        }
+    }
+}
+
+process_t *process_create(address_space_t *space)
+{
+    process_t *p = kzalloc(sizeof(process_t));
     if (p == NULL)
         return NULL;
 
     p->pid = process_alloc_pid();
     p->state = PROCESS_RUNNING;
     p->exit_status = 0;
-    p->refs = 2;
+    p->refs = 1;
     p->space = space;
     wait_queue_init(&p->waiters);
+
+    return p;
+}
+
+int process_fd_install(process_t *p, file_t *file)
+{
+    if (p == NULL || file == NULL)
+        return -EMFILE;
+
+    for (int i = 0; i < PROCESS_MAX_FILES; i++)
+    {
+        if (p->files[i] == NULL)
+        {
+            p->files[i] = file;
+            return i;
+        }
+    }
+
+    return -EMFILE;
+}
+
+int process_start(process_t *p, uintptr_t entry, uintptr_t user_stack)
+{
+    if (p == NULL)
+        return -1;
+
+    irq_flags_t flags = irq_save();
+    p->refs++;
+    irq_restore(flags);
 
     p->thread = thread_create_user(p, entry, user_stack);
     if (p->thread == NULL)
     {
-        kfree(p);
-        return NULL;
+        process_release(p);
+        return -1;
     }
 
-    return p;
+    return 0;
 }
 
 __attribute__((noreturn)) void process_exit(int status)
@@ -47,6 +95,9 @@ __attribute__((noreturn)) void process_exit(int status)
     process_t *current = scheduler_current()->process;
     current->exit_status = status;
     current->state = PROCESS_EXITED;
+
+    // One thread per process: only this thread touches the table now (needs a lock with threads or fork)
+    process_close_files(current);
 
     kprintf("Process %u exited with status %d\n", current->pid, status);
 
@@ -75,10 +126,13 @@ void process_release(process_t *p)
         return;
 
     irq_flags_t flags = irq_save();
-    if (--p->refs == 0)
+    bool last = (--p->refs == 0);
+    irq_restore(flags);
+
+    if (last)
     {
+        process_close_files(p);
         address_space_destroy(p->space);
         kfree(p);
     }
-    irq_restore(flags);
 }

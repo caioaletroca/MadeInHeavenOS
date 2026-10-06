@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <driver/keymap.h>
+#include <fs/file.h>
 
 /**
  * Initialize the console with the specified keymap.
@@ -36,5 +37,12 @@ size_t console_read(char *buf, size_t n);
  * @return The number of bytes actually written.
  */
 size_t console_write(const char *buf, size_t n);
+
+/**
+ * Get the file representation of the console.
+ *
+ * @return A pointer to the console's file structure.
+ */
+file_t *console_file(void);
 
 #endif // _DRIVER_CONSOLE_H_

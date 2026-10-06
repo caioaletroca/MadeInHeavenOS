@@ -25,6 +25,8 @@ static bool caps_lock;
 static bool num_lock = true;
 static uint32_t pending_accent;
 
+static file_t *console;
+
 /**
  * Encode a code point as UTF-8.
  *
@@ -178,6 +180,11 @@ static unsigned int console_modifiers(void)
     return modifiers;
 }
 
+/**
+ * Handle a key event from the input system.
+ *
+ * @param event The input event representing the key action.
+ */
 static void console_key(input_event_t event)
 {
     if (event.key <= KEY_NONE || event.key >= KEY_COUNT)
@@ -241,6 +248,11 @@ static void console_key(input_event_t event)
     console_input(c);
 }
 
+/**
+ * The main console thread that continuously processes input events.
+ *
+ * @param arg Unused argument.
+ */
 static void console_thread(void *arg)
 {
     (void)arg;
@@ -249,8 +261,30 @@ static void console_thread(void *arg)
         console_key(input_get_event());
 }
 
+static long console_file_read(file_t *file, char *buf, size_t n)
+{
+    (void)file;
+    return (long)console_read(buf, n);
+}
+
+static long console_file_write(file_t *file, const char *buf, size_t n)
+{
+    (void)file;
+    return (long)console_write(buf, n);
+}
+
+static const file_ops_t console_file_ops = {
+    .read = console_file_read,
+    .write = console_file_write,
+};
+
 void console_init(const keymap_t *map)
 {
+    file_t *c = file_create(&console_file_ops, FILE_READ | FILE_WRITE, NULL);
+    if (c == NULL)
+        panic("console: failed to create the console file\n");
+
+    console = c;
     keymap = map;
     wait_queue_init(&readers);
 
@@ -309,4 +343,9 @@ size_t console_read(char *buf, size_t n)
 size_t console_write(const char *buf, size_t n)
 {
     return tty_write(buf, n);
+}
+
+file_t *console_file(void)
+{
+    return file_get(console);
 }

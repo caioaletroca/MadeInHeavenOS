@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 #include <sched/wait.h>
+#include <fs/file.h>
+
+#define PROCESS_MAX_FILES 16
 
 typedef enum
 {
@@ -22,17 +25,36 @@ typedef struct process
     struct address_space *space;
     struct thread *thread;
     wait_queue_t waiters;
+
+    struct file *files[PROCESS_MAX_FILES];
 } process_t;
 
 /**
  * Create a new process.
  *
  * @param space The address space for the new process.
- * @param entry The entry point of the new process.
- * @param user_stack The user stack pointer for the new process.
  * @return A pointer to the newly created process, or NULL on failure.
  */
-process_t *process_create(struct address_space *space, uintptr_t entry, uintptr_t user_stack);
+process_t *process_create(struct address_space *space);
+
+/**
+ * Install a file descriptor for the specified process.
+ *
+ * @param p The process to install the file descriptor for.
+ * @param file The file to associate with the process.
+ * @return The file descriptor index on success, or a negative error code on failure.
+ */
+int process_fd_install(process_t *p, struct file *file);
+
+/**
+ * Start the specified process by setting its entry point and user stack.
+ *
+ * @param p The process to start.
+ * @param entry The entry point of the process.
+ * @param user_stack The user stack pointer for the process.
+ * @return 0 on success, or a negative error code on failure.
+ */
+int process_start(process_t *p, uintptr_t entry, uintptr_t user_stack);
 
 /**
  * Exit the current process with the given status.

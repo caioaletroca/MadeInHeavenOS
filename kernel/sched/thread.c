@@ -107,7 +107,7 @@ int thread_init(thread_t *thread, void *stack, size_t stack_size, thread_entry_t
 
 thread_t *thread_create(thread_entry_t entry, void *arg)
 {
-    thread_t *thread = kmalloc(sizeof(thread_t));
+    thread_t *thread = kzalloc(sizeof(thread_t));
     void *stack = kmalloc(THREAD_STACK_SIZE);
 
     if (thread == NULL || stack == NULL || thread_init(thread, stack, THREAD_STACK_SIZE, entry, arg) != 0)
@@ -129,7 +129,7 @@ thread_t *thread_create(thread_entry_t entry, void *arg)
 
 thread_t *thread_create_user(process_t *process, uintptr_t entry, uintptr_t user_stack)
 {
-    thread_t *thread = kmalloc(sizeof(thread_t));
+    thread_t *thread = kzalloc(sizeof(thread_t));
     void *stack = kmalloc(THREAD_STACK_SIZE);
     void *context = NULL;
 

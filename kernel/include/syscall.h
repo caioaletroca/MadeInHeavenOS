@@ -12,10 +12,12 @@
 #define SYS_KILL 7
 #define SYS_YIELD 8
 #define SYS_SLEEP 9
+#define SYS_CLOSE 10
 
 #define EBADF 9
 #define EFAULT 14
 #define ENOSYS 38
+#define EMFILE 24
 
 #ifndef __ASSEMBLER__
 

@@ -92,3 +92,46 @@ user_hlt_before:
 user_hlt_after:
     .quad 0
 user_hlt_end:
+
+/*
+ * Program 5: exercise the fd table. Each call stores its result in the
+ * next slot of user_files_results (checked by the kernel), then exit(0).
+ */
+.macro files_write fd, slot
+    mov $SYS_WRITE, %eax
+    mov $\fd, %edi
+    lea user_files_message(%rip), %rsi
+    mov $(user_files_message_end - user_files_message), %edx
+    int $0x80
+    mov %rax, user_files_results+\slot*8(%rip)
+.endm
+
+.macro files_close fd, slot
+    mov $SYS_CLOSE, %eax
+    mov $\fd, %edi
+    int $0x80
+    mov %rax, user_files_results+\slot*8(%rip)
+.endm
+
+.globl user_files_start, user_files_results, user_files_message, user_files_message_end, user_files_end
+user_files_start:
+    files_write 7, 0                    # empty slot: -EBADF
+    files_write 100, 1                  # out of range: -EBADF
+    files_close 2, 2                    # 0
+    files_write 2, 3                    # just closed: -EBADF
+    files_close 2, 4                    # double close: -EBADF
+    files_write 1, 5                    # stdout survives fd 2 closing: full length
+
+    mov $SYS_EXIT, %eax
+    xor %edi, %edi
+    int $0x80
+    ud2
+
+user_files_message:
+    .ascii "Files test: stdout still works\n"
+user_files_message_end:
+
+    .balign 8
+user_files_results:
+    .quad 1, 1, 1, 1, 1, 1              # never a valid result, so a skipped store is caught
+user_files_end:
