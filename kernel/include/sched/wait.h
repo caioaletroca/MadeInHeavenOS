@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <sched/spinlock.h>
 #include <sys/list.h>
 
 typedef struct wait_queue
@@ -23,6 +24,15 @@ void wait_queue_init(wait_queue_t *queue);
  * @param queue Pointer to the wait queue to sleep on.
  */
 void wait_queue_sleep(wait_queue_t *queue);
+
+/**
+ * @brief Put the current thread to sleep on the specified wait queue while holding a lock.
+ * Lock must be held, it is released while sleeping and reacquired afterwards, IRQs still off. Recheck the condition in a loop.
+ *
+ * @param queue Pointer to the wait queue to sleep on.
+ * @param lock Pointer to the spinlock that will be released while sleeping and reacquired afterwards.
+ */
+void wait_queue_sleep_locked(wait_queue_t *queue, spinlock_t *lock);
 
 /**
  * @brief Wake one thread waiting on the specified wait queue.

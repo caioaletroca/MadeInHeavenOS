@@ -2,6 +2,8 @@
 #include <driver/timer.h>
 #include <sched/thread.h>
 #include <sched/sync.h>
+#include <sched/spinlock.h>
+#include <sched/wait.h>
 #include <asm/cpu.h>
 #include <kprintf.h>
 #include <assert.h>
@@ -25,6 +27,13 @@ static volatile int worker_b_done;
 static semaphore_t tests_done;
 static mutex_t counter_lock;
 static uint64_t shared_counter;
+
+// Condition variable test: cond_flag is protected by cond_lock
+static spinlock_t cond_lock;
+static wait_queue_t cond_queue;
+static bool cond_flag;
+static volatile bool cond_waiter_started;
+static volatile bool cond_waiter_woke;
 
 static void worker_a_entry(void *arg)
 {
@@ -75,21 +84,77 @@ static void sleep_worker(void *arg)
     semaphore_up(&tests_done);
 }
 
+/**
+ * Wait for cond_flag while holding cond_lock: the lock must be released while
+ * sleeping and held again when wait_queue_sleep_locked returns.
+ */
+static void cond_waiter(void *arg)
+{
+    (void)arg;
+
+    scoped_guard(spinlock, &cond_lock)
+    {
+        // Set and sleep with IRQs off: once the signaler sees it, we are asleep
+        cond_waiter_started = true;
+
+        while (!cond_flag)
+            wait_queue_sleep_locked(&cond_queue, &cond_lock);
+
+        KASSERT(cond_lock.locked);
+        cond_waiter_woke = true;
+    }
+
+    KASSERT(!cond_lock.locked);
+    semaphore_up(&tests_done);
+}
+
+/**
+ * Set cond_flag under cond_lock and wake the waiter, after checking the
+ * sleeping waiter does not hold the lock.
+ */
+static void cond_signaler(void *arg)
+{
+    (void)arg;
+
+    while (!cond_waiter_started)
+        scheduler_yield();
+
+    // The waiter is asleep inside its guard; holding the lock now would make
+    // the scoped_guard below panic with "already held"
+    KASSERT(!cond_lock.locked);
+    KASSERT(!cond_waiter_woke);
+
+    scoped_guard(spinlock, &cond_lock)
+    {
+        cond_flag = true;
+        wait_queue_wake_all(&cond_queue);
+    }
+
+    semaphore_up(&tests_done);
+}
+
 static void sync_selftest(void)
 {
     semaphore_init(&tests_done, 0);
     mutex_init(&counter_lock);
     shared_counter = 0;
 
+    spinlock_init(&cond_lock);
+    wait_queue_init(&cond_queue);
+    cond_flag = false;
+
     KASSERT(thread_create(mutex_worker, NULL) != NULL);
     KASSERT(thread_create(mutex_worker, NULL) != NULL);
     KASSERT(thread_create(sleep_worker, NULL) != NULL);
+    KASSERT(thread_create(cond_waiter, NULL) != NULL);
+    KASSERT(thread_create(cond_signaler, NULL) != NULL);
 
     // Boot thread blocks here; idle runs whenever everyone is waiting
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 5; i++)
         semaphore_down(&tests_done);
 
     KASSERT(shared_counter == 2 * MUTEX_TEST_ITERATIONS);
+    KASSERT(cond_waiter_woke && !cond_lock.locked);
 
     kprintf("Sync self-test completed successfully\n");
 }

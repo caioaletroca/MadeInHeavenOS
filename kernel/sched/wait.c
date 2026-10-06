@@ -12,6 +12,13 @@ void wait_queue_sleep(wait_queue_t *queue)
     scheduler_block(&queue->threads);
 }
 
+void wait_queue_sleep_locked(wait_queue_t *queue, spinlock_t *lock)
+{
+    spinlock_release(lock);
+    scheduler_block(&queue->threads);
+    spinlock_acquire(lock);
+}
+
 bool wait_queue_wake_one(wait_queue_t *queue)
 {
     irq_flags_t flags = irq_save();

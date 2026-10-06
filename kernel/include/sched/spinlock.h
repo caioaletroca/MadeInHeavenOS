@@ -63,6 +63,39 @@ static inline void spinlock_init(spinlock_t *lock)
 }
 
 /**
+ * @brief Acquire the spinlock. Caller must ensure that IRQs are disabled.
+ *
+ * Panics if the lock is already held.
+ *
+ * @param lock Pointer to the spinlock to acquire.
+ */
+static inline void spinlock_acquire(spinlock_t *lock)
+{
+    if (lock->locked)
+        panic("spinlock_acquire: lock %p already held\n", (void *)lock);
+
+    if (irq_enabled())
+        panic("spinlock_acquire: IRQs are enabled while acquiring lock %p\n", (void *)lock);
+
+    lock->locked = true;
+}
+
+/**
+ * @brief Release the spinlock.
+ *
+ * Panics if the lock is not held.
+ *
+ * @param lock Pointer to the spinlock to release.
+ */
+static inline void spinlock_release(spinlock_t *lock)
+{
+    if (!lock->locked)
+        panic("spinlock_release: lock %p not held\n", (void *)lock);
+
+    lock->locked = false;
+}
+
+/**
  * @brief Disable IRQs and take the lock.
  *
  * IRQs go off first, so the check cannot be preempted. On one CPU there is
@@ -76,11 +109,7 @@ static inline void spinlock_init(spinlock_t *lock)
 static inline irq_flags_t spinlock_irqsave(spinlock_t *lock)
 {
     irq_flags_t flags = irq_save();
-
-    if (lock->locked)
-        panic("spinlock_irqsave: lock %p already held\n", (void *)lock);
-
-    lock->locked = true;
+    spinlock_acquire(lock);
     return flags;
 }
 
@@ -94,10 +123,7 @@ static inline irq_flags_t spinlock_irqsave(spinlock_t *lock)
  */
 static inline void spinlock_irqrestore(spinlock_t *lock, irq_flags_t flags)
 {
-    if (!lock->locked)
-        panic("spinlock_irqrestore: lock %p not held\n", (void *)lock);
-
-    lock->locked = false;
+    spinlock_release(lock);
     irq_restore(flags);
 }
 
