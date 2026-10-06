@@ -214,12 +214,23 @@ void mmap_init(const boot_info_t *info)
     physaddr_t kernel_end = ALIGN_UP((uintptr_t)&_kernel_physical_end, PAGE_SIZE);
     size_t boot_size = ALIGN_UP(mmap_metadata_size(info), PAGE_SIZE);
 
-    if (!mmap_is_available(info, kernel_end, kernel_end + boot_size))
-        panic("mmap: no room for %u bytes of boot metadata after the kernel", (unsigned int)boot_size);
+    physaddr_t image_end = kernel_end;
+    for (size_t i = 0; i < info->module_count; i++)
+    {
+        const boot_module_t *module = &info->modules[i];
 
-    boot_alloc_init(kernel_end, boot_size);
+        if (module->end > KERNEL_DIRECT_MAP_SIZE)
+            panic("mmap: module '%s' exceeds the kernel direct map size", module->name);
 
-    physaddr_t usable_start = kernel_end + boot_size;
+        image_end = MAX(image_end, ALIGN_UP(module->end, PAGE_SIZE));
+    }
+
+    if (!mmap_is_available(info, image_end, image_end + boot_size))
+        panic("mmap: no room for %u bytes of boot metadata after the kernel and modules", (unsigned int)boot_size);
+
+    boot_alloc_init(image_end, boot_size);
+
+    physaddr_t usable_start = image_end + boot_size;
 
     for (size_t i = 0; i < info->memory_region_count; i++)
     {

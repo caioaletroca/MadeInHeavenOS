@@ -63,13 +63,28 @@ static void multiboot_parse_mmap(const struct multiboot_tag_mmap *tag, boot_info
  */
 static void multiboot_parse_cmdline(const struct multiboot_tag_string *tag, boot_info_t *info)
 {
-    size_t i = 0;
+    strlcpy(info->cmdline, tag->string, sizeof(info->cmdline));
+}
 
-    for (; i < BOOT_CMDLINE_MAX && tag->string[i] != '\0'; i++)
-        info->cmdline[i] = tag->string[i];
+/**
+ * @brief Parse a module from a Multiboot2 tag and populate the boot_info structure.
+ *
+ * @param tag Pointer to the Multiboot2 module tag.
+ * @param info Pointer to the boot_info structure to populate.
+ */
+static void multiboot_parse_module(const struct multiboot_tag_module *tag, boot_info_t *info)
+{
+    if (info->module_count == BOOT_MODULE_MAX)
+        panic("boot: more than %u modules", BOOT_MODULE_MAX);
 
-    if (i < BOOT_CMDLINE_MAX)
-        info->cmdline[i] = '\0';
+    if (tag->mod_end < tag->mod_start)
+        panic("boot: module end is before module start");
+
+    boot_module_t *module = &info->modules[info->module_count++];
+    module->start = tag->mod_start;
+    module->end = tag->mod_end;
+
+    strlcpy(module->name, tag->string, sizeof(module->name));
 }
 
 void platform_boot_info_init(uintptr_t handoff, boot_info_t *info)
@@ -91,6 +106,9 @@ void platform_boot_info_init(uintptr_t handoff, boot_info_t *info)
             break;
         case MULTIBOOT_TAG_CMDLINE:
             multiboot_parse_cmdline((const struct multiboot_tag_string *)tag, info);
+            break;
+        case MULTIBOOT_TAG_MODULE:
+            multiboot_parse_module((const struct multiboot_tag_module *)tag, info);
             break;
         default:
             break;

@@ -3,6 +3,8 @@
 
 #define BOOT_MEMORY_MAX_REGIONS 64
 #define BOOT_CMDLINE_MAX 256
+#define BOOT_MODULE_MAX 8
+#define BOOT_MODULE_NAME_MAX 64
 
 #include <addresses.h>
 
@@ -28,10 +30,22 @@ typedef struct boot_memory_region
     boot_memory_type_t type;
 } boot_memory_region_t;
 
+/**
+ * @brief A file loaded by the bootloader next to the kernel (physical, [start, end)).
+ */
+typedef struct boot_module
+{
+    physaddr_t start;
+    physaddr_t end;
+    char name[BOOT_MODULE_NAME_MAX];
+} boot_module_t;
+
 typedef struct boot_info
 {
     boot_memory_region_t memory_regions[BOOT_MEMORY_MAX_REGIONS];
     size_t memory_region_count;
+    boot_module_t modules[BOOT_MODULE_MAX];
+    size_t module_count;
     char cmdline[BOOT_CMDLINE_MAX];
 } boot_info_t;
 

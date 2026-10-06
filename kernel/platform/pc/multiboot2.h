@@ -16,6 +16,7 @@ typedef unsigned long long multiboot_uint64_t;
 #define MULTIBOOT_TAG_ALIGN 8
 #define MULTIBOOT_TAG_END 0
 #define MULTIBOOT_TAG_CMDLINE 1
+#define MULTIBOOT_TAG_MODULE 3
 #define MULTIBOOT_TAG_MMAP 6
 
 // Multiboot Memory Types
@@ -53,6 +54,15 @@ struct multiboot_tag_mmap
     multiboot_uint32_t entry_size;
     multiboot_uint32_t entry_version;
     struct multiboot_mmap_entry entries[];
+};
+
+struct multiboot_tag_module
+{
+    multiboot_uint32_t type;
+    multiboot_uint32_t size;
+    multiboot_uint32_t mod_start;
+    multiboot_uint32_t mod_end;
+    char string[];
 };
 
 struct multiboot_info
