@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <sched/spinlock.h>
 
 struct file;
 
@@ -10,6 +11,8 @@ typedef struct file_ops
 {
     long (*read)(struct file *file, char *buf, size_t count);
     long (*write)(struct file *file, const char *buf, size_t count);
+
+    // Release is called without locks held, once, after the last reference is dropped.
     void (*release)(struct file *file);
 } file_ops_t;
 
@@ -20,7 +23,8 @@ typedef struct file
 {
     const file_ops_t *ops;
     unsigned int flags;
-    unsigned int refs;
+    unsigned int refs; // Protected by the file's lock.
+    spinlock_t lock;
     void *private;
 } file_t;
 

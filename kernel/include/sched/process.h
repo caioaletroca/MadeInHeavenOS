@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <sched/wait.h>
+#include <sched/spinlock.h>
 #include <fs/file.h>
 
 #define PROCESS_MAX_FILES 16
@@ -27,6 +28,8 @@ typedef struct process
     wait_queue_t waiters;
 
     struct file *files[PROCESS_MAX_FILES];
+
+    spinlock_t lock;
 } process_t;
 
 /**

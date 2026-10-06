@@ -1,12 +1,12 @@
 #include <sched/process.h>
 #include <sched/scheduler.h>
 #include <sched/thread.h>
-#include <asm/irq_flags.h>
 #include <mm/kmalloc.h>
 #include <mm/address_space.h>
 #include <syscall.h>
 #include <kprintf.h>
 
+static spinlock_t pid_lock = SPINLOCK_INIT;
 static uint32_t next_pid = 1;
 
 /**
@@ -14,10 +14,8 @@ static uint32_t next_pid = 1;
  */
 static uint32_t process_alloc_pid(void)
 {
-    irq_flags_t flags = irq_save();
-    uint32_t pid = next_pid++;
-    irq_restore(flags);
-    return pid;
+    guard(spinlock, &pid_lock);
+    return next_pid++;
 }
 
 /**
@@ -50,6 +48,7 @@ process_t *process_create(address_space_t *space)
     p->refs = 1;
     p->space = space;
     wait_queue_init(&p->waiters);
+    spinlock_init(&p->lock);
 
     return p;
 }
@@ -76,9 +75,10 @@ int process_start(process_t *p, uintptr_t entry, uintptr_t user_stack)
     if (p == NULL)
         return -1;
 
-    irq_flags_t flags = irq_save();
-    p->refs++;
-    irq_restore(flags);
+    scoped_guard(spinlock, &p->lock)
+    {
+        p->refs++;
+    }
 
     p->thread = thread_create_user(p, entry, user_stack);
     if (p->thread == NULL)
@@ -93,15 +93,19 @@ int process_start(process_t *p, uintptr_t entry, uintptr_t user_stack)
 __attribute__((noreturn)) void process_exit(int status)
 {
     process_t *current = scheduler_current()->process;
-    current->exit_status = status;
-    current->state = PROCESS_EXITED;
+
+    scoped_guard(spinlock, &current->lock)
+    {
+        current->exit_status = status;
+        current->state = PROCESS_EXITED;
+        wait_queue_wake_all(&current->waiters);
+    }
 
     // One thread per process: only this thread touches the table now (needs a lock with threads or fork)
     process_close_files(current);
 
     kprintf("Process %u exited with status %d\n", current->pid, status);
 
-    wait_queue_wake_all(&current->waiters);
     thread_exit();
 }
 
@@ -110,12 +114,11 @@ int process_wait(process_t *p)
     if (p == NULL)
         return -1;
 
-    irq_flags_t flags = irq_save();
-
-    while (p->state != PROCESS_EXITED)
-        wait_queue_sleep(&p->waiters);
-
-    irq_restore(flags);
+    scoped_guard(spinlock, &p->lock)
+    {
+        while (p->state != PROCESS_EXITED)
+            wait_queue_sleep_locked(&p->waiters, &p->lock);
+    }
 
     return p->exit_status;
 }
@@ -125,9 +128,12 @@ void process_release(process_t *p)
     if (p == NULL)
         return;
 
-    irq_flags_t flags = irq_save();
-    bool last = (--p->refs == 0);
-    irq_restore(flags);
+    bool last = false;
+
+    scoped_guard(spinlock, &p->lock)
+    {
+        last = (--p->refs == 0);
+    }
 
     if (last)
     {
