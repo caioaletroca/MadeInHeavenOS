@@ -1,9 +1,9 @@
 #include <driver/console.h>
-#include <sched/thread.h>
 #include <driver/input.h>
 #include <driver/tty.h>
+#include <sched/thread.h>
 #include <sched/wait.h>
-#include <asm/irq_flags.h>
+#include <sched/spinlock.h>
 #include <stdbool.h>
 #include <panic.h>
 
@@ -13,6 +13,9 @@ _Static_assert((CONSOLE_BUFFER_SIZE & (CONSOLE_BUFFER_SIZE - 1)) == 0, "CONSOLE_
 #define CTRL(c) ((c) & 0x1F)
 
 static char buffer[CONSOLE_BUFFER_SIZE];
+
+// read_index and write_index are shared with readers: console_lock.
+// edit_index and [write, edit) belong to the console thread alone.
 static unsigned int read_index;
 static unsigned int write_index;
 static unsigned int edit_index;
@@ -25,6 +28,7 @@ static bool caps_lock;
 static bool num_lock = true;
 static uint32_t pending_accent;
 
+static spinlock_t console_lock = SPINLOCK_INIT;
 static file_t *console;
 
 /**
@@ -70,7 +74,7 @@ static size_t utf8_encode(uint32_t c, char out[4])
  */
 static bool console_store(const char *bytes, size_t n, bool ends_line)
 {
-    irq_flags_t flags = irq_save();
+    guard(spinlock, &console_lock);
     size_t used = edit_index - read_index;
     size_t limit = ends_line ? CONSOLE_BUFFER_SIZE : CONSOLE_BUFFER_SIZE - 1;
     bool fits = used + n <= limit;
@@ -78,8 +82,6 @@ static bool console_store(const char *bytes, size_t n, bool ends_line)
     if (fits)
         for (size_t i = 0; i < n; i++)
             buffer[edit_index++ % CONSOLE_BUFFER_SIZE] = bytes[i];
-
-    irq_restore(flags);
 
     return fits;
 }
@@ -89,10 +91,9 @@ static bool console_store(const char *bytes, size_t n, bool ends_line)
  */
 static void console_commit(void)
 {
-    irq_flags_t flags = irq_save();
+    guard(spinlock, &console_lock);
     write_index = edit_index;
     wait_queue_wake_all(&readers);
-    irq_restore(flags);
 }
 
 /**
@@ -304,22 +305,14 @@ size_t console_read(char *buf, size_t n)
     if (n == 0)
         return 0;
 
-    irq_flags_t flags = irq_save();
+    guard(spinlock, &console_lock);
 
     while (read_index == write_index)
-        wait_queue_sleep(&readers);
+        wait_queue_sleep_locked(&readers, &console_lock);
 
     while (count < n && read_index != write_index)
     {
         char c = buffer[read_index % CONSOLE_BUFFER_SIZE];
-
-        if (c == CTRL('C'))
-        {
-            // Consume EOF only when it comes first; otherwise the next read returns 0
-            if (count == 0)
-                read_index++;
-            break;
-        }
 
         if (c == CTRL('D'))
         {
@@ -336,7 +329,6 @@ size_t console_read(char *buf, size_t n)
             break;
     }
 
-    irq_restore(flags);
     return count;
 }
 

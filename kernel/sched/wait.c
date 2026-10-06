@@ -7,11 +7,6 @@ void wait_queue_init(wait_queue_t *queue)
     list_init(&queue->threads);
 }
 
-void wait_queue_sleep(wait_queue_t *queue)
-{
-    scheduler_block(&queue->threads);
-}
-
 void wait_queue_sleep_locked(wait_queue_t *queue, spinlock_t *lock)
 {
     spinlock_release(lock);

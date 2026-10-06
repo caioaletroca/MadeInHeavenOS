@@ -13,6 +13,7 @@
 #include <sched/scheduler.h>
 #include <boot_info.h>
 
+#include "selftest/console.h"
 #include "selftest/guard.h"
 #include "selftest/mm.h"
 #include "selftest/scheduler.h"
@@ -53,6 +54,7 @@ void kmain(uintptr_t boot_handoff)
     guard_selftest();
     mm_selftest();
     scheduler_selftest();
+    console_selftest();
     user_selftest();
 
     cpu_breakpoint();

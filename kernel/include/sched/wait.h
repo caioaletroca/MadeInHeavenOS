@@ -19,13 +19,6 @@ typedef struct wait_queue
 void wait_queue_init(wait_queue_t *queue);
 
 /**
- * @brief Put the current thread to sleep on the specified wait queue.
- *
- * @param queue Pointer to the wait queue to sleep on.
- */
-void wait_queue_sleep(wait_queue_t *queue);
-
-/**
  * @brief Put the current thread to sleep on the specified wait queue while holding a lock.
  * Lock must be held, it is released while sleeping and reacquired afterwards, IRQs still off. Recheck the condition in a loop.
  *
