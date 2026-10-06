@@ -45,6 +45,7 @@ SYSROOT_DIR ?= $(PROJECT_ROOT)/sysroot
 USR_DIR := $(SYSROOT_DIR)/usr
 INCLUDE_DIR := $(USR_DIR)/include
 BOOT_DIR := $(USR_DIR)/boot
+BIN_DIR := $(USR_DIR)/bin
 LIB_DIR := $(USR_DIR)/lib
 
 #####################################################################
