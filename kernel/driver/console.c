@@ -75,7 +75,7 @@ static bool console_store(const char *bytes, size_t n, bool ends_line)
 
     if (fits)
         for (size_t i = 0; i < n; i++)
-            buffer[edit_index++ % (CONSOLE_BUFFER_SIZE - 1)] = bytes[i];
+            buffer[edit_index++ % CONSOLE_BUFFER_SIZE] = bytes[i];
 
     irq_restore(flags);
 
@@ -284,6 +284,13 @@ size_t console_read(char *buf, size_t n)
             // Consume EOF only when it comes first; otherwise the next read returns 0
             if (count == 0)
                 read_index++;
+            break;
+        }
+
+        if (c == CTRL('D'))
+        {
+            // EOF flushes the pending bytes and is discarded; on an empty line read returns 0
+            read_index++;
             break;
         }
 
