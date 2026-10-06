@@ -13,6 +13,7 @@
 #include <sched/scheduler.h>
 #include <boot_info.h>
 
+#include "selftest/guard.h"
 #include "selftest/mm.h"
 #include "selftest/scheduler.h"
 #include "selftest/user.h"
@@ -49,6 +50,7 @@ void kmain(uintptr_t boot_handoff)
 
     irq_enable();
 
+    guard_selftest();
     mm_selftest();
     scheduler_selftest();
     user_selftest();
