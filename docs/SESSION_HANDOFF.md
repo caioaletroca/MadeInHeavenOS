@@ -16,27 +16,33 @@ Working x86-64 PC kernel with:
 - Processes (`process_t`) owning their address space and fd table, waitable, refcounted; faults in
   ring 3 kill the process with 128 + signal instead of panicking
 - Open files (`file_t` + `file_ops_t`), console as the first backend behind fds 0–2
+- **ELF64 loader**: user programs built separately (`user/`), loaded by GRUB as Multiboot2 modules,
+  validated and mapped by `elf_load`, started by `init_start` (`hello` exits with 42)
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
 - Blocking primitives: wait queues, `thread_sleep`, semaphores, mutexes
+- `spinlock_t` (IRQs off + misuse checks on one CPU) and scope guards (`guard()`/`scoped_guard()`
+  in `cleanup.h`); sleeping with a lock held goes through `wait_queue_sleep_locked`
 - Generic input events; PS/2 scancode set 2 decoder feeding the console thread
 - Console: US and ABNT2 keymaps with dead keys, line discipline, blocking `console_read()`
 - UTF-8 tty drawing CP437 glyphs on VGA text mode with a hardware cursor; `kprintf` is atomic per call
 - Kernel split into generic code, arch contracts and platform contracts, enforced by the build
-- MM, preemption, sync and user-mode self-tests passing in Bochs; keyboard verified in Bochs and QEMU
+- Guard, MM, preemption, sync, console, user-mode and ELF self-tests passing in Bochs; keyboard
+  verified in Bochs and QEMU
 
 Latest commits:
 
 ```text
-82c4c77 feat(fs): add open files and per-process fd tables
-2d4d48e feat(sched): add processes owning their address space
-d7c5326 feat(arch): kill user threads on faults
-267bef9 fix(driver): wrap edit index and end reads on Ctrl+D
-c2add1d docs(architecture): document user mode and syscalls in handoff
-c0973c8 feat(sys): add int 0x80 syscalls with write, read and exit
-d8dd7d8 feat(sched): run threads in user mode
-5ebcf13 feat(mm): add per-process address spaces
+cd4c689 feat(exec): load ELF programs and start the first one
+ea14a19 build(user): build user programs as GRUB modules
+d824c15 feat(boot): record bootloader modules and keep them reserved
+1d3b986 feat(libc): add strlcpy and strcmp, terminate strcpy
+cd7b843 refactor(driver): protect the console ring with a spinlock
+8f5f1d8 refactor(sched): put semaphores, mutexes and thread lists on spinlocks
+5b714ca refactor(sched): protect file and process state with spinlocks
+ba39eab feat(sched): add sleeping on a wait queue with a lock held
+9a0d59c feat(sched): add scope guards and spinlocks
 ```
 
 ## Architecture
@@ -44,6 +50,9 @@ d8dd7d8 feat(sched): run threads in user mode
 ### Layers
 
 ```text
+libc/                             # libk.a (kernel) + libc.a; string.h, stdio.h, ...
+user/                             # user programs: start.S, user.ld, one directory per program
+grub/                             # grub.cfg + ISO build (kernel + modules)
 kernel/
 ├── include/                      # GENERIC: no asm, no x86, no PC
 │   ├── arch/                     # contract every arch implements
@@ -56,13 +65,16 @@ kernel/
 │   ├── boot_info.h               # protocol-independent boot data
 │   ├── unicode.h                 # codepoint_t
 │   ├── driver/                   # input, keymap, console, tty, screen, timer
-│   └── sched/ mm/ ...
+│   ├── cleanup.h                 # guard() / scoped_guard() mechanism
+│   ├── exec/                     # elf.h (ELF64 format), exec.h
+│   └── sched/ mm/ fs/ ...        # sched/spinlock.h: spinlock_t + irq/spinlock guards
 ├── arch/x86/
-│   ├── include/asm/              # PUBLIC arch interface: irq_flags.h cpu.h memory.h
+│   ├── include/asm/              # PUBLIC arch interface: irq_flags.h cpu.h memory.h elf.h
 │   ├── common/include/x86/       # PRIVATE: cpu gdt idt io isr paging tss vectors exceptions
 │   └── x86_64/                   # boot, ISR stubs, gdt64.S, tss.c, arch.c, context.c, isr.c, paging.c
 ├── platform/pc/                  # pic, pit, ps2, keyboard, vga, screen (CP437), multiboot2, platform.c
-├── sched/ mm/ driver/ sys/ fs/ selftest/
+├── sched/ mm/ driver/ sys/ fs/ exec/ selftest/
+├── init.c                        # init_start: runs the first user program
 └── kmain.c
 ```
 
@@ -86,6 +98,7 @@ from the same directory.
 | `<asm/memory.h>`: `PAGE_SIZE`, `KERNEL_VIRTUAL_ADDRESS`, `KERNEL_DIRECT_MAP_SIZE`, `KERNEL_SELFTEST_VIRTUAL_BASE`, `USER_BASE`, `USER_STACK_TOP`, `USER_TOP` | `arch/x86/include/asm/memory.h` |
 | `<asm/irq_flags.h>`: `irq_save/restore/enable/disable/enabled`, `irq_flags_t` | inline `pushfq/cli/sti` |
 | `<asm/cpu.h>`: `cpu_idle/cpu_halt/cpu_breakpoint` | inline `hlt`, Bochs magic breakpoint |
+| `<asm/elf.h>`: `ELF_MACHINE` (the ELF `e_machine` this arch runs) | `62` (`EM_X86_64`) |
 | `arch_init()` | `arch.c`: TSS, IDT, exceptions, page fault handler, yield vector |
 | `arch_thread_context_init()`, `arch_yield()` | `context.c` + `thread_entry.S` trampoline |
 | `irq_register()` + dispatch to `scheduler_on_interrupt()` | `isr.c` |
@@ -103,8 +116,9 @@ from the same directory.
 tty_init → platform_boot_info_init → arch_init [TSS first] → input_init → platform_init (PIC, PS/2, keyboard IRQ)
 → mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init] → scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [console thread]
-→ timer_init(TIMER_FREQUENCY_HZ) → irq_enable → mm_selftest → scheduler_selftest [+ sync tests]
-→ user_selftest → boot thread idles
+→ timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → mm_selftest
+→ scheduler_selftest [+ sync tests] → console_selftest → user_selftest → elf_selftest(&boot_info)
+→ init_start(&boot_info) [runs the 'hello' module, waits] → boot thread idles
 ```
 
 ## Memory management
@@ -116,9 +130,13 @@ boot_info regions ──▶ mmap_init ──▶ zones (one buddy system each) �
                            (sealed by kmalloc_init)                        └─▶ kmalloc > 1024 B (2^order pages)
 ```
 
-- **Physical layout:** `[kernel image][boot metadata][usable memory …]`. The boot metadata reservation
-  is computed from the memory map (`mmap_metadata_size`), not a fixed size. Only memory inside
-  `KERNEL_DIRECT_MAP_SIZE` (1 GiB) is handed to zones.
+- **Physical layout:** `[kernel image][boot modules][boot metadata][usable memory …]`. The boot
+  metadata reservation is computed from the memory map (`mmap_metadata_size`), not a fixed size. Only
+  memory inside `KERNEL_DIRECT_MAP_SIZE` (1 GiB) is handed to zones.
+- **Boot modules:** GRUB puts modules right after the kernel, in memory the firmware map reports as
+  available. `mmap_init` places the metadata after the kernel *and* every module (`image_end`), and
+  everything below `usable_start` stays reserved, so modules are never handed out as free frames.
+  A module ending above the direct map panics (`phys_to_kern` could not reach it).
 - **Bootstrap:** zones start fully allocated (`refs = 1`); `mmap_release_regions` frees every frame
   to build the free lists.
 - **Boot allocator** (`mm/boot_alloc.c`): zeroed, permanent bump allocations for allocator metadata.
@@ -232,8 +250,12 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
   `refs == 0` closes any remaining fds (a process that never ran), destroys the space and frees the
   struct; only the decrement runs with IRQs off. The last release is always on a kernel thread, so the
   space is never active when destroyed.
-- `process_wait(p)`: Mesa loop on `waiters` until `EXITED`, returns `exit_status`. The struct and
-  space stay valid until the caller's `process_release`, so tests can read the program's variables.
+- `process_wait(p)`: Mesa loop on `waiters` until `EXITED` (`wait_queue_sleep_locked` on `p->lock`),
+  returns `exit_status`. The struct and space stay valid until the caller's `process_release`, so tests
+  can read the program's variables.
+- **Locking:** `p->lock` protects `refs`, `state` and `exit_status`; `process_exit` sets the status
+  and wakes waiters under it. The last release and the teardown run *after* the lock is dropped, never
+  freeing a held lock. pids come from `pid_lock`.
 - **Exit status:** the value passed to `exit` (full `int`, no `& 0xFF` until `waitpid` exists), or
   128 + signal for faults (`include/signal.h`: Linux signal numbers, no delivery yet).
 - The fd table has no lock: with one thread per process only the creator (before start) and the
@@ -249,10 +271,48 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private } ──▶ ops-
   description) that several fds can share. `file_ops_t` takes **kernel** buffers and returns bytes or
   `-errno`; the syscall layer does every user copy, so backends never see user pointers.
 - `file_create(ops, flags, private)` (refs = 1), `file_get`, `file_put` (at 0: optional `release`,
-  then `kfree`). Refs change under `irq_save`. No offset yet: nothing seeks until a VFS exists.
+  then `kfree`). Refs are protected by the file's embedded `lock`; `release` runs without locks held,
+  once, after the last reference is gone. No offset yet: nothing seeks until a VFS exists.
 - **Console backend** (`driver/console.c`): one `FILE_READ | FILE_WRITE` file created in
   `console_init`, which keeps its own reference forever. `console_file()` returns a new reference;
   user programs get it three times, as fds 0, 1 and 2 (like `getty` opening the tty and `dup`ing it).
+
+### Programs and the ELF loader (`exec/`, `init.c`, `user/`)
+
+```text
+user/hello ─build─▶ sysroot/usr/bin/hello.elf ─ISO─▶ GRUB module2 "hello" ─▶ boot_info.modules[]
+init_start ─▶ exec_load(image, size) ─▶ address_space_create + elf_load + stack page
+           ─▶ process_create + console fds 0-2 + process_start(entry) ─▶ process_wait
+```
+
+- **User build** (`user/Makefile`): one static ELF per program directory, linked with `start.S`
+  (`_start`: `call main`, then `exit(main())`; assembly so `main` gets the SysV `RSP + 8`
+  alignment). Own flags: freestanding, no PIE, no `-mcmodel=kernel`, no unwind tables,
+  `max-page-size=4096`. `user.ld` puts text (RX), rodata (R) and data+bss (RW) in separate `PHDRS`
+  segments, each on its own page at `USER_BASE`. Programs include kernel headers from the sysroot
+  (`<syscall.h>`), so `user` builds after `kernel`. Installed to `sysroot/usr/bin`, copied into the
+  ISO by `grub/Makefile` and named in `grub.cfg` (`module2 /boot/hello.elf hello`).
+- **Modules** (`boot_info.modules[]`, Multiboot2 tag 3): physical `[start, end)` plus the name, copied
+  with `strlcpy` (the Multiboot2 structure is not protected after boot).
+- **`elf_load(space, image, size, &entry)`** (`exec/elf.c`): validates `ELF64`, little-endian,
+  version, `ET_EXEC`, `e_machine == ELF_MACHINE` and that the program header table is inside the
+  image; for every non-empty `PT_LOAD` (empty ones, e.g. an unused RW segment, are skipped) checks the
+  file range and that memory lies in `[USER_BASE, USER_TOP)`, maps whole pages (`PF_W`/`PF_X` →
+  `MMU_WRITE`/`MMU_EXEC`; readable is implied) and copies `p_filesz` bytes to `p_vaddr` (`.bss` stays
+  zero: frames are zeroed). The entry must be inside an executable segment. Returns `-ENOEXEC` /
+  `-ENOMEM`, sets `entry` only on success, never creates a process. On error the caller destroys the
+  space. Every bound is a subtraction after a `<=` check; `p_vaddr > USER_TOP` is rejected **before**
+  `USER_TOP - p_vaddr`, which would wrap and let a segment map into the kernel half.
+- **`exec_load(image, size, &space, &entry)`** (`exec/exec.c`): new space + `elf_load` + one stack page
+  at `USER_STACK_TOP - PAGE_SIZE`; frees everything on error. Meant for `sys_exec`/spawn later too.
+- **`init_start(info)`** (`init.c`): finds the `hello` module, `exec_load`, process with the console on
+  fds 0–2, start, wait, report, release. Later: start `/sbin/init` and treat its exit as fatal.
+- `hello` returns `status + zero` from a `.data` 42 and a `.bss` 0, so its exit status checks the copy
+  and the zeroing.
+- **ELF self-test** (`selftest/elf.c`): `exec_load` of the module must succeed with the header's entry;
+  ten broken copies (magic, class, machine, `ET_DYN`, truncated, program headers out of bounds,
+  `p_filesz > p_memsz`, segment in the kernel half, segment wrapping past 2^64, entry outside every
+  segment) must return `-ENOEXEC` without setting the entry.
 
 ## Scheduler
 
@@ -265,40 +325,73 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private } ──▶ ops-
   threads share one frame format. `context_switch.S` was removed.
 - New threads start from a synthetic frame: `iretq` → `thread_entry` → `call thread_start`
   (keeps SysV 16-byte alignment).
-- Ready queue guarded with `irq_save/irq_restore`. IRQ gates 32–47 are interrupt gates (IF cleared).
+- Ready queue, sleep queue, wait queue lists and each thread's `state`/`run_link`/`wake_tick` are
+  scheduler state protected by **IRQs off on purpose** (locking note at the top of `scheduler.c`): a
+  spinlock there would be held across the context switch. SMP needs per-CPU run queues and a lock
+  handed over the switch (Linux's `rq->lock` / `finish_task_switch`). IRQ gates 32–47 are interrupt
+  gates (IF cleared).
 - EOI is sent before switching threads.
 
 ### Threads
 
 - `thread_create(entry, arg)`: `kzalloc`'d `thread_t` + 16 KiB `kmalloc`'d stack, flagged
   `THREAD_FLAG_OWNED`. `thread_init(...)` sets up threads on caller-owned memory (idle, tests).
-- IDs come from a global counter (boot thread = 0).
+- IDs come from a global counter under `tid_lock` (boot thread = 0).
+- `thread_t` has no lock of its own: its fields are either set once before the thread is visible or
+  scheduler state, protected by the lock of the list the thread is on.
 - `entry(arg)` returning → `thread_start` → `thread_exit()`.
 - **Invariant:** `run_link` is in exactly one list — ready queue, a wait queue, the sleep queue or
   the zombie list — or none (the running thread, exited static threads).
 - **Idle thread** (static stack, `cpu_idle` loop) runs only when nothing is ready; never queued.
 - **Reaper:** `thread_exit` disables IRQs for good, marks the thread `TERMINATED`, and (if owned)
-  puts it on `zombie_list` + `semaphore_up(zombie_count)`, then yields. The reaper thread sleeps on
-  that semaphore and frees stack + struct. IF=0 guarantees the exiting thread is off its stack first.
+  puts it on `zombie_list` (under `zombie_lock`, raw acquire/release since IRQs are never restored)
+  + `semaphore_up(zombie_count)`, then yields. The reaper thread sleeps on that semaphore, unlinks
+  the zombie under `zombie_lock` and frees stack + struct after it, then drops the process reference.
+  IF=0 guarantees the exiting thread is off its stack first.
+
+### Locks and guards (`sched/spinlock.h`, `cleanup.h`)
+
+- **`spinlock_t`** (`bool locked`): on one CPU, IRQs off is the exclusion; `locked` only catches
+  misuse. `spinlock_irqsave` (returns the flags) / `spinlock_irqrestore`; underneath,
+  `spinlock_acquire`/`release` take and drop the lock without touching IRQs and panic if called with
+  IRQs enabled. Panics on taking a held lock (recursion, or an IRQ handler taking its own thread's
+  lock: a deadlock on SMP) and on a double unlock. On SMP `locked` becomes the atomic lock word behind
+  the same API. No plain `spin_lock` yet: without a preemption counter it would not stop the timer.
+- **Guards** (`cleanup.h`, on GCC's `cleanup` attribute): `guard(name, args...)` holds until the end
+  of the enclosing scope (C# `using var`), `scoped_guard(name, args...) { ... }` for one block (C#
+  `lock`). Released on every exit (end, `return`, `break`, `goto` out), in reverse order. A guard is
+  `name##_guard_t` + `name##_guard_init(args)` + `name##_guard_exit(state *)`, defined next to the
+  resource: `guard(irq)` and `guard(spinlock, &lock)`. Pitfalls: inside `scoped_guard`, `break`/
+  `continue` leave the hidden `for`; always use braces (a stray `;` after `scoped_guard(...)` is an
+  empty body); no `goto` into a guard's scope.
+- **Rules:** a lock sits next to the data it protects, with a "protected by" comment. Never free an
+  object while holding its embedded lock: decrement under the lock, tear down after it. `guard(irq)`
+  is not mutual exclusion on SMP; shared data gets a named lock. Explicit acquire/release stay where
+  the release is deliberately skipped (`thread_exit`) or moved early (`process_release`).
 
 ### Blocking and synchronization (`sched/wait.c`, `sched/sync.c`)
 
-- Single CPU: disabling interrupts is the global lock (no preemption, no handlers).
 - `scheduler_block(list)`: current → `BLOCKED`, onto the list, `arch_yield()`. Must be called with
   IRQs off; returns after wake-up still with IRQs off (IF is saved per thread in its frame).
 - `scheduler_wake(thread)`: `BLOCKED` → `READY` onto the ready queue; requests an immediate
   reschedule when the CPU is idling. Safe from IRQ handlers.
-- Usage pattern (Mesa semantics, prevents lost wake-ups):
+- **Never sleep holding a spinlock.** `wait_queue_sleep_locked(queue, lock)` releases the lock,
+  blocks and retakes it before returning, all with IRQs off, so no wake-up slips between the check and
+  the sleep. It is the only way to sleep on a wait queue (the unlocked `wait_queue_sleep` was removed).
+  Usage (Mesa semantics: recheck in a loop):
   ```c
-  irq_flags_t flags = irq_save();
-  while (!condition)
-      wait_queue_sleep(&queue);
-  irq_restore(flags);
+  scoped_guard(spinlock, &obj->lock)
+  {
+      while (!obj->condition)
+          wait_queue_sleep_locked(&obj->waiters, &obj->lock);
+  }
+  // waker: set the condition and wake under the same lock
   ```
-- `wait_queue_t`: FIFO list of sleepers; `wake_one` / `wake_all` are IRQ-safe.
-- `semaphore_t` = `count` + wait queue. `down` waits for and consumes one unit; `up` adds one unit
-  and wakes one waiter (non-blocking, IRQ-safe, never loses signals).
-- `mutex_t` = `owner` + wait queue; not recursive, only the owner may unlock.
+- `wait_queue_t`: FIFO list of sleepers; `wake_one` / `wake_all` are IRQ-safe. The list itself is
+  scheduler state (IRQs off), not protected by the sleeper's lock.
+- `semaphore_t` = `count` + wait queue + `lock`. `down` waits for and consumes one unit; `up` adds
+  one unit and wakes one waiter under the lock (non-blocking, IRQ-safe, never loses signals).
+- `mutex_t` = `owner` + wait queue + `lock`; not recursive, only the owner may unlock.
 - `thread_sleep(ticks)`: sleep queue checked on every `scheduler_tick` (own tick counter).
 - **Never block in IRQ context** (`semaphore_down`, `mutex_lock`, `thread_sleep`): it would block the
   interrupted thread. Only `up`/`wake`/`input_report_key` are allowed there.
@@ -331,7 +424,11 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
   `[write, edit)`. Ordinary input leaves one byte free so `\n`/EOF can always commit. `console_read`
   is canonical: at most one line per call. EOF follows POSIX: it hands over the pending bytes and is
   always discarded, so a read returns 0 only when EOF starts an empty line (`abc^D` returns `abc`,
-  the next read blocks).
+  the next read blocks). `console_lock` protects `read_index`/`write_index`; readers sleep with
+  `wait_queue_sleep_locked`, the console thread commits and wakes under it. `edit_index` and
+  `[write, edit)` belong to the console thread alone (erase and Ctrl+C touch them without the lock).
+- **Console self-test** (`selftest/console.c`): a feeder thread injects `h i Enter` and `Ctrl+D`
+  through `input_report_key` while the reader is asleep; it must read `"hi\n"`, then 0 (EOF).
 - **Output:** `tty_write` decodes UTF-8 (U+FFFD for malformed/overlong) and runs under `irq_save`,
   so each `kprintf` is atomic and callable from IRQs, panic and early boot. The PC `screen_glyph`
   maps code points to CP437 and falls back to the unaccented letter (`ã → a`).
@@ -377,6 +474,14 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
   `console_read` looked for Ctrl+C as EOF.
 - `kmalloc`'d `thread_t`/`process_t` left new fields (`process`, `files[]`) as garbage: the reaper
   "released" a random pointer (#GP on a non-canonical address). Both now come from `kzalloc`.
+- `process_wait` slept holding `p->lock` (a reaper race panicking "already held", a deadlock on SMP)
+  → `wait_queue_sleep_locked`. `file_put` and `process_release` must tear down after the lock, never
+  free a held lock. `scoped_guard(...);` with a stray `;` silently guarded an empty body.
+- Boot metadata was placed right after the kernel, on top of where GRUB loads modules.
+- `elf_load` accepted segments above `USER_TOP`: `USER_TOP - p_vaddr` wrapped, so a segment could map
+  into the kernel half. Caught by the ELF self-test's kernel-half case.
+- `multiboot_parse_cmdline` left `cmdline` unterminated at 256+ characters; libc `strcpy` never wrote
+  the terminator.
 
 ## Recommended next steps
 
@@ -402,14 +507,20 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   exit status (128 + signal for faults); tests wait and release instead of sleeping and leaking.
 - **4f-2 (done):** `file_t` + `file_ops_t`, console backend on fds 0–2, per-process fd table,
   create/install/start split, fds closed at exit, `SYS_CLOSE`, `files` self-test.
-- **4f-3 (next):** ELF loader. GRUB passes the program as a Multiboot2 module (`module2` in
-  `grub.cfg`, tag type 3: start/end physical address + string); `platform_boot_info_init` records it
-  in `boot_info`. The loader validates the ELF64 header (magic, `ET_EXEC`, `EM_X86_64`), maps every
-  `PT_LOAD` segment with `address_space_map` (flags from `p_flags`), copies `p_filesz` bytes and
-  leaves the rest zeroed (`.bss`), then `process_start` at `e_entry`. Module frames must be kept out
-  of the buddy allocator.
-- **4f-4:** userland libc (`crt0`, syscall stubs, `FILE` over `fd`), built with its own flags (no
-  `-mcmodel=kernel`), and a first real program loaded by 4f-3.
+- **Locking refactor (done):** `spinlock_t`, scope guards, `wait_queue_sleep_locked`; files,
+  processes, semaphores, mutexes, thread ids, the zombie list and the console on named locks; the
+  scheduler documented as IRQs-off on purpose.
+- **4f-3 (done):** modules in `boot_info` and kept reserved, separate user build, `elf_load` +
+  `exec_load`, `init_start` running `hello` (status 42), ELF self-test with ten rejection cases.
+- **4f-4 (next):** userland libc. `crt0` (grow `user/start.S`: `argc`/`argv` later, `.init_array`
+  for C++), syscall stubs (`write`, `read`, `close`, `exit`), `FILE` over fds, a `malloc` (needs a
+  heap syscall: `brk`/`sbrk` or an `mmap`-style call). Before it: the **uapi split** —
+  `kernel/include/uapi/` for syscall numbers, errno and signal numbers, installed into the sysroot
+  under a namespace (e.g. `<mihos/...>`); only uapi is installed, so user programs stop seeing kernel
+  internals, and libc's `errno.h`/`signal.h` wrap it. Then `hello` and the `user_program.S` tests can
+  become libc programs.
+- **Later in step 4:** `exec` syscall (reuses `exec_load`, replaces the current space), `/sbin/init`
+  semantics (exit is fatal), C++ userland runtime (`.init_array`, `operator new`, `__cxa_*`).
 
 ### Console / keyboard layer (done)
 
@@ -433,7 +544,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - Slab pages are never returned to the buddy allocator (no empty-slab reclamation, no cache destroy).
 - `kmalloc` above 1024 B rounds up to a power-of-two number of pages (internal waste).
 - `frame_free`/`frame_lookup` walk the zone list linearly.
-- No SMP; `irq_save` is the only synchronization (becomes spinlocks + `irq_save` on SMP).
+- No SMP. The spinlock API is ready (only the atomic lock word is missing), but the scheduler, wait
+  queue lists, `kmalloc`/`frame_alloc`, `tty_write` and the input ring still rely on IRQs off; SMP
+  needs per-CPU run queues and a lock handed over the context switch.
+- `input.c`'s event ring still uses `irq_save` (could get an `input_lock` like the console).
 - No `in_interrupt()` guard: blocking from an IRQ handler is not detected.
 - No `thread_join`; a `thread_t *` from `thread_create` is only valid until that thread exits.
 - Sleep queue is scanned linearly on every tick.
@@ -441,8 +555,20 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   if blocking becomes frequent (hidden behind `arch_yield`).
 - `<asm/...>` lives at family level (`arch/x86/include`) but uses x86_64-only instructions.
 - Kernel `install-headers` copies internal headers into the sysroot (stale copies can hide
-  include errors → use a clean build after moving headers).
-- `ARCH_CFLAGS` (`-mcmodel=kernel`) also applies to the future userland libc.
+  include errors → use a clean build after moving headers); kernel and libc share one flat
+  `sysroot/usr/include`, so the kernel's `signal.h` occupies the POSIX name and libc's `errno.h` is
+  empty. Fixed by the uapi split (4f-4).
+- `ARCH_CFLAGS` (`-mcmodel=kernel`) applies to libc too; `user/` has its own flags, the userland
+  libc will need the same.
+- `-ffreestanding` is commented out in `common.mk` and there is no `-fno-strict-aliasing`; the kernel
+  casts between struct types (`list_container`, slab headers). Check what the MiHOS GCC target
+  defaults to and enable both for the kernel.
+- No `-Werror`: an incompatible-pointer warning (`spinlock_t *` vs embedded lock) went unnoticed.
+- Boot modules stay reserved forever (never returned to the allocator after loading).
+- Modules far above the kernel waste the free RAM between them (one boundary, not per-module holes).
+- One user stack page (`exec_load`); no stack growth or guard page.
+- `NX` still off, so `PF_X`/`MMU_EXEC` from the loader are informational.
+- `init_start` looks up a hard-coded module name (`"hello"`).
 - `tty_write` holds IRQs off for the whole write plus a full 4000-byte VGA copy; long user writes
   will need a mutex and a separate panic path.
 - Screen redraws the whole buffer on every write; scrolling uses `memcpy` on an overlapping range.
@@ -478,6 +604,12 @@ Build (inside the Docker image):
 make clean
 make all
 make print-config
+```
+
+Inspect a user program's segments (each `LOAD` page-aligned, no overlaps):
+
+```sh
+x86_64-mihos-readelf -l sysroot/usr/bin/hello.elf
 ```
 
 Run Bochs:
