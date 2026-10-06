@@ -5,7 +5,7 @@
 #include <mm/kmalloc.h>
 #include <sched/scheduler.h>
 #include <sched/process.h>
-#include <signal.h>
+#include <mihos/signal.h>
 #include <kprintf.h>
 #include <panic.h>
 #include <string.h>

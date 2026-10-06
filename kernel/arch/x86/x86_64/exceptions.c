@@ -4,7 +4,7 @@
 #include <sched/scheduler.h>
 #include <sched/process.h>
 #include <kprintf.h>
-#include <signal.h>
+#include <mihos/signal.h>
 #include <stdbool.h>
 
 static const char *const exception_messages[32] = {

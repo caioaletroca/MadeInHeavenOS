@@ -1,5 +1,5 @@
 #include <stddef.h>
-#include <syscall.h>
+#include <mihos/syscall.h>
 
 /*
  * First ELF program: prints a line and exits with 42, so the exit status

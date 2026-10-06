@@ -15,6 +15,10 @@ ARCH_PRIVATE_INCLUDE := arch/$(ARCH_FAMILY)/common/include
 
 CPPFLAGS += -I$(ARCH_PUBLIC_INCLUDE)
 
+# The kernel/user contract (<mihos/...>) is used by the kernel under the same
+# names user programs see, so the two can never drift apart
+CPPFLAGS += -Iinclude/uapi
+
 $(BINARY_DIR)/arch/%.o $(BINARY_DIR)/platform/%.o: CPPFLAGS += -I$(ARCH_PRIVATE_INCLUDE)
 
 ###########################################
@@ -27,9 +31,11 @@ all: install
 
 install: install-headers install-kernel
 
+# Only the uapi headers reach the sysroot: user programs and libc see the
+# kernel/user contract (<mihos/...>), never kernel internals
 install-headers:
 	mkdir -p $(INCLUDE_DIR)
-	cp -R --preserve=timestamps include/. $(INCLUDE_DIR)
+	cp -R --preserve=timestamps include/uapi/. $(INCLUDE_DIR)
 
 install-kernel: $(kernel)
 	mkdir -p $(BOOT_DIR)

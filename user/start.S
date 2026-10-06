@@ -1,4 +1,4 @@
-#include <syscall.h>
+#include <mihos/syscall.h>
 
 /*
  * Program entry: the kernel starts here with RSP = USER_STACK_TOP (16-byte

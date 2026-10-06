@@ -1,25 +1,8 @@
 #ifndef _SYSCALL_H
 #define _SYSCALL_H
 
-// System call numbers for the kernel.
-#define SYS_EXIT 0
-#define SYS_WRITE 1
-#define SYS_READ 2
-#define SYS_FORK 3
-#define SYS_EXEC 4
-#define SYS_WAIT 5
-#define SYS_GETPID 6
-#define SYS_KILL 7
-#define SYS_YIELD 8
-#define SYS_SLEEP 9
-#define SYS_CLOSE 10
-
-#define ENOEXEC 8
-#define EBADF 9
-#define ENOMEM 12
-#define EFAULT 14
-#define ENOSYS 38
-#define EMFILE 24
+#include <mihos/syscall.h>
+#include <mihos/errno.h>
 
 #ifndef __ASSEMBLER__
 

@@ -7,7 +7,7 @@
 #include <mm/address_space.h>
 #include <sched/process.h>
 #include <sched/thread.h>
-#include <signal.h>
+#include <mihos/signal.h>
 #include <syscall.h>
 #include <kprintf.h>
 #include <panic.h>

@@ -7,17 +7,21 @@ BUILD_ID := $(HOST)/$(ARCH)-$(PLATFORM)
 KERNEL := kernel/build/$(BUILD_ID)/kernel
 OBJDUMP ?= $(HOST)-objdump
 
-.PHONY: all libc kernel user grub install clean purge dump print-config
+.PHONY: all headers libc kernel user grub install clean purge dump print-config
 
 all: grub
 
-libc:
+# The kernel/user contract (<mihos/...>) first: libc and user programs include it
+headers:
+	$(MAKE) -C kernel install-headers
+
+libc: headers
 	$(MAKE) -C libc
 
 kernel: libc
 	$(MAKE) -C kernel
 
-# After kernel: programs include its installed headers (<syscall.h>)
+# After kernel and libc: programs link against the sysroot
 user: kernel
 	$(MAKE) -C user
 
