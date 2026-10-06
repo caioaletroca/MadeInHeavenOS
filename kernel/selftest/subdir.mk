@@ -1,5 +1,6 @@
 local_sources := \
 console.c \
+elf.c \
 guard.c \
 mm.c \
 scheduler.c \
