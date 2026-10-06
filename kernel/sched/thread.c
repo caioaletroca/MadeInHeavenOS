@@ -7,8 +7,12 @@
 #include <mm/kmalloc.h>
 #include <panic.h>
 
+static spinlock_t tid_lock = SPINLOCK_INIT;
 static uint32_t next_thread_id = 1;
+
+static spinlock_t zombie_lock = SPINLOCK_INIT;
 static list_t zombie_list;
+
 static semaphore_t zombie_count;
 
 /**
@@ -18,11 +22,8 @@ static semaphore_t zombie_count;
  */
 static uint32_t thread_alloc_id(void)
 {
-    irq_flags_t flags = irq_save();
-    uint32_t id = next_thread_id++;
-    irq_restore(flags);
-
-    return id;
+    guard(spinlock, &tid_lock);
+    return next_thread_id++;
 }
 
 /**
@@ -39,15 +40,17 @@ static void thread_reaper(void *arg)
     for (;;)
     {
         semaphore_down(&zombie_count);
-        irq_flags_t flags = irq_save();
 
-        thread_t *zombie = list_container(zombie_list.next, thread_t, run_link);
+        thread_t *zombie;
+        process_t *process;
 
-        process_t *process = zombie->process;
-        list_delete(&zombie->run_link);
+        scoped_guard(spinlock, &zombie_lock)
+        {
+            zombie = list_container(zombie_list.next, thread_t, run_link);
+            list_delete(&zombie->run_link);
+        }
 
-        irq_restore(flags);
-
+        process = zombie->process;
         kfree(zombie->stack);
         kfree(zombie);
         process_release(process);
@@ -170,8 +173,10 @@ __attribute__((noreturn)) void thread_exit(void)
 
     if (self->flags & THREAD_FLAG_OWNED)
     {
+        spinlock_acquire(&zombie_lock);
         list_insert_before(&zombie_list, &self->run_link);
         semaphore_up(&zombie_count);
+        spinlock_release(&zombie_lock);
     }
 
     scheduler_yield();

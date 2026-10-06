@@ -1,3 +1,12 @@
+/*
+ * Locking: the run queues, the sleep queue, every wait queue's list and each
+ * thread's state/run_link/wake_tick are scheduler state, protected by IRQs
+ * being off (single CPU). scheduler_block/wake assert it. This is the one place
+ * where IRQs-off is the lock on purpose: a spinlock here would have to be held
+ * across the context switch. SMP needs per-CPU run queues and a lock handed
+ * over the switch (Linux's rq->lock / finish_task_switch).
+ */
+
 #include <sched/scheduler.h>
 #include <mm/address_space.h>
 #include <sys/list.h>

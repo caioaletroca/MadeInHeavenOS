@@ -3,17 +3,20 @@
 
 #include <sched/thread.h>
 #include <sched/wait.h>
+#include <sched/spinlock.h>
 
 typedef struct semaphore
 {
-    unsigned int count;
-    wait_queue_t waiters;
+    unsigned int count;   // Protected by lock
+    wait_queue_t waiters; // List is scheduler state (IRQs off); see scheduler.c
+    spinlock_t lock;
 } semaphore_t;
 
 typedef struct mutex
 {
-    thread_t *owner;
-    wait_queue_t waiters;
+    thread_t *owner;      // Protected by lock
+    wait_queue_t waiters; // List is scheduler state (IRQs off); see scheduler.c
+    spinlock_t lock;
 } mutex_t;
 
 /**
