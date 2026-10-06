@@ -1,6 +1,10 @@
 #include <panic.h>
 #include <x86/exceptions.h>
 #include <x86/isr.h>
+#include <sched/scheduler.h>
+#include <sched/thread.h>
+#include <kprintf.h>
+#include <stdbool.h>
 
 static const char *const exception_messages[32] = {
     "Division by zero",
@@ -36,13 +40,41 @@ static const char *const exception_messages[32] = {
     "Security",
     "(Reserved exception 31)"};
 
-// TODO: For now, panic in all exceptions
+/**
+ * Check if an exception is considered fatal.
+ *
+ * @param int_no The interrupt number.
+ * @return true if the exception is fatal, false otherwise.
+ */
+static bool exception_is_fatal(uint8_t int_no)
+{
+    return int_no == 2 || int_no == 8 || int_no == 18;
+}
+
+/**
+ * Handle exceptions that occur in user mode.
+ *
+ * @param regs The ISR context.
+ * @param int_no The interrupt number.
+ */
+__attribute__((noreturn)) static void exception_user_handler(isr_context_t *regs, uint8_t int_no)
+{
+    kprintf("user exception: %s (thread %u)\n"
+            "\trip: %p, rsp: %p, err_code: %u\n",
+            exception_messages[int_no], scheduler_current()->id,
+            (void *)regs->rip, (void *)regs->rsp, (unsigned int)(regs->info & 0xFFFFFFFF));
+    thread_exit();
+}
+
 static void exception_handler(isr_context_t *regs)
 {
     uint8_t int_no = (uint8_t)(regs->info >> 32) & 0xFF;
 
     if (int_no < 32)
     {
+        if (isr_from_user(regs) && !exception_is_fatal(int_no))
+            exception_user_handler(regs, int_no);
+
         panic(
             "Exception: %s\n"
             "\trip: %p, rsp: %p\n"

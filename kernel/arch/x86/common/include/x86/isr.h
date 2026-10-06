@@ -2,6 +2,7 @@
 #define _ARCH_X86_64_ISR_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef struct isr_context
 {
@@ -52,6 +53,17 @@ typedef struct
     } type;
     isr_handler_t handler;
 } isr_info_t;
+
+/**
+ * Check if the interrupt originated from user mode.
+ *
+ * @param regs The ISR context.
+ * @return true if the interrupt originated from user mode, false otherwise.
+ */
+static inline bool isr_from_user(isr_context_t *regs)
+{
+    return (regs->cs & 3) == 3;
+}
 
 /**
  * @brief Sets new items inside the isr_table vector

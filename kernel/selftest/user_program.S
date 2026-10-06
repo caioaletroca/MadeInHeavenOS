@@ -58,3 +58,20 @@ user_hello_message_end:
 user_hello_result:
     .quad 1                             # overwritten with the syscall result
 user_hello_end:
+
+/*
+ * Program 3: mark that it ran, read address 0 (page 0 is never mapped),
+ * then mark that it survived. The kernel must kill it before the second mark.
+ */
+.globl user_null_start, user_null_before, user_null_after, user_null_end
+user_null_start:
+    movb $1, user_null_before(%rip)
+    mov 0, %rax                         # absolute address 0, not RIP-relative
+    movb $1, user_null_after(%rip)
+1:  jmp 1b
+    .balign 8
+user_null_before:
+    .quad 0
+user_null_after:
+    .quad 0
+user_null_end:

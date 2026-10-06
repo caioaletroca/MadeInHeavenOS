@@ -12,6 +12,7 @@
 // Program images from user_programs.S (copied to USER_BASE, never run in place)
 extern const uint8_t user_loop_start[], user_loop_counter[], user_loop_stop[], user_loop_end[];
 extern const uint8_t user_hello_start[], user_hello_result[], user_hello_end[];
+extern const uint8_t user_null_start[], user_null_before[], user_null_after[], user_null_end[];
 
 /**
  * Load a program image at USER_BASE with a one-page stack, and start it.
@@ -82,10 +83,28 @@ static void user_syscall_test(void)
         panic("Kernel pointer write returned %d instead of -EFAULT\n", (int)result);
 }
 
+static void user_fault_test(void)
+{
+    address_space_t *space = user_program_start(user_null_start, user_null_end);
+
+    thread_sleep(TIMER_FREQUENCY_HZ / 10);
+
+    uint64_t before = user_variable_read(space, user_null_start, user_null_before);
+
+    // The kernel should kill the user program before it reaches this point.
+    uint64_t after = user_variable_read(space, user_null_start, user_null_after);
+
+    if (before != 1)
+        panic("Null test program never ran\n");
+    if (after != 0)
+        panic("User thread survived a page fault\n");
+}
+
 void user_selftest(void)
 {
     user_loop_test();
     user_syscall_test();
+    user_fault_test();
 
     kprintf("User mode self-test completed successfully\n");
 }

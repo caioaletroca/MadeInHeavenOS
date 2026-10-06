@@ -3,6 +3,8 @@
 #include <x86/vectors.h>
 #include <mm/frame.h>
 #include <mm/kmalloc.h>
+#include <sched/scheduler.h>
+#include <kprintf.h>
 #include <panic.h>
 #include <string.h>
 
@@ -238,8 +240,19 @@ static void page_fault_handler(isr_context_t *regs)
 {
     uintptr_t virtual_address;
     fault_address_get(virtual_address);
+    uint64_t error_code = regs->info & 0xFFFFFFFF;
 
-    panic("Page fault at address: %p, error: %p", virtual_address, regs->info & 0xFFFFFFFF);
+    if (isr_from_user(regs))
+    {
+        kprintf("user page fault: %s %s at %p (thread %u, rip %p)\n",
+                (error_code & 0x10) ? "exec" : (error_code & 0x2) ? "write"
+                                                                  : "read",
+                (error_code & 0x1) ? "protection violation" : "not present",
+                (void *)virtual_address, scheduler_current()->id, (void *)regs->rip);
+        thread_exit();
+    }
+
+    panic("Page fault at address: %p, error: %p", virtual_address, error_code);
 }
 
 /* ---- Architecture contract (include/arch/mmu.h) ---- */
