@@ -3,4 +3,6 @@
 
 typedef int pid_t;
 
+typedef long ssize_t;
+
 #endif

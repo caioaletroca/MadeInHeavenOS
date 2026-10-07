@@ -1,7 +1,7 @@
 #include <stdlib.h>
+#include <unistd.h>
 
-__attribute__((__noreturn__))
-void abort(void) {
-    while(1) { }
-    __builtin_unreachable();
+__attribute__((__noreturn__)) void abort(void)
+{
+    _exit(134);
 }

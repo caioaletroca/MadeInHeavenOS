@@ -1,5 +1,7 @@
 dirs := \
-stdtest \
 stdio \
 stdlib \
-string
+string \
+errno \
+internal \
+unistd

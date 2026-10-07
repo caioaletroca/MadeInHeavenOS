@@ -13,7 +13,6 @@ _start:
     xor %ebp, %ebp                      # end of the frame-pointer chain for debuggers
     call main
     mov %eax, %edi                      # exit(main's return value)
-    mov $SYS_EXIT, %eax
-    int $0x80
+    call exit
     ud2                                 # exit never returns
 .size _start, . - _start

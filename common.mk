@@ -29,6 +29,11 @@ CFLAGS := -O2 -g -std=gnu11 -Wall -Wextra $(ARCH_CFLAGS)
 # CFLAGS		+= -Wall -Werror -Wextra -Wparentheses -Wmissing-declarations -Wunreachable-code -Wunused 
 # CFLAGS		+= -Wmissing-field-initializers -Wmissing-prototypes -Wpointer-arith -Wswitch-enum
 # CFLAGS		+= -Wredundant-decls -Wshadow -Wstrict-prototypes -Wswitch-default -Wuninitialized
+# Code that runs in ring 3 (user programs, libc.a): not the kernel's ARCH_CFLAGS.
+# Linked at USER_BASE, so the default small code model; the red zone is fine
+# (int $0x80 switches to the kernel stack). No unwinder or stack protector yet.
+USER_CFLAGS := -O2 -g -std=gnu11 -Wall -Wextra -ffreestanding -fno-pie \
+               -fno-stack-protector -fno-asynchronous-unwind-tables
 CPPFLAGS = -Iinclude --sysroot=$(SYSROOT_DIR) -isystem $(INCLUDE_DIR)
 LDFLAGS = -fno-PIC --sysroot=$(SYSROOT_DIR) -L$(LIB_DIR)
 LDFLAGS_EXTRA := -nostdlib -lk -lgcc
@@ -52,15 +57,20 @@ LIB_DIR := $(USR_DIR)/lib
 # Common Macro Functions
 src_to_bin_dir = $(patsubst $(SOURCE_DIR)%,$(BINARY_DIR)%,$1)
 
+# subdir.mk lists `local_sources` and subdirectories in `dirs`. libc also uses
+# `hosted_local_sources`: built into libc.a only (needs syscalls or user flags).
 define include_dir
 dirs :=
 local_sources :=
+hosted_local_sources :=
 include $1/subdir.mk
 sources += $$(if $$(local_sources),$$(addprefix $1/,$$(local_sources)))
+hosted_sources += $$(if $$(hosted_local_sources),$$(addprefix $1/,$$(hosted_local_sources)))
 $$(foreach dir,$$(dirs),$$(eval $$(call include_dir,$1/$$(dir))))
 endef
 
 sources :=
+hosted_sources :=
 objects = $(call src_to_bin_dir,$(addsuffix .o,$(basename $(sources))))
 depends = $(patsubst %.o,%.d,$(objects))
 

@@ -6,8 +6,7 @@
 
 __BEGIN_DECLS
 
-__attribute__((__noreturn__))
-void abort(void);
+__attribute__((__noreturn__)) void abort(void);
 int atexit(void (*)(void));
 void free(void *);
 char *getenv(const char *);
@@ -15,15 +14,22 @@ void *malloc(size_t size);
 
 /**
  * @brief Performs a absolute operation into a int value
-*/
+ */
 int abs(int i);
 
 /**
  * @brief Converts a string of numbers into an integer.
- * 
- * @return int 
+ *
+ * @return int
  */
 int atoi(const char *str);
+
+/**
+ * @brief Terminates the program with the given status.
+ *
+ * @param status The exit status.
+ */
+__attribute__((__noreturn__)) void exit(int status);
 
 __END_DECLS
 
