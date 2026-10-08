@@ -129,7 +129,7 @@ docs/                     # handoff, roadmap
 3. ~~Restructure `user/` as above; `hello` → `user/tests/hello`, the temporary stdio/brk/malloc
    tests → libc programs in `user/tests/`.~~ Done. Still open: the `user_program.S` kernel
    self-tests → libc programs.
-4. stdio input (`fgets`, `getchar`; flush line-buffered output before reading).
+4. ~~stdio input (`fgets`, `getchar`; flush line-buffered output before reading).~~ Done.
 5. Spawn/exec + wait syscalls, `argv`/`envp` on the initial stack; `init` starts a first `sh` with
    builtins.
 6. Phase B: initramfs + VFS; the shell runs programs by path.

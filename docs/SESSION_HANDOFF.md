@@ -23,12 +23,13 @@ Working x86-64 PC kernel with:
 - **ELF64 loader**: user programs built separately (`user/`), loaded by GRUB as Multiboot2 modules,
   validated and mapped by `elf_load`; `init_start` (temporarily) runs every module as a test and
   checks its exit status
-- **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`)
+- **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
+  `stdin`; `stdin_interactive` from a second GRUB entry)
 - **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`): the only kernel
   headers installed into the sysroot
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
   layer, `errno`, `write`/`read`/`close`/`_exit`/`brk`/`sbrk`, `exit`/`abort`; buffered stdio over
-  fds with `printf` (output side; input side next); `malloc`/`free`/`calloc`/`realloc` on `sbrk`
+  fds with `printf`, `fgetc`/`fgets`/`ungetc`; `malloc`/`free`/`calloc`/`realloc` on `sbrk`
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
@@ -39,12 +40,15 @@ Working x86-64 PC kernel with:
 - Console: US and ABNT2 keymaps with dead keys, line discipline, blocking `console_read()`
 - UTF-8 tty drawing CP437 glyphs on VGA text mode with a hardware cursor; `kprintf` is atomic per call
 - Kernel split into generic code, arch contracts and platform contracts, enforced by the build
-- Guard, MM, preemption, sync, console, user-mode and ELF self-tests and the 5 user test programs
-  passing in Bochs; keyboard verified in Bochs and QEMU
+- Guard, MM, preemption, sync, console, user-mode and ELF self-tests and the user test programs
+  passing in Bochs (stdin_interactive by hand); keyboard verified in Bochs and QEMU
 
 Latest commits:
 
 ```text
+8201ee2 test(user): add stdin tests, interactive ones in their own GRUB entry
+a40d4c9 feat(libc): add stdio input (fgetc, fgets, ungetc, feof, clearerr)
+d2c534e docs(architecture): document the user/ layout and the test runner in handoff
 0884fb3 test(user): turn the stdio, brk and malloc checks into test programs
 8f65e7c refactor(user): group programs by category and run them all as tests
 b386b3d docs(architecture): document brk, the user heap and malloc in handoff
@@ -375,6 +379,11 @@ init_start ─▶ for each module: module_run ─▶ exec_load ─▶ address_sp
     growth, a 100 KiB block, `calloc` zeroing reused dirty memory, `realloc` semantics, `ENOMEM`
     cases. Prints the heap size (164 KiB).
   - `malloc_abort`: double free (expected 134).
+  - `stdin`: pushback (incl. a negative `char` coming back as 0..255, `fgets` with `n` 2 and 1),
+    `fgetc(stdout)` → `EOF` + `ferror`, closed stdin → `EOF` + `EBADF` + `ferror`, `fgets` NULL.
+  - `stdin_interactive` (second menu entry: `set default=1` in `grub.cfg`, then back to 0): prompts
+    without `'\n'` (seeing them checks the flush before `read`), a whole line, a line split over
+    `fgets` calls, `getchar`, `abc` + Ctrl+D twice → `"abc"` then `feof`, sticky EOF, `clearerr`.
 - **ELF self-test** (`selftest/elf.c`): `exec_load` of the module must succeed with the header's entry;
   ten broken copies (magic, class, machine, `ET_DYN`, truncated, program headers out of bounds,
   `p_filesz > p_memsz`, segment in the kernel half, segment wrapping past 2^64, entry outside every
@@ -419,6 +428,17 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   `fflush(NULL)` walks the stream list. `ferror` reads `F_ERR`. Public functions are thin wrappers: `fputc`, `fputs`,
   `puts`, `putchar`, `fwrite`, `printf`/`fprintf`/`vprintf`/`vfprintf` (formats into a `BUFSIZ`
   stack buffer, then one `__fwritex`).
+- **stdio input:** in `MODE_READ` the buffer holds `[pos, len)` unread bytes from the last `read`.
+  `__fillbuf` (returns 0 or `EOF`) is the only reader: not readable → `F_ERR`; `F_EOF` set → `EOF`
+  without reading (sticky until `clearerr`); flushes the stream's own pending output before taking
+  the buffer; flushes every line-buffered stream in `MODE_WRITE` (a prompt without `'\n'` shows
+  before blocking, C11 7.21.3); `read(fd, buffer, size)` (the console returns at most one line):
+  0 → `F_EOF`, < 0 → `F_ERR`. `fgetc`: `ungot` first, then the buffer, refilling when
+  `pos == len`; returns 0..255 or `EOF`. `getc`/`getchar` wrap it. `ungetc`: one byte, stored as
+  `unsigned char` (also the return value), clears `F_EOF`. `fgets`: loops `fgetc` until the `'\n'`
+  (kept), `n - 1` characters or `EOF`; NULL for `EOF` before any character or a read error; a cut
+  line continues in the next call. `feof`/`clearerr` on the flags. Ctrl+D mid-line hands over the
+  typed bytes; a second one on the empty line is the end of file.
 
 ### malloc (`libc/malloc/`)
 
@@ -667,8 +687,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   expected status, `init_start` as a temporary test runner, the temporary `hello` tests as programs
   in `user/tests/`. Not moved: the `user_program.S` kernel self-tests (they read program variables
   from the kernel; moving them means rewriting them as libc programs).
-- **Next (roadmap phase A):** stdio input (`fgets`/`getchar`, flushing line-buffered output before reading),
-  spawn/exec + wait syscalls with `argv`/`envp`, `/sbin/init` starting a first shell, freestanding
+- **stdio input (done):** `__fillbuf`, `fgetc`/`getc`/`getchar`, `ungetc`, `fgets`, `feof`,
+  `clearerr` (tests: `tests/stdin`, `tests/stdin_interactive`).
+- **Next (roadmap phase A):** spawn/exec + wait syscalls with `argv`/`envp`, `/sbin/init` starting a first shell, freestanding
   C++ runtime (`.init_array` in `crt0`, `operator new`, `__cxa_*`).
 - **Decisions** (details in `ROADMAP.md`): own syscall ABI and numbering (porting is at the
   POSIX/libc API, not Linux binaries); own libc through phase C, mlibc via sysdeps at phase D
@@ -733,10 +754,13 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `vsnprintf`: a precision is parsed and ignored (`%.3s` prints the whole string); unknown
   specifiers are silently dropped; `%s` does not bound-check `remain`; it returns the characters
   written, not the full length C99 requires, so `printf` silently truncates at `BUFSIZ - 1`.
-- stdio: no input side yet (`fgets`, `getchar`, `__fillbuf`), no `fopen`/`fclose`/`setvbuf`, no
-  `isatty` (stdout is always line-buffered), `__stdio_head` is `const` (must change when `fopen`
-  adds streams), no stream locking (needed with user threads); `stdio.h` is still partly a stub
-  (`fopen`, `fread`, `fseek` declared but missing).
+- stdio: no `fread`, `fopen`/`fclose`/`setvbuf`, no `isatty` (stdout is always line-buffered),
+  `__stdio_head` is `const` (must change when `fopen` adds streams), no stream locking (needed with
+  user threads); `stdio.h` is still partly a stub (`fopen`, `fread`, `fseek` declared but missing).
+  `fgets` copies byte by byte through `fgetc` (could copy `[pos, len)` up to the `'\n'` at once).
+  Switching one stream from reading to writing drops unread input (`__fwritex` resets the buffer);
+  fine for the console, needs `fseek` semantics once files exist.
+- The interactive test needs editing `grub.cfg` (`default=1`): with `timeout=0` there is no menu.
 - Bochs (win32 GUI) sends Left Ctrl for the ABNT2 `/ ?` key, so `KEY_RO` can only be tested on QEMU.
 - No IDT gate uses the IST stacks yet; a double fault on a broken kernel stack still triple-faults.
 - `mmap_split_region` drops region remainders smaller than 16 frames.
