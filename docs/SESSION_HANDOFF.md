@@ -42,6 +42,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+0031357 feat(libc): add ferror
+335c05d docs(architecture): add roadmap and update handoff for libc
+f7e1942 feat(libc): add buffered stdio over file descriptors
 02e12fd feat(libc): build libc.a for user programs with syscall wrappers
 3579938 refactor(build): install only the uapi headers into the sysroot
 30eb5b8 docs(architecture): document locking, guards and the ELF loader in handoff
@@ -361,7 +364,7 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   output buffer: pending bytes always leave first; line-buffered streams flush up to the last `'\n'`;
   unbuffered or oversized data is written directly in one go. `__write_all` loops over short writes
   (`<= 0` → `F_ERR`), `__fflush_one` writes pending output and empties the buffer (dropped on error).
-  `fflush(NULL)` walks the stream list. Public functions are thin wrappers: `fputc`, `fputs`,
+  `fflush(NULL)` walks the stream list. `ferror` reads `F_ERR`. Public functions are thin wrappers: `fputc`, `fputs`,
   `puts`, `putchar`, `fwrite`, `printf`/`fprintf`/`vprintf`/`vfprintf` (formats into a `BUFSIZ`
   stack buffer, then one `__fwritex`).
 
@@ -567,14 +570,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - (a, done) uapi split: only `<mihos/...>` reaches the sysroot.
   - (b, done) `libk.a` / `libc.a` from one tree with separate flags.
   - (c, done) `crt0.o`, inline-asm syscall layer, `errno`, `unistd` wrappers, `exit`; `hello` on libc.
-  - (d, done) stdio output over fds (`hello` prints with `printf`). **Not yet run:** the ordering
-    test that proves the buffering modes. Put in a program (e.g. `user/tests/stdio`, or temporarily
-    in `hello`): `printf("1 line-buffered\n")`, `printf("2 no newline... ")`,
-    `fprintf(stderr, "3 stderr first\n")`, `printf("4\n")`, `printf("5 flushed by exit")`.
-    Expected screen order: `1`, `3`, `2 no newline... 4`, `5 flushed by exit` (last, only via
-    `exit`). Also check return values: `fputc('x') == 'x'`, `fwrite(buf, 4, 3) == 3`,
-    `printf("%d", 123) == 3`, `fputs("")` == 0, and after `close(2)` `fprintf(stderr, …) < 0` with
-    `ferror(stderr)` and `errno == EBADF` (needs `ferror`).
+  - (d, done) stdio output over fds (`hello` prints with `printf`), `ferror`. Verified once with an
+    ordering test run temporarily in `hello` (not kept): screen order `1`, `3`, `2 no newline... 4`,
+    `5 flushed by exit` (last, only via `exit`); `fputc`/`fwrite`/`printf`/`fputs("")` return
+    values; after `close(2)` `fprintf(stderr, …) < 0` with `ferror(stderr)` and `errno == EBADF`.
+    Bring it back as `user/tests/stdio` once `user/` is restructured and init runs test programs.
   - (e, next) `brk` syscall + `malloc`/`free`; more user stack pages.
 - **Then (roadmap phase A):** restructure `user/` (`bin/`, `sbin/`, `tests/`, `lib/`; see
   `ROADMAP.md`), stdio input (`fgets`/`getchar`, flushing line-buffered output before reading),
