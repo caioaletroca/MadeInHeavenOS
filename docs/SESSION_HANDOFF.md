@@ -1,5 +1,8 @@
 # Session Handoff — MadeInHeavenOS
 
+Where the project is going (end goal, phases, the POSIX/libc strategy, repository layout target):
+see [`ROADMAP.md`](ROADMAP.md). This file describes where it is now.
+
 ## Current state
 
 Working x86-64 PC kernel with:
@@ -18,6 +21,11 @@ Working x86-64 PC kernel with:
 - Open files (`file_t` + `file_ops_t`), console as the first backend behind fds 0–2
 - **ELF64 loader**: user programs built separately (`user/`), loaded by GRUB as Multiboot2 modules,
   validated and mapped by `elf_load`, started by `init_start` (`hello` exits with 42)
+- **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`): the only kernel
+  headers installed into the sysroot
+- **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
+  layer, `errno`, `write`/`read`/`close`/`_exit`, `exit`/`abort`; buffered stdio over fds with
+  `printf` (output side; input side next)
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
@@ -34,15 +42,15 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+02e12fd feat(libc): build libc.a for user programs with syscall wrappers
+3579938 refactor(build): install only the uapi headers into the sysroot
+30eb5b8 docs(architecture): document locking, guards and the ELF loader in handoff
 cd4c689 feat(exec): load ELF programs and start the first one
 ea14a19 build(user): build user programs as GRUB modules
 d824c15 feat(boot): record bootloader modules and keep them reserved
 1d3b986 feat(libc): add strlcpy and strcmp, terminate strcpy
 cd7b843 refactor(driver): protect the console ring with a spinlock
 8f5f1d8 refactor(sched): put semaphores, mutexes and thread lists on spinlocks
-5b714ca refactor(sched): protect file and process state with spinlocks
-ba39eab feat(sched): add sleeping on a wait queue with a lock held
-9a0d59c feat(sched): add scope guards and spinlocks
 ```
 
 ## Architecture
@@ -50,8 +58,8 @@ ba39eab feat(sched): add sleeping on a wait queue with a lock held
 ### Layers
 
 ```text
-libc/                             # libk.a (kernel) + libc.a; string.h, stdio.h, ...
-user/                             # user programs: start.S, user.ld, one directory per program
+libc/                             # libk.a (kernel) + libc.a + crt0.o (user); see "Userland libc"
+user/                             # user programs: user.ld, one directory per program
 grub/                             # grub.cfg + ISO build (kernel + modules)
 kernel/
 ├── include/                      # GENERIC: no asm, no x86, no PC
@@ -77,6 +85,17 @@ kernel/
 ├── init.c                        # init_start: runs the first user program
 └── kmain.c
 ```
+
+### Build order
+
+```text
+headers (kernel uapi → sysroot) → libc (libk.a, libc.a, crt0.o) → kernel → user → grub (ISO)
+```
+
+The kernel includes its uapi headers through `-Iinclude/uapi`; `install-headers` copies only
+`include/uapi/`, so user code and libc see `<mihos/...>` and never kernel internals. Kernel code uses
+`CFLAGS` (`ARCH_CFLAGS`: `-mcmodel=kernel -mno-red-zone`); ring-3 code (libc.a, `user/`) uses
+`USER_CFLAGS` from `common.mk` (freestanding, no PIE, small code model, no unwind tables).
 
 ### Include rules (enforced in `kernel/Makefile`)
 
@@ -285,12 +304,10 @@ init_start ─▶ exec_load(image, size) ─▶ address_space_create + elf_load 
            ─▶ process_create + console fds 0-2 + process_start(entry) ─▶ process_wait
 ```
 
-- **User build** (`user/Makefile`): one static ELF per program directory, linked with `start.S`
-  (`_start`: `call main`, then `exit(main())`; assembly so `main` gets the SysV `RSP + 8`
-  alignment). Own flags: freestanding, no PIE, no `-mcmodel=kernel`, no unwind tables,
+- **User build** (`user/Makefile`): one static ELF per program directory, linked as
+  `crt0.o` (first: holds `_start`) + the program's objects + `-lc -lgcc`, with `USER_CFLAGS` and
   `max-page-size=4096`. `user.ld` puts text (RX), rodata (R) and data+bss (RW) in separate `PHDRS`
-  segments, each on its own page at `USER_BASE`. Programs include kernel headers from the sysroot
-  (`<syscall.h>`), so `user` builds after `kernel`. Installed to `sysroot/usr/bin`, copied into the
+  segments, each on its own page at `USER_BASE`. Installed to `sysroot/usr/bin`, copied into the
   ISO by `grub/Makefile` and named in `grub.cfg` (`module2 /boot/hello.elf hello`).
 - **Modules** (`boot_info.modules[]`, Multiboot2 tag 3): physical `[start, end)` plus the name, copied
   with `strlcpy` (the Multiboot2 structure is not protected after boot).
@@ -313,6 +330,40 @@ init_start ─▶ exec_load(image, size) ─▶ address_space_create + elf_load 
   ten broken copies (magic, class, machine, `ET_DYN`, truncated, program headers out of bounds,
   `p_filesz > p_memsz`, segment in the kernel half, segment wrapping past 2^64, entry outside every
   segment) must return `-ENOEXEC` without setting the entry.
+
+### Userland libc (`libc/`)
+
+Our own libc until the start of roadmap phase D, then mlibc in user space (see `ROADMAP.md`).
+
+- **Two libraries, one tree** (`libc/Makefile`): `libk.a` (kernel flags, `-D__is_libk`) and `libc.a`
+  (`USER_CFLAGS`, `-D__is_libc`), each with its own object tree. In `subdir.mk`, `local_sources` go
+  into both, `hosted_local_sources` (syscalls, stdio streams, `errno`, `exit`) only into `libc.a`.
+  `libk.a` = `mem*`/`str*` (incl. `strlcpy`, `strcmp`), `vsnprintf`, `abs`/`atoi`.
+- **`crt0.o`** (`libc/arch/x86_64/crt0.S`) is built and installed on its own, not inside `libc.a`
+  (archive members are only pulled for undefined symbols, and nothing references `_start`):
+  `xor %ebp`, `call main`, `call exit` with the return value. Assembly so `main` gets the SysV
+  `RSP + 8` alignment.
+- **Private headers** (never installed, `-Iinternal -Iarch/$(ARCH)`): `internal/syscall.h`
+  (`__syscall(...)` counts its arguments and picks `__syscallN`; `syscall(...)` turns `-errno` into
+  `-1` + `errno` via `__syscall_ret`, Linux convention `-4095..-1`) and `arch/x86_64/syscall_arch.h`
+  (inline asm per argument count: `int $0x80`, `rdi rsi rdx`, `r10 r8 r9` bound with register
+  variables, only a `"memory"` clobber since the kernel preserves every register but `rax`; cast
+  macros named like the functions so pointers can be passed). `internal/FILE.h` holds stdio's
+  internals.
+- `errno` is a plain global (thread-local once user threads exist). `unistd`: `write`, `read`,
+  `close`, `_exit`, one function per file. `exit` flushes stdio (`__stdio_exit`) then `_exit`;
+  `abort` is `_exit(134)` (128 + SIGABRT, no signals yet).
+- **stdio** (output side done): `FILE` is opaque in `<stdio.h>`; `struct _FILE` has `fd`, `flags`
+  (`F_READ/F_WRITE`, `F_EOF/F_ERR` indicators, `F_LINEBUF/F_NOBUF`), `mode` (none/read/write: what
+  the one buffer holds), `buffer`/`size`/`pos`/`len`, `ungot`, `next` (list of open streams from
+  `__stdio_head`). Static `BUFSIZ` buffers: `stdin` and `stdout` line-buffered (the console is
+  interactive; no `isatty` yet), `stderr` unbuffered. `__fwritex` is the only code that fills the
+  output buffer: pending bytes always leave first; line-buffered streams flush up to the last `'\n'`;
+  unbuffered or oversized data is written directly in one go. `__write_all` loops over short writes
+  (`<= 0` → `F_ERR`), `__fflush_one` writes pending output and empties the buffer (dropped on error).
+  `fflush(NULL)` walks the stream list. Public functions are thin wrappers: `fputc`, `fputs`,
+  `puts`, `putchar`, `fwrite`, `printf`/`fprintf`/`vprintf`/`vfprintf` (formats into a `BUFSIZ`
+  stack buffer, then one `__fwritex`).
 
 ## Scheduler
 
@@ -512,15 +563,26 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   scheduler documented as IRQs-off on purpose.
 - **4f-3 (done):** modules in `boot_info` and kept reserved, separate user build, `elf_load` +
   `exec_load`, `init_start` running `hello` (status 42), ELF self-test with ten rejection cases.
-- **4f-4 (next):** userland libc. `crt0` (grow `user/start.S`: `argc`/`argv` later, `.init_array`
-  for C++), syscall stubs (`write`, `read`, `close`, `exit`), `FILE` over fds, a `malloc` (needs a
-  heap syscall: `brk`/`sbrk` or an `mmap`-style call). Before it: the **uapi split** —
-  `kernel/include/uapi/` for syscall numbers, errno and signal numbers, installed into the sysroot
-  under a namespace (e.g. `<mihos/...>`); only uapi is installed, so user programs stop seeing kernel
-  internals, and libc's `errno.h`/`signal.h` wrap it. Then `hello` and the `user_program.S` tests can
-  become libc programs.
-- **Later in step 4:** `exec` syscall (reuses `exec_load`, replaces the current space), `/sbin/init`
-  semantics (exit is fatal), C++ userland runtime (`.init_array`, `operator new`, `__cxa_*`).
+- **4f-4 (in progress):** userland libc.
+  - (a, done) uapi split: only `<mihos/...>` reaches the sysroot.
+  - (b, done) `libk.a` / `libc.a` from one tree with separate flags.
+  - (c, done) `crt0.o`, inline-asm syscall layer, `errno`, `unistd` wrappers, `exit`; `hello` on libc.
+  - (d, done) stdio output over fds (`hello` prints with `printf`). **Not yet run:** the ordering
+    test that proves the buffering modes. Put in a program (e.g. `user/tests/stdio`, or temporarily
+    in `hello`): `printf("1 line-buffered\n")`, `printf("2 no newline... ")`,
+    `fprintf(stderr, "3 stderr first\n")`, `printf("4\n")`, `printf("5 flushed by exit")`.
+    Expected screen order: `1`, `3`, `2 no newline... 4`, `5 flushed by exit` (last, only via
+    `exit`). Also check return values: `fputc('x') == 'x'`, `fwrite(buf, 4, 3) == 3`,
+    `printf("%d", 123) == 3`, `fputs("")` == 0, and after `close(2)` `fprintf(stderr, …) < 0` with
+    `ferror(stderr)` and `errno == EBADF` (needs `ferror`).
+  - (e, next) `brk` syscall + `malloc`/`free`; more user stack pages.
+- **Then (roadmap phase A):** restructure `user/` (`bin/`, `sbin/`, `tests/`, `lib/`; see
+  `ROADMAP.md`), stdio input (`fgets`/`getchar`, flushing line-buffered output before reading),
+  spawn/exec + wait syscalls with `argv`/`envp`, `/sbin/init` starting a first shell, freestanding
+  C++ runtime (`.init_array` in `crt0`, `operator new`, `__cxa_*`).
+- **Decisions** (details in `ROADMAP.md`): own syscall ABI and numbering (porting is at the
+  POSIX/libc API, not Linux binaries); own libc through phase C, mlibc via sysdeps at phase D
+  together with a GCC rebuild for libstdc++; `libk.a` stays ours.
 
 ### Console / keyboard layer (done)
 
@@ -554,12 +616,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - Every block/yield goes through `int`/`iretq`; consider the two-level (Linux/xv6) context switch
   if blocking becomes frequent (hidden behind `arch_yield`).
 - `<asm/...>` lives at family level (`arch/x86/include`) but uses x86_64-only instructions.
-- Kernel `install-headers` copies internal headers into the sysroot (stale copies can hide
-  include errors → use a clean build after moving headers); kernel and libc share one flat
-  `sysroot/usr/include`, so the kernel's `signal.h` occupies the POSIX name and libc's `errno.h` is
-  empty. Fixed by the uapi split (4f-4).
-- `ARCH_CFLAGS` (`-mcmodel=kernel`) applies to libc too; `user/` has its own flags, the userland
-  libc will need the same.
+- Stale headers in the sysroot can hide include errors: do a clean build (`make clean`) after
+  moving or removing headers.
+- libc has no `signal.h` yet (POSIX's needs `sigaction`); it will wrap `<mihos/signal.h>`.
 - `-ffreestanding` is commented out in `common.mk` and there is no `-fno-strict-aliasing`; the kernel
   casts between struct types (`list_container`, slab headers). Check what the MiHOS GCC target
   defaults to and enable both for the kernel.
@@ -577,9 +636,13 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - No raw mode / termios; Tab, Esc, arrows and Home/End are ignored in line editing.
 - Second-port interface test runs even when no second port was detected (may hang on
   single-channel controllers).
-- `vsnprintf` has no precision (`%.*s` panics) and `%s` does not bound-check `remain`.
-- libc `FILE`: `stderr` points past `stdio_streams[2]`, `fputc` writes through a NULL buffer,
-  `fwrite` does not reset its per-item counter.
+- `vsnprintf`: a precision is parsed and ignored (`%.3s` prints the whole string); unknown
+  specifiers are silently dropped; `%s` does not bound-check `remain`; it returns the characters
+  written, not the full length C99 requires, so `printf` silently truncates at `BUFSIZ - 1`.
+- stdio: no input side yet (`fgets`, `getchar`, `__fillbuf`), no `fopen`/`fclose`/`setvbuf`, no
+  `isatty` (stdout is always line-buffered), `__stdio_head` is `const` (must change when `fopen`
+  adds streams), no stream locking (needed with user threads); `stdio.h` is still partly a stub
+  (`fopen`, `fread`, `fseek` declared but missing).
 - Bochs (win32 GUI) sends Left Ctrl for the ABNT2 `/ ?` key, so `KEY_RO` can only be tested on QEMU.
 - No IDT gate uses the IST stacks yet; a double fault on a broken kernel stack still triple-faults.
 - `mmap_split_region` drops region remainders smaller than 16 frames.
