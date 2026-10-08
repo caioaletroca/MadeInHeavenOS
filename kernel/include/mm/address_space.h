@@ -34,9 +34,19 @@ void address_space_destroy(address_space_t *space);
  * @param address Page-aligned start, inside [USER_BASE, USER_TOP).
  * @param size Bytes to map (rounded up to whole pages).
  * @param flags MMU_WRITE / MMU_EXEC; MMU_USER is always added.
- * @return 0 on success, -1 on failure (pages mapped so far stay until destroy).
+ * @return 0 on success, -1 on failure.
  */
 int address_space_map(address_space_t *space, uintptr_t address, size_t size, unsigned int flags);
+
+/**
+ * @brief Unmap pages covering [address, address + size) from a user address space.
+ *
+ * @param space The address space from which to unmap pages.
+ * @param address Page-aligned start, inside [USER_BASE, USER_TOP).
+ * @param size Bytes to unmap (rounded up to whole pages).
+ * @return 0 on success, -1 on failure.
+ */
+int address_space_unmap(address_space_t *space, uintptr_t address, size_t size);
 
 /**
  * @brief Copy kernel data into mapped user pages, without activating the space.

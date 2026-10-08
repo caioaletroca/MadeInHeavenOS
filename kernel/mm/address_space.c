@@ -90,16 +90,45 @@ int address_space_map(address_space_t *space, uintptr_t address, size_t size, un
     {
         physaddr_t physical = frame_alloc(0, 0);
         if (physical == 0)
+        {
+            address_space_unmap(space, address, page - address);
             return -1;
+        }
 
         // Never hand a process another process's (or the kernel's) old data
         memset(phys_to_kern(physical), 0, PAGE_SIZE);
 
         if (arch_mmu_map(space->root, page, physical, flags | MMU_USER) != 0)
         {
+            address_space_unmap(space, address, page - address);
             frame_free(physical, 0);
             return -1;
         }
+    }
+
+    return 0;
+}
+
+int address_space_unmap(address_space_t *space, uintptr_t address, size_t size)
+{
+    if ((address & (PAGE_SIZE - 1)) != 0)
+        return -1;
+
+    if (space == NULL || !address_space_range_valid(address, size))
+        return -1;
+
+    // Round up the size to whole pages before unmapping
+    size = ALIGN_UP(size, PAGE_SIZE);
+
+    // Unmap each page in the specified range
+    for (uintptr_t page = address; page < address + size; page += PAGE_SIZE)
+    {
+        physaddr_t physical;
+        if (arch_mmu_translate(space->root, page, &physical) != 0)
+            continue;
+
+        arch_mmu_unmap(space->root, page);
+        frame_free(physical, 0);
     }
 
     return 0;
