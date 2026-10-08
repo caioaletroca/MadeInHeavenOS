@@ -14,5 +14,6 @@
 #define USER_BASE 0x0000000000400000ULL      // First user page (leaves 0 unmapped for NULL)
 #define USER_STACK_TOP 0x00007FFFFFFFF000ULL // Initial user stack pointer (grows down)
 #define USER_TOP 0x0000800000000000ULL       // End of the canonical lower half
+#define USER_STACK_SIZE (16 * PAGE_SIZE)     // 16 pages for the user stack
 
 #endif

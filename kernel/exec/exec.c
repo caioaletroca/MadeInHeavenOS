@@ -12,7 +12,7 @@ int exec_load(const void *image, size_t size, address_space_t **space, uintptr_t
 
     int ret = elf_load(*space, image, size, entry);
 
-    if (ret == 0 && address_space_map(*space, USER_STACK_TOP - PAGE_SIZE, PAGE_SIZE, MMU_WRITE) != 0)
+    if (ret == 0 && address_space_map(*space, USER_STACK_TOP - USER_STACK_SIZE, USER_STACK_SIZE, MMU_WRITE) != 0)
         ret = -ENOMEM;
 
     if (ret != 0)
