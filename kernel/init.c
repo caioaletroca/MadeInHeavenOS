@@ -2,51 +2,106 @@
 #include <sched/process.h>
 #include <driver/console.h>
 #include <mm/address_space.h>
+#include <asm/memory.h>
+#include <fs/file.h>
 #include <boot_info.h>
+#include <syscall.h>
 #include <string.h>
+#include <stdlib.h>
 #include <kprintf.h>
 #include <panic.h>
 
-/**
- * Find a boot module by name.
- *
- * @param info Pointer to the boot information structure.
- * @param name Name of the boot module to find.
- * @return Pointer to the boot module if found, NULL otherwise.
+/*
+ * TEMPORARY test runner: runs every boot module in grub.cfg order and checks
+ * its exit status. Replaced by starting /sbin/init alone once spawn and wait
+ * syscalls exist; running the tests then becomes a user-space job.
  */
-static const boot_module_t *boot_module_find(const boot_info_t *info, const char *name)
+
+/**
+ * Run a boot module as a process with the console on fds 0-2 and wait for it.
+ *
+ * @param module The boot module to run as a process.
+ * @param status Set to the exit status of the process on success.
+ * @return 0 with *status set, or a negative errno if it could not be started.
+ */
+static int module_run(const boot_module_t *module, int *status)
 {
-    for (size_t i = 0; i < info->module_count; i++)
+    address_space_t *space;
+    uintptr_t entry;
+    int ret = exec_load(phys_to_kern(module->start), module->end - module->start, &space, &entry);
+    if (ret < 0)
+        return ret;
+
+    // From here the process owns the space: releasing it destroys both
+    process_t *process = process_create(space);
+    if (process == NULL)
     {
-        if (strcmp(info->modules[i].name, name) == 0)
-            return &info->modules[i];
+        address_space_destroy(space);
+        return -ENOMEM;
     }
-    return NULL;
+
+    for (int i = 0; i < 3; i++)
+    {
+        file_t *console = console_file();
+        if (process_fd_install(process, console) < 0)
+        {
+            file_put(console); // a failed install leaves the reference with the caller
+            process_release(process);
+            return -EMFILE;
+        }
+    }
+
+    // process_start returns -1, not an errno: thread creation failed
+    if (process_start(process, entry, USER_STACK_TOP) < 0)
+    {
+        process_release(process);
+        return -ENOMEM;
+    }
+
+    *status = process_wait(process);
+    process_release(process);
+    return 0;
 }
 
 void init_start(const boot_info_t *info)
 {
-    const boot_module_t *module = boot_module_find(info, "hello");
-    if (module == NULL)
-        panic("init_start: Kernel module not found\n");
+    int passed = 0;
+    int failed = 0;
 
-    address_space_t *space;
-    uintptr_t entry;
-    if (exec_load(phys_to_kern(module->start), module->end - module->start, &space, &entry) < 0)
-        panic("init_start: Failed to load executable\n");
+    for (size_t i = 0; i < info->module_count; i++)
+    {
+        const boot_module_t *module = &info->modules[i];
 
-    process_t *process = process_create(space);
-    if (process == NULL)
-        panic("init_start: Failed to create process\n");
+        // The module string is "<name> [expected exit status]" (see grub.cfg)
+        size_t space = 0;
+        while (module->name[space] != '\0' && module->name[space] != ' ')
+            space++;
 
-    for (int i = 0; i < 3; i++)
-        if (process_fd_install(process, console_file()) < 0)
-            panic("init_start: Failed to install console file descriptor\n");
+        int expected = module->name[space] == ' ' ? atoi(&module->name[space + 1]) : 0;
 
-    if (process_start(process, entry, USER_STACK_TOP) < 0)
-        panic("init_start: Failed to start process\n");
+        // kprintf has no precision (%.*s): copy the name alone
+        char name[BOOT_MODULE_NAME_MAX];
+        strlcpy(name, module->name, space + 1);
 
-    int status = process_wait(process);
+        int status;
+        int ret = module_run(module, &status);
 
-    process_release(process);
+        if (ret < 0)
+        {
+            kprintf("test %s: FAIL (could not start: %d)\n", name, ret);
+            failed++;
+        }
+        else if (status != expected)
+        {
+            kprintf("test %s: FAIL (status %d, expected %d)\n", name, status, expected);
+            failed++;
+        }
+        else
+        {
+            kprintf("test %s: ok\n", name);
+            passed++;
+        }
+    }
+
+    kprintf("tests: %d passed, %d failed\n", passed, failed);
 }

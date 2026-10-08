@@ -11,7 +11,7 @@
 #include <kprintf.h>
 #include <panic.h>
 
-#define ELF_TEST_MODULE "hello"
+#define ELF_TEST_MODULE "/usr/tests/hello"
 
 /**
  * One way to break a valid image. `size` replaces the image size when non-zero.
@@ -54,9 +54,15 @@ static const elf_test_case_t elf_test_cases[] = {
 
 static const boot_module_t *elf_test_module(const boot_info_t *info)
 {
+    // The module string is "<name> [arguments]": compare the first word only
+    size_t length = strlen(ELF_TEST_MODULE);
+
     for (size_t i = 0; i < info->module_count; i++)
-        if (strcmp(info->modules[i].name, ELF_TEST_MODULE) == 0)
+    {
+        const char *name = info->modules[i].name;
+        if (memcmp(name, ELF_TEST_MODULE, length) == 0 && (name[length] == '\0' || name[length] == ' '))
             return &info->modules[i];
+    }
 
     panic("ELF self-test: boot module '%s' not found\n", ELF_TEST_MODULE);
 }

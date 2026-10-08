@@ -8,8 +8,12 @@ GRUB ?= grub-mkrescue
 GRUBFLAGS ?= /usr/lib/grub/i386-pc
 GRUB_CFG := grub.cfg
 
-# User programs loaded by GRUB as Multiboot2 modules (see grub.cfg)
-MODULES := $(BIN_DIR)/hello.elf
+# Every program user/ installed, loaded by GRUB as a Multiboot2 module (see
+# grub.cfg). The ISO mirrors the sysroot under /boot: <sysroot>/usr/tests/hello.elf
+# → /boot/usr/tests/hello.elf. Evaluated when this Makefile starts, after user/.
+PROGRAM_DIRS := bin sbin usr/tests
+MODULES := $(foreach dir,$(PROGRAM_DIRS),$(wildcard $(SYSROOT_DIR)/$(dir)/*.elf))
+iso_path = $(ISO_DIR)/boot$(patsubst $(SYSROOT_DIR)%,%,$1)
 
 .PHONY: all iso
 
@@ -21,5 +25,5 @@ $(ISO): $(BOOT_DIR)/kernel $(MODULES) $(GRUB_CFG)
 	mkdir -p $(GRUB_DIR)
 	cp $(GRUB_CFG) $(GRUB_DIR)
 	cp $(BOOT_DIR)/kernel $(ISO_DIR)/boot/mihos.kernel
-	cp $(MODULES) $(ISO_DIR)/boot/
+	$(foreach module,$(MODULES),mkdir -p $(dir $(call iso_path,$(module))) && cp $(module) $(call iso_path,$(module));)
 	$(GRUB) $(GRUBFLAGS) -o $@ $(ISO_DIR)

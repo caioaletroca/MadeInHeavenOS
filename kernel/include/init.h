@@ -4,7 +4,9 @@
 #include <boot_info.h>
 
 /**
- * @brief Start the first user program from the boot modules.
+ * @brief Run every boot module as a test program and report each exit status.
+ *
+ * Temporary: becomes "start /sbin/init" once spawn and wait syscalls exist.
  *
  * @param boot_info Pointer to the boot information structure.
  */
