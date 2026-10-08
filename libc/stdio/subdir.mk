@@ -10,6 +10,7 @@ __write_all.c \
 __fwritex.c \
 __fflush_one.c \
 fflush.c \
+ferror.c \
 fputc.c \
 fputs.c \
 puts.c \

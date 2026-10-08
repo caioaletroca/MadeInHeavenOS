@@ -31,6 +31,14 @@ int fclose(FILE *);
  */
 int fflush(FILE *);
 
+/**
+ * @brief Checks the error indicator of a stream.
+ *
+ * @param stream Pointer to a FILE object that identifies the stream.
+ * @return Non-zero if the error indicator is set, 0 otherwise.
+ */
+int ferror(FILE *stream);
+
 FILE *fopen(const char *, const char *);
 
 size_t fread(void *, size_t, size_t, FILE *);
