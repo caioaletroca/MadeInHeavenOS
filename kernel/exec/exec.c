@@ -3,6 +3,7 @@
 #include <asm/memory.h>
 #include <mm/address_space.h>
 #include <syscall.h>
+#include <util.h>
 
 int exec_load(const void *image, size_t size, address_space_t **space, uintptr_t *entry)
 {
@@ -10,7 +11,8 @@ int exec_load(const void *image, size_t size, address_space_t **space, uintptr_t
     if (*space == NULL)
         return -ENOMEM;
 
-    int ret = elf_load(*space, image, size, entry);
+    uintptr_t end;
+    int ret = elf_load(*space, image, size, entry, &end);
 
     if (ret == 0 && address_space_map(*space, USER_STACK_TOP - USER_STACK_SIZE, USER_STACK_SIZE, MMU_WRITE) != 0)
         ret = -ENOMEM;
@@ -19,7 +21,10 @@ int exec_load(const void *image, size_t size, address_space_t **space, uintptr_t
     {
         address_space_destroy(*space);
         *space = NULL;
+        return ret;
     }
+
+    (*space)->heap_start = (*space)->brk = ALIGN_UP(end, PAGE_SIZE);
 
     return ret;
 }

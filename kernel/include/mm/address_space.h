@@ -14,6 +14,8 @@
 typedef struct address_space
 {
     mmu_root_t *root;
+    uintptr_t heap_start;
+    uintptr_t brk;
 } address_space_t;
 
 /**

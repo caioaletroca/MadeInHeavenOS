@@ -76,8 +76,9 @@ struct address_space;
  * @param image Pointer to the ELF image in memory.
  * @param size Size of the ELF image in bytes.
  * @param entry Set to the entry point on success, untouched on failure.
+ * @param end Set to the end of the loaded image on success, untouched on failure.
  * @return 0 on success, -ENOEXEC for an invalid image, -ENOMEM if mapping fails.
  */
-int elf_load(struct address_space *space, const void *image, size_t size, uintptr_t *entry);
+int elf_load(struct address_space *space, const void *image, size_t size, uintptr_t *entry, uintptr_t *end);
 
 #endif /* _EXEC_ELF_H_ */

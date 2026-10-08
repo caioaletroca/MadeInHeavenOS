@@ -1,8 +1,10 @@
 #include <syscall.h>
+#include <asm/memory.h>
 #include <mm/address_space.h>
 #include <sched/scheduler.h>
 #include <sched/thread.h>
 #include <sched/process.h>
+#include <util.h>
 
 // Bytes moved per copy; bounds the kernel stack buffer
 #define SYSCALL_CHUNK_SIZE 256
@@ -22,6 +24,33 @@ static file_t *sys_file(unsigned long fd)
 {
     process_t *p = scheduler_current()->process;
     return fd < PROCESS_MAX_FILES ? p->files[fd] : NULL;
+}
+
+/**
+ * brk(address): changes the end of the data segment (heap) to the specified address.
+ */
+static long sys_brk(uintptr_t address)
+{
+    address_space_t *space = syscall_space();
+    if (space == NULL)
+        return -ENOMEM;
+
+    uintptr_t limit = USER_STACK_TOP - USER_STACK_SIZE - PAGE_SIZE;
+
+    if (address < space->heap_start || address > limit)
+        return (long)space->brk;
+
+    uintptr_t old_end = ALIGN_UP(space->brk, PAGE_SIZE);
+    uintptr_t new_end = ALIGN_UP(address, PAGE_SIZE);
+
+    if (new_end > old_end && address_space_map(space, old_end, new_end - old_end, MMU_WRITE) != 0)
+        return (long)space->brk;
+
+    if (new_end < old_end)
+        address_space_unmap(space, new_end, old_end - new_end);
+
+    space->brk = address;
+    return (long)space->brk;
 }
 
 /**
@@ -114,6 +143,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
     {
     case SYS_EXIT:
         return sys_exit((long)arg0);
+    case SYS_BRK:
+        return sys_brk((uintptr_t)arg0);
     case SYS_WRITE:
         return sys_write(arg0, arg1, arg2);
     case SYS_CLOSE:

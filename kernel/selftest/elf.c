@@ -111,7 +111,8 @@ void elf_selftest(const boot_info_t *info)
             panic("ELF self-test: out of memory\n");
 
         uintptr_t unused = 0;
-        int result = elf_load(space, copy, test->size != 0 ? test->size : size, &unused);
+        uintptr_t unused_end = 0;
+        int result = elf_load(space, copy, test->size != 0 ? test->size : size, &unused, &unused_end);
 
         address_space_destroy(space);
 

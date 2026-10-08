@@ -31,7 +31,7 @@ static bool elf_header_valid(const elf64_header_t *header, size_t size)
            header->e_phnum <= (size - header->e_phoff) / sizeof(elf64_program_header_t);
 }
 
-int elf_load(address_space_t *space, const void *image, size_t size, uintptr_t *entry)
+int elf_load(address_space_t *space, const void *image, size_t size, uintptr_t *entry, uintptr_t *end)
 {
     const elf64_header_t *header = image;
 
@@ -40,6 +40,7 @@ int elf_load(address_space_t *space, const void *image, size_t size, uintptr_t *
 
     const elf64_program_header_t *phdrs = (const void *)((const uint8_t *)image + header->e_phoff);
     bool entry_ok = false;
+    uintptr_t image_end = 0;
 
     for (uint16_t i = 0; i < header->e_phnum; i++)
     {
@@ -63,13 +64,16 @@ int elf_load(address_space_t *space, const void *image, size_t size, uintptr_t *
 
         // Whole pages are mapped; present pages are always readable, so PF_R needs no flag
         uintptr_t start = ALIGN_DOWN(ph->p_vaddr, PAGE_SIZE);
-        uintptr_t end = ALIGN_UP(ph->p_vaddr + ph->p_memsz, PAGE_SIZE);
+        uintptr_t segment_end = ALIGN_UP(ph->p_vaddr + ph->p_memsz, PAGE_SIZE);
         unsigned int flags = (ph->p_flags & PF_W ? MMU_WRITE : 0) |
                              (ph->p_flags & PF_X ? MMU_EXEC : 0);
 
         // Also fails when two segments share a page (already mapped)
-        if (address_space_map(space, start, end - start, flags) != 0)
+        if (address_space_map(space, start, segment_end - start, flags) != 0)
             return -ENOMEM;
+
+        if (segment_end > image_end)
+            image_end = segment_end;
 
         // File bytes go exactly at p_vaddr; the rest up to p_memsz stays zero
         // because mapped frames start zeroed (.bss). Cannot fail: just mapped.
@@ -86,5 +90,6 @@ int elf_load(address_space_t *space, const void *image, size_t size, uintptr_t *
         return -ENOEXEC;
 
     *entry = header->e_entry;
+    *end = image_end; // Set the end of the loaded image
     return 0;
 }
