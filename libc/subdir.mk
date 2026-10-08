@@ -4,4 +4,5 @@ stdlib \
 string \
 errno \
 internal \
-unistd
+unistd \
+malloc
