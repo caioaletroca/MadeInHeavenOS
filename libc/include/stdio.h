@@ -47,6 +47,66 @@ long ftell(FILE *);
 void setbuf(FILE *, char *);
 
 /**
+ * @brief Checks the end-of-file indicator for the given stream.
+ *
+ * @param stream Pointer to a FILE object that identifies the stream.
+ * @return Non-zero if the end-of-file indicator is set, 0 otherwise.
+ */
+int feof(FILE *stream);
+
+/**
+ * @brief Clears the end-of-file and error indicators for the given stream.
+ *
+ * @param stream Pointer to a FILE object that identifies the stream.
+ */
+void clearerr(FILE *stream);
+
+/**
+ * @brief Reads the next character from the specified stream.
+ *
+ * @param stream Pointer to a FILE object that identifies the stream.
+ * @return On success, the character read is returned as an unsigned char cast to an int.
+ * On end of file or error, EOF is returned.
+ */
+int fgetc(FILE *stream);
+
+/**
+ * @brief Reads the next character from the specified stream.
+ *
+ * @param stream Pointer to a FILE object that identifies the stream.
+ * @return On success, the character read is returned as an unsigned char cast to an int.
+ * On end of file or error, EOF is returned.
+ */
+int getc(FILE *stream);
+
+/**
+ * @brief Reads the next character from the standard input (stdin).
+ *
+ * @return On success, the character read is returned as an unsigned char cast to an int.
+ * On end of file or error, EOF is returned.
+ */
+int getchar(void);
+
+/**
+ * @brief Pushes the character c (converted to an unsigned char) back onto the input stream pointed to by stream.
+ *
+ * @param c Character to be pushed back.
+ * @param stream Pointer to a FILE object that identifies the stream.
+ * @return On success, the character pushed back is returned. On error, EOF is returned.
+ */
+int ungetc(int c, FILE *stream);
+
+/**
+ * @brief Reads a line from the specified stream into the buffer pointed to by s.
+ *
+ * @param s Pointer to the buffer where the read line will be stored.
+ * @param n Maximum number of characters to read, including the null terminator.
+ * @param stream Pointer to a FILE object that identifies the stream.
+ * @return On success, the pointer to the buffer s is returned. On end of file or error, NULL is returned.
+ */
+char *fgets(char *s, int n, FILE *stream);
+
+/**
  * @brief Writes the character c (converted to an unsigned char) to the standard output (stdout).
  *
  * @param c Character to be written.

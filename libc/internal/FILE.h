@@ -68,6 +68,12 @@ size_t __fwritex(const unsigned char *data, size_t n, FILE *f);
  */
 int __fflush_one(FILE *f);
 
+/**
+ * Fills the buffer of the given file stream.
+ *
+ * @param f Pointer to the file stream.
+ * @return 0 on success, or EOF on error or end of file.
+ */
 int __fillbuf(FILE *f);
 
 /**
