@@ -21,7 +21,9 @@ Working x86-64 PC kernel with:
   ring 3 kill the process with 128 + signal instead of panicking
 - Open files (`file_t` + `file_ops_t`), console as the first backend behind fds 0–2
 - **ELF64 loader**: user programs built separately (`user/`), loaded by GRUB as Multiboot2 modules,
-  validated and mapped by `elf_load`, started by `init_start` (`hello` exits with 42)
+  validated and mapped by `elf_load`; `init_start` (temporarily) runs every module as a test and
+  checks its exit status
+- **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`)
 - **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`): the only kernel
   headers installed into the sysroot
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
@@ -37,12 +39,15 @@ Working x86-64 PC kernel with:
 - Console: US and ABNT2 keymaps with dead keys, line discipline, blocking `console_read()`
 - UTF-8 tty drawing CP437 glyphs on VGA text mode with a hardware cursor; `kprintf` is atomic per call
 - Kernel split into generic code, arch contracts and platform contracts, enforced by the build
-- Guard, MM, preemption, sync, console, user-mode and ELF self-tests passing in Bochs; keyboard
-  verified in Bochs and QEMU
+- Guard, MM, preemption, sync, console, user-mode and ELF self-tests and the 5 user test programs
+  passing in Bochs; keyboard verified in Bochs and QEMU
 
 Latest commits:
 
 ```text
+0884fb3 test(user): turn the stdio, brk and malloc checks into test programs
+8f65e7c refactor(user): group programs by category and run them all as tests
+b386b3d docs(architecture): document brk, the user heap and malloc in handoff
 f429a19 feat(libc): add malloc, free, calloc and realloc
 87bde28 feat(libc): add brk and sbrk
 0fbb27a feat(sys): add the brk syscall with the heap after the ELF image
@@ -63,7 +68,7 @@ cd7b843 refactor(driver): protect the console ring with a spinlock
 
 ```text
 libc/                             # libk.a (kernel) + libc.a + crt0.o (user); see "Userland libc"
-user/                             # user programs: user.ld, one directory per program
+user/                             # user.ld, include/ (test.h), bin/ sbin/ tests/<program>/
 grub/                             # grub.cfg + ISO build (kernel + modules)
 kernel/
 ├── include/                      # GENERIC: no asm, no x86, no PC
@@ -86,7 +91,7 @@ kernel/
 │   └── x86_64/                   # boot, ISR stubs, gdt64.S, tss.c, arch.c, context.c, isr.c, paging.c
 ├── platform/pc/                  # pic, pit, ps2, keyboard, vga, screen (CP437), multiboot2, platform.c
 ├── sched/ mm/ driver/ sys/ fs/ exec/ selftest/
-├── init.c                        # init_start: runs the first user program
+├── init.c                        # init_start: temporary test runner over the boot modules
 └── kmain.c
 ```
 
@@ -141,7 +146,7 @@ tty_init → platform_boot_info_init → arch_init [TSS first] → input_init �
 → threads_init [reaper] → console_init(&keymap_abnt2) [console thread]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → mm_selftest
 → scheduler_selftest [+ sync tests] → console_selftest → user_selftest → elf_selftest(&boot_info)
-→ init_start(&boot_info) [runs the 'hello' module, waits] → boot thread idles
+→ init_start(&boot_info) [runs every module, checks exit statuses] → boot thread idles
 ```
 
 ## Memory management
@@ -318,18 +323,25 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private } ──▶ ops-
 ### Programs and the ELF loader (`exec/`, `init.c`, `user/`)
 
 ```text
-user/hello ─build─▶ sysroot/usr/bin/hello.elf ─ISO─▶ GRUB module2 "hello" ─▶ boot_info.modules[]
-init_start ─▶ exec_load(image, size) ─▶ address_space_create + elf_load + stack + heap_start
-           ─▶ process_create + console fds 0-2 + process_start(entry) ─▶ process_wait
+user/tests/hello ─build─▶ sysroot/usr/tests/hello.elf ─ISO─▶ /boot/usr/tests/hello.elf
+  ─grub.cfg─▶ module "/usr/tests/hello 42" ─▶ boot_info.modules[]
+init_start ─▶ for each module: module_run ─▶ exec_load ─▶ address_space_create + elf_load + stack
+           ─▶ process_create + console fds 0-2 + process_start(entry) ─▶ process_wait ─▶ compare
 ```
 
-- **User build** (`user/Makefile`): one static ELF per program directory, linked as
-  `crt0.o` (first: holds `_start`) + the program's objects + `-lc -lgcc`, with `USER_CFLAGS` and
-  `max-page-size=4096`. `user.ld` puts text (RX), rodata (R) and data+bss (RW) in separate `PHDRS`
-  segments, each on its own page at `USER_BASE`. Installed to `sysroot/usr/bin`, copied into the
-  ISO by `grub/Makefile` and named in `grub.cfg` (`module2 /boot/hello.elf hello`).
-- **Modules** (`boot_info.modules[]`, Multiboot2 tag 3): physical `[start, end)` plus the name, copied
-  with `strlcpy` (the Multiboot2 structure is not protected after boot).
+- **User build** (`user/Makefile`): every directory under `bin/`, `sbin/` and `tests/` is a program
+  (discovered, no list), one static ELF each, linked as `crt0.o` (first: holds `_start`) + the
+  program's objects + `-lc -lgcc`, with `USER_CFLAGS` and `max-page-size=4096`. `user/include/` is on
+  the include path (shared headers such as `test.h`). `user.ld` puts text (RX), rodata (R) and
+  data+bss (RW) in separate `PHDRS` segments, each on its own page at `USER_BASE`.
+- **Install by category:** `bin/x` → `<sysroot>/bin/x.elf`, `sbin/x` → `<sysroot>/sbin/x.elf`,
+  `tests/x` → `<sysroot>/usr/tests/x.elf` (`.elf` until the initramfs). `grub/Makefile` copies every
+  installed program into the ISO under `/boot`, mirroring the sysroot.
+- **`grub.cfg`** (edited by hand: a new program needs a line): `module2 <ISO file> <install path>
+  [expected exit status]`, in run order, at most `BOOT_MODULE_MAX` (8).
+- **Modules** (`boot_info.modules[]`, Multiboot2 tag 3): physical `[start, end)` plus the whole module
+  string as `name` (path and arguments), copied with `strlcpy` (the Multiboot2 structure is not
+  protected after boot). Lookups compare the first word.
 - **`elf_load(space, image, size, &entry, &end)`** (`exec/elf.c`): validates `ELF64`, little-endian,
   version, `ET_EXEC`, `e_machine == ELF_MACHINE` and that the program header table is inside the
   image; for every non-empty `PT_LOAD` (empty ones, e.g. an unused RW segment, are skipped) checks the
@@ -343,10 +355,26 @@ init_start ─▶ exec_load(image, size) ─▶ address_space_create + elf_load 
 - **`exec_load(image, size, &space, &entry)`** (`exec/exec.c`): new space + `elf_load` + the stack
   (`USER_STACK_SIZE` below `USER_STACK_TOP`); on success `heap_start = brk = end`, so the heap starts
   empty on the page after `.bss`. Frees everything on error. Meant for `sys_exec`/spawn later too.
-- **`init_start(info)`** (`init.c`): finds the `hello` module, `exec_load`, process with the console on
-  fds 0–2, start, wait, report, release. Later: start `/sbin/init` and treat its exit as fatal.
-- `hello` returns `status + zero` from a `.data` 42 and a `.bss` 0, so its exit status checks the copy
-  and the zeroing.
+- **`init_start(info)`** (`init.c`, temporary test runner): for every module in order, splits the
+  string at the first space (expected status = `atoi` of the rest, else 0), `module_run`s it and
+  prints `test <name>: ok` / `FAIL (...)`, then `tests: N passed, M failed`; failures do not panic.
+  `module_run(module, &status)` = `exec_load` + process with the console on fds 0–2 + start + wait +
+  release; returns a negative errno (cleaning up: space, console reference, process) when the
+  program cannot start, so the status (which can be negative) has its own out parameter. Later:
+  start `/sbin/init` alone and treat its exit as fatal; running tests becomes a user-space job.
+- **Test programs** (`user/tests/`, `user/include/test.h`): `CHECK(expr)` prints
+  `FAIL line N: expr` to stdout and counts; `main` returns `test_status()` = failed checks.
+  - `hello`: returns `status + zero` from a `.data` 42 and a `.bss` 0 (expected 42: checks the copy
+    and the zeroing).
+  - `stdio`: buffering order checked by eye (`1`, `3`, `2 no newline... 4`, `checks: …`,
+    `5 flushed by exit` last, only via `exit`), return values, `ferror` + `EBADF` after `close(2)`.
+  - `brk`: heap on the page after `.bss`, exact unaligned break, zeroed pages after shrink and regrow,
+    `ENOMEM` past the limit / on wrap / below `heap_start`, a 32 KiB stack array.
+  - `malloc`: 16-alignment and no overlap over 15 sizes, one free block after freeing everything
+    (`malloc(heap - header)` fits at the bottom without moving the break), 1000 rounds without heap
+    growth, a 100 KiB block, `calloc` zeroing reused dirty memory, `realloc` semantics, `ENOMEM`
+    cases. Prints the heap size (164 KiB).
+  - `malloc_abort`: double free (expected 134).
 - **ELF self-test** (`selftest/elf.c`): `exec_load` of the module must succeed with the header's entry;
   ten broken copies (magic, class, machine, `ET_DYN`, truncated, program headers out of bounds,
   `p_filesz > p_memsz`, segment in the kernel half, segment wrapping past 2^64, entry outside every
@@ -630,23 +658,16 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - (a, done) uapi split: only `<mihos/...>` reaches the sysroot.
   - (b, done) `libk.a` / `libc.a` from one tree with separate flags.
   - (c, done) `crt0.o`, inline-asm syscall layer, `errno`, `unistd` wrappers, `exit`; `hello` on libc.
-  - (d, done) stdio output over fds (`hello` prints with `printf`), `ferror`. Verified once with an
-    ordering test run temporarily in `hello` (not kept): screen order `1`, `3`, `2 no newline... 4`,
-    `5 flushed by exit` (last, only via `exit`); `fputc`/`fwrite`/`printf`/`fputs("")` return
-    values; after `close(2)` `fprintf(stderr, …) < 0` with `ferror(stderr)` and `errno == EBADF`.
-    Bring it back as `user/tests/stdio` once `user/` is restructured and init runs test programs.
+  - (d, done) stdio output over fds (`hello` prints with `printf`), `ferror` (test: `tests/stdio`).
   - (e, done) `address_space_unmap` + rollback in `address_space_map`, 64 KiB user stack, `SYS_BRK`
-    with the heap after the ELF image, libc `brk`/`sbrk`, `malloc`/`free`/`calloc`/`realloc`. Two
-    temporary tests in `hello` (not kept, bring back under `user/tests/`):
-    - brk: heap on the page after `.bss`, exact unaligned break, zeroed pages after shrink and
-      regrow, `ENOMEM` past the limit / on wrap / below `heap_start`, a 32 KiB stack array.
-    - malloc: 16-alignment and no overlap over 15 sizes, one free block after freeing everything
-      (`malloc(heap - header)` fits at the bottom without moving the break), 1000 rounds without
-      heap growth, a 100 KiB block, `calloc` zeroing reused dirty memory, `realloc` semantics,
-      `ENOMEM` cases, double free → status 134. Heap after the test: 164 KiB.
-- **Next (roadmap phase A):** restructure `user/` (`bin/`, `sbin/`, `tests/`, `lib/`; see
-  `ROADMAP.md`) and turn the temporary `hello` tests (stdio, brk, malloc) into `user/tests/`
-  programs; `init_start` must run more than one module (or a list). Then stdio input (`fgets`/`getchar`, flushing line-buffered output before reading),
+    with the heap after the ELF image, libc `brk`/`sbrk`, `malloc`/`free`/`calloc`/`realloc`
+    (tests: `tests/brk`, `tests/malloc`, `tests/malloc_abort`).
+- **Phase A restructure (done):** `user/` by category (`bin/`, `sbin/`, `tests/`) with discovery and
+  install paths, the ISO mirroring the sysroot, `grub.cfg` modules named by install path with an
+  expected status, `init_start` as a temporary test runner, the temporary `hello` tests as programs
+  in `user/tests/`. Not moved: the `user_program.S` kernel self-tests (they read program variables
+  from the kernel; moving them means rewriting them as libc programs).
+- **Next (roadmap phase A):** stdio input (`fgets`/`getchar`, flushing line-buffered output before reading),
   spawn/exec + wait syscalls with `argv`/`envp`, `/sbin/init` starting a first shell, freestanding
   C++ runtime (`.init_array` in `crt0`, `operator new`, `__cxa_*`).
 - **Decisions** (details in `ROADMAP.md`): own syscall ABI and numbering (porting is at the
@@ -697,7 +718,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - Fixed 64 KiB user stack (`exec_load`); no stack growth. The guard page below it is only "never
   mapped" (`brk` stops short of it), not a reserved region.
 - `NX` still off, so `PF_X`/`MMU_EXEC` from the loader are informational.
-- `init_start` looks up a hard-coded module name (`"hello"`).
+- `init_start` is a kernel-side test runner until `/sbin/init` exists; `grub.cfg` lists every program
+  by hand (no generation from `user/`), at most `BOOT_MODULE_MAX` (8) modules.
+- The `stdio` test's output order is only checked by eye (no pipes to capture it).
+- Stale programs stay in the sysroot after their directory is removed (`make clean` to drop them).
 - `tty_write` holds IRQs off for the whole write plus a full 4000-byte VGA copy; long user writes
   will need a mutex and a separate panic path.
 - Screen redraws the whole buffer on every write; scrolling uses `memcpy` on an overlapping range.
@@ -750,7 +774,7 @@ make print-config
 Inspect a user program's segments (each `LOAD` page-aligned, no overlaps):
 
 ```sh
-x86_64-mihos-readelf -l sysroot/usr/bin/hello.elf
+x86_64-mihos-readelf -l sysroot/usr/tests/hello.elf
 ```
 
 Run Bochs:

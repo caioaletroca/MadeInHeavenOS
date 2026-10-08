@@ -126,8 +126,9 @@ docs/                     # handoff, roadmap
 
 1. ~~Finish and commit stdio (fix `fwrite`/`fputs` return values, run the ordering test).~~ Done.
 2. ~~`brk` syscall + `malloc`/`free` in libc; more user stack pages.~~ Done.
-3. Restructure `user/` as above; `hello` → `user/tests/hello`, the `user_program.S` tests and the
-   temporary stdio/brk/malloc tests → libc programs in `user/tests/`.
+3. ~~Restructure `user/` as above; `hello` → `user/tests/hello`, the temporary stdio/brk/malloc
+   tests → libc programs in `user/tests/`.~~ Done. Still open: the `user_program.S` kernel
+   self-tests → libc programs.
 4. stdio input (`fgets`, `getchar`; flush line-buffered output before reading).
 5. Spawn/exec + wait syscalls, `argv`/`envp` on the initial stack; `init` starts a first `sh` with
    builtins.
