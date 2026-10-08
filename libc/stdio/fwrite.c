@@ -1,21 +1,17 @@
-#include "FILE.h"
+#include <FILE.h>
+#include <stdint.h>
 #include <stdio.h>
 
-size_t fwrite(const void *ptr, size_t size, size_t count, FILE *stream) {
-    size_t n = 0, s = 0;
-    const char *buf = (const char *)ptr;
+size_t fwrite(const void *ptr, size_t size, size_t count, FILE *stream)
+{
+    if (size == 0 || count == 0)
+        return 0;
 
-    // Loop in all count of items
-    while(n < count) {
-        // Loop for items
-        while(s < size) {
-            // Write the char into stream
-            fputc(buf[s], stream);
-            s++;
-        }
-        buf += size;
-        n++;
+    if (count > SIZE_MAX / size)
+    {
+        stream->flags |= F_ERR;
+        return 0;
     }
 
-    return n;
+    return __fwritex((const unsigned char *)ptr, size * count, stream) / size;
 }

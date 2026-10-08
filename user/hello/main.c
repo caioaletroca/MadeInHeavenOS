@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <unistd.h>
+#include <stdio.h>
 
 /*
  * First ELF program: prints a line and exits with 42, so the exit status
@@ -10,14 +11,12 @@
  * data gives 0, an unzeroed .bss gives anything but 42.
  */
 
-static const char message[] = "Hello from an ELF program!\n";
-
 // volatile: keep the compiler from folding them into a constant 42
 static volatile int status = 42; // .data
 static volatile int zero;        // .bss
 
 int main(void)
 {
-    write(1, message, sizeof(message) - 1);
+    printf("Hello from an ELF program!\n");
     return status + zero;
 }

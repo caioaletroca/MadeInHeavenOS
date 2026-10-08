@@ -1,8 +1,9 @@
 #include <stdlib.h>
 #include <unistd.h>
+#include <FILE.h>
 
 __attribute__((__noreturn__)) void exit(int status)
 {
-    // TODO: run atexit handlers and flush stdio before _exit
+    __stdio_exit();
     _exit(status);
 }

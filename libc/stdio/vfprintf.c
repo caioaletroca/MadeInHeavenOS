@@ -1,29 +1,16 @@
+#include <FILE.h>
 #include <stdio.h>
+#include <stdarg.h>
 
-int vfprintf(FILE *stream, const char *format, va_list args) {
-    int n, w, left;
-    char buf[BUFFER_SIZE];
-    char *pointer = buf;
+int vfprintf(FILE *stream, const char *format, va_list args)
+{
+    char buf[BUFSIZ];
+    int n = vsnprintf(buf, BUFSIZ, format, args);
 
-    // Try to parse the format, if return is lower than 0;
-    // returns error
-    if((n = vsnprintf(buf, BUFFER_SIZE, format, args)) < 0) {
+    if (n < 0)
         return n;
-    }
+    if ((size_t)n >= sizeof(buf))
+        n = sizeof(buf) - 1;
 
-    left = n;
-
-    // While there's characters left, write into stream
-    while(left > 0) {
-        w = fwrite(pointer, 1, n, stream);
-
-        // If error happens, break
-        if(w < 0)
-            break;
-
-        left -= w;
-        pointer += w;
-    }
-
-    return n - left;
+    return __fwritex((const unsigned char *)buf, n, stream) == (size_t)n ? n : -1;
 }
