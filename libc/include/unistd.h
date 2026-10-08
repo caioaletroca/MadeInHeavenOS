@@ -4,6 +4,7 @@
 #include <sys/cdefs.h>
 #include <sys/types.h>
 #include <stddef.h>
+#include <stdint.h>
 
 __BEGIN_DECLS
 
@@ -11,6 +12,22 @@ int execv(const char *, char *const[]);
 int execve(const char *, char *const[], char *const[]);
 int execvp(const char *, char *const[]);
 pid_t fork(void);
+
+/**
+ * Set the end of the data segment (heap) for the calling process.
+ *
+ * @param addr The new end of the data segment.
+ * @return 0 on success, or -1 on error.
+ */
+int brk(void *addr);
+
+/**
+ * Increment the program's data space (heap) by a specified amount.
+ *
+ * @param increment The number of bytes to increase the data segment by.
+ * @return The previous end of the data segment on success, or (void *)-1 on error.
+ */
+void *sbrk(intptr_t increment);
 
 /**
  * Write data to a file descriptor.
