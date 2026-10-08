@@ -89,7 +89,7 @@ together (C++17 libstdc++, pthreads, executable `mmap` for V8's JIT, signals, so
 
 | Debt | Needed by |
 |---|---|
-| one user stack page, no growth | A / C |
+| fixed 64 KiB user stack, no growth | C |
 | syscalls run with IRQs off | B (disk I/O blocks for long) |
 | 1 GiB direct-map limit | B / D (caches, large programs) |
 | NX off | D (`mprotect`, JITs) |
@@ -124,10 +124,10 @@ docs/                     # handoff, roadmap
 
 ## Near-term order
 
-1. Finish and commit stdio (fix `fwrite`/`fputs` return values, run the ordering test).
-2. `brk` syscall + `malloc`/`free` in libc; more user stack pages.
-3. Restructure `user/` as above; `hello` → `user/tests/hello`, the `user_program.S` tests → libc
-   programs in `user/tests/`.
+1. ~~Finish and commit stdio (fix `fwrite`/`fputs` return values, run the ordering test).~~ Done.
+2. ~~`brk` syscall + `malloc`/`free` in libc; more user stack pages.~~ Done.
+3. Restructure `user/` as above; `hello` → `user/tests/hello`, the `user_program.S` tests and the
+   temporary stdio/brk/malloc tests → libc programs in `user/tests/`.
 4. stdio input (`fgets`, `getchar`; flush line-buffered output before reading).
 5. Spawn/exec + wait syscalls, `argv`/`envp` on the initial stack; `init` starts a first `sh` with
    builtins.

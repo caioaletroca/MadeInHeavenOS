@@ -14,8 +14,9 @@ Working x86-64 PC kernel with:
 - 4 KiB page map/unmap/translate behind an arch-neutral MMU contract
 - Per-process address spaces: private user half, shared kernel half (`address_space_t`)
 - Ring-3 GDT segments and a loaded TSS (RSP0 + IST stacks); identity map removed after boot
-- User-mode threads preempted by the timer; `int 0x80` syscalls `write`, `read`, `close` and `exit`
-  with user pointer validation
+- User-mode threads preempted by the timer; `int 0x80` syscalls `write`, `read`, `close`, `exit`
+  and `brk` with user pointer validation
+- User heap after the ELF image (`brk`), 64 KiB user stack with a guard page below it
 - Processes (`process_t`) owning their address space and fd table, waitable, refcounted; faults in
   ring 3 kill the process with 128 + signal instead of panicking
 - Open files (`file_t` + `file_ops_t`), console as the first backend behind fds 0–2
@@ -24,8 +25,8 @@ Working x86-64 PC kernel with:
 - **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`): the only kernel
   headers installed into the sysroot
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
-  layer, `errno`, `write`/`read`/`close`/`_exit`, `exit`/`abort`; buffered stdio over fds with
-  `printf` (output side; input side next)
+  layer, `errno`, `write`/`read`/`close`/`_exit`/`brk`/`sbrk`, `exit`/`abort`; buffered stdio over
+  fds with `printf` (output side; input side next); `malloc`/`free`/`calloc`/`realloc` on `sbrk`
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
@@ -42,15 +43,15 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+f429a19 feat(libc): add malloc, free, calloc and realloc
+87bde28 feat(libc): add brk and sbrk
+0fbb27a feat(sys): add the brk syscall with the heap after the ELF image
+5cea546 feat(exec): map a 64 KiB user stack
+82ae59a feat(mm): add address_space_unmap and roll back failed maps
+b1f3b43 docs(architecture): record the stdio ordering test in handoff
 0031357 feat(libc): add ferror
-335c05d docs(architecture): add roadmap and update handoff for libc
 f7e1942 feat(libc): add buffered stdio over file descriptors
 02e12fd feat(libc): build libc.a for user programs with syscall wrappers
-3579938 refactor(build): install only the uapi headers into the sysroot
-30eb5b8 docs(architecture): document locking, guards and the ELF loader in handoff
-cd4c689 feat(exec): load ELF programs and start the first one
-ea14a19 build(user): build user programs as GRUB modules
-d824c15 feat(boot): record bootloader modules and keep them reserved
 1d3b986 feat(libc): add strlcpy and strcmp, terminate strcpy
 cd7b843 refactor(driver): protect the console ring with a spinlock
 8f5f1d8 refactor(sched): put semaphores, mutexes and thread lists on spinlocks
@@ -189,11 +190,19 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
 - The boot identity map (`L4[0]`) is removed in `boot64_high`, after GDTR is reloaded with the GDT's
   virtual address (`gdt64_pointer_high`). Low physical memory is reachable only through the direct map.
 - **User layout** (`<asm/memory.h>`): `USER_BASE` 4 MiB (page 0 stays unmapped for NULL),
-  `USER_STACK_TOP` `0x00007FFFFFFFF000`, `USER_TOP` `0x0000800000000000` (canonical limit).
-- `address_space_t` (`mm/address_space.c`): `create`, `map` (fresh zeroed frames, `MMU_USER` added),
-  `write` (copies through the direct map, no activation needed), `activate` (NULL = kernel root),
-  `destroy`. **Ownership rule:** everything mapped in the user half is freed with the space, so shared
-  or kernel frames must never be mapped there.
+  `USER_STACK_TOP` `0x00007FFFFFFFF000`, `USER_TOP` `0x0000800000000000` (canonical limit),
+  `USER_STACK_SIZE` 64 KiB.
+  ```text
+  USER_BASE  text | rodata | data+bss | heap (heap_start .. brk, grows up) ...
+             ... guard page | stack (USER_STACK_SIZE, grows down) | USER_STACK_TOP
+  ```
+- `address_space_t` (`mm/address_space.c`): `root`, `heap_start`, `brk`; `create` (zeroed: no heap
+  until `exec_load`), `map` (fresh zeroed frames, `MMU_USER` added; on failure unmaps what it mapped,
+  so nothing stays), `unmap` (translate, unmap, `frame_free`; skips holes), `write`/`read` (copy
+  through the direct map, no activation needed), `activate` (NULL = kernel root), `destroy`.
+  **Ownership rule:** everything mapped in the user half is freed with the space, so shared or kernel
+  frames must never be mapped there. `heap_start`/`brk` have no lock (one thread per process, like
+  the fd table).
 - `arch_mmu_root_destroy` walks `L4[0..255]` and frees pages and tables; it panics on the active root.
   `arch_mmu_activate` skips the CR3 reload when the root is already active.
 - Intermediate tables get the USER bit when the mapping has `MMU_USER` (`page_table_next`); the kernel
@@ -229,9 +238,16 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
-  `SYS_CLOSE` 10. Read and write look the fd up in the process's table and call the file's ops;
-  an empty slot, an out-of-range fd or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`.
-  Generic `sys/syscall.c` → `syscall_dispatch`; x86 `syscall.c` unpacks the frame.
+  `SYS_CLOSE` 10, `SYS_BRK` 11. Read and write look the fd up in the process's table and call the
+  file's ops; an empty slot, an out-of-range fd or a missing `FILE_READ`/`FILE_WRITE` flag gives
+  `-EBADF`. Generic `sys/syscall.c` → `syscall_dispatch`; x86 `syscall.c` unpacks the frame.
+- **`brk(address)`** always returns the current break, never `-errno` (Linux semantics; libc turns
+  "did not move" into `ENOMEM`). It moves only for `heap_start <= address <= limit`, `limit` =
+  `USER_STACK_TOP - USER_STACK_SIZE - PAGE_SIZE` (a guard page above the stack); `brk(0)` is the
+  query. Growing maps `[ALIGN_UP(brk), ALIGN_UP(address))` writable and keeps the old break on
+  failure; shrinking unmaps and frees the pages above `ALIGN_UP(address)`. The break itself is exact
+  to the byte. Processes not built by `exec_load` (self-tests) have `heap_start = 0`: growing fails
+  on the range check.
 - User memory is only touched through `address_space_read/write` (direct map, user half, mapped
   pages only), so kernel pointers fail with `-EFAULT` instead of leaking.
 - `exit` and blocking `read` work from inside a syscall: `int 0x81` nests a second frame on the
@@ -303,7 +319,7 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private } ──▶ ops-
 
 ```text
 user/hello ─build─▶ sysroot/usr/bin/hello.elf ─ISO─▶ GRUB module2 "hello" ─▶ boot_info.modules[]
-init_start ─▶ exec_load(image, size) ─▶ address_space_create + elf_load + stack page
+init_start ─▶ exec_load(image, size) ─▶ address_space_create + elf_load + stack + heap_start
            ─▶ process_create + console fds 0-2 + process_start(entry) ─▶ process_wait
 ```
 
@@ -314,17 +330,19 @@ init_start ─▶ exec_load(image, size) ─▶ address_space_create + elf_load 
   ISO by `grub/Makefile` and named in `grub.cfg` (`module2 /boot/hello.elf hello`).
 - **Modules** (`boot_info.modules[]`, Multiboot2 tag 3): physical `[start, end)` plus the name, copied
   with `strlcpy` (the Multiboot2 structure is not protected after boot).
-- **`elf_load(space, image, size, &entry)`** (`exec/elf.c`): validates `ELF64`, little-endian,
+- **`elf_load(space, image, size, &entry, &end)`** (`exec/elf.c`): validates `ELF64`, little-endian,
   version, `ET_EXEC`, `e_machine == ELF_MACHINE` and that the program header table is inside the
   image; for every non-empty `PT_LOAD` (empty ones, e.g. an unused RW segment, are skipped) checks the
   file range and that memory lies in `[USER_BASE, USER_TOP)`, maps whole pages (`PF_W`/`PF_X` →
   `MMU_WRITE`/`MMU_EXEC`; readable is implied) and copies `p_filesz` bytes to `p_vaddr` (`.bss` stays
   zero: frames are zeroed). The entry must be inside an executable segment. Returns `-ENOEXEC` /
-  `-ENOMEM`, sets `entry` only on success, never creates a process. On error the caller destroys the
+  `-ENOMEM`, sets `entry` and `end` (page-aligned end of the highest segment) only on success, never
+  creates a process. On error the caller destroys the
   space. Every bound is a subtraction after a `<=` check; `p_vaddr > USER_TOP` is rejected **before**
   `USER_TOP - p_vaddr`, which would wrap and let a segment map into the kernel half.
-- **`exec_load(image, size, &space, &entry)`** (`exec/exec.c`): new space + `elf_load` + one stack page
-  at `USER_STACK_TOP - PAGE_SIZE`; frees everything on error. Meant for `sys_exec`/spawn later too.
+- **`exec_load(image, size, &space, &entry)`** (`exec/exec.c`): new space + `elf_load` + the stack
+  (`USER_STACK_SIZE` below `USER_STACK_TOP`); on success `heap_start = brk = end`, so the heap starts
+  empty on the page after `.bss`. Frees everything on error. Meant for `sys_exec`/spawn later too.
 - **`init_start(info)`** (`init.c`): finds the `hello` module, `exec_load`, process with the console on
   fds 0–2, start, wait, report, release. Later: start `/sbin/init` and treat its exit as fatal.
 - `hello` returns `status + zero` from a `.data` 42 and a `.bss` 0, so its exit status checks the copy
@@ -340,7 +358,8 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
 
 - **Two libraries, one tree** (`libc/Makefile`): `libk.a` (kernel flags, `-D__is_libk`) and `libc.a`
   (`USER_CFLAGS`, `-D__is_libc`), each with its own object tree. In `subdir.mk`, `local_sources` go
-  into both, `hosted_local_sources` (syscalls, stdio streams, `errno`, `exit`) only into `libc.a`.
+  into both, `hosted_local_sources` (syscalls, stdio streams, `errno`, `exit`, `malloc`) only into
+  `libc.a`.
   `libk.a` = `mem*`/`str*` (incl. `strlcpy`, `strcmp`), `vsnprintf`, `abs`/`atoi`.
 - **`crt0.o`** (`libc/arch/x86_64/crt0.S`) is built and installed on its own, not inside `libc.a`
   (archive members are only pulled for undefined symbols, and nothing references `_start`):
@@ -352,10 +371,15 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   (inline asm per argument count: `int $0x80`, `rdi rsi rdx`, `r10 r8 r9` bound with register
   variables, only a `"memory"` clobber since the kernel preserves every register but `rax`; cast
   macros named like the functions so pointers can be passed). `internal/FILE.h` holds stdio's
-  internals.
+  internals, `internal/malloc.h` the allocator's. Shared internals are `__`-prefixed, one per file,
+  declared (and `extern` for data) in the internal header, defined once.
 - `errno` is a plain global (thread-local once user threads exist). `unistd`: `write`, `read`,
-  `close`, `_exit`, one function per file. `exit` flushes stdio (`__stdio_exit`) then `_exit`;
-  `abort` is `_exit(134)` (128 + SIGABRT, no signals yet).
+  `close`, `_exit`, `brk`, `sbrk`, one function per file. `exit` flushes stdio (`__stdio_exit`) then
+  `_exit`; `abort` is `_exit(134)` (128 + SIGABRT, no signals yet).
+- **`brk`/`sbrk`:** `brk` uses `__syscall` (the kernel returns an address, not `-errno`) and sets
+  `ENOMEM` when the answer differs from the request. `sbrk` asks the kernel for the break on every
+  call (no cache to go stale after a direct `brk`), rejects increments that wrap, returns the old
+  break or `(void *)-1`.
 - **stdio** (output side done): `FILE` is opaque in `<stdio.h>`; `struct _FILE` has `fd`, `flags`
   (`F_READ/F_WRITE`, `F_EOF/F_ERR` indicators, `F_LINEBUF/F_NOBUF`), `mode` (none/read/write: what
   the one buffer holds), `buffer`/`size`/`pos`/`len`, `ungot`, `next` (list of open streams from
@@ -367,6 +391,42 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   `fflush(NULL)` walks the stream list. `ferror` reads `F_ERR`. Public functions are thin wrappers: `fputc`, `fputs`,
   `puts`, `putchar`, `fwrite`, `printf`/`fprintf`/`vprintf`/`vfprintf` (formats into a `BUFSIZ`
   stack buffer, then one `__fwritex`).
+
+### malloc (`libc/malloc/`)
+
+K&R-style free list on `sys/list.h`, single-threaded (no lock yet).
+
+```text
+┌─────────────────────┬────────┐┌──────────────────────┐
+│ link (prev, next)   │ size   ││ payload ...          │
+└─────────────────────┴────────┘└──────────────────────┘
+▲ block_t (32 B, aligned(16))   ▲ block + 1: returned by malloc
+link.next == MALLOC_MAGIC while allocated; size in UNITs (sizeof(block_t)), header included
+```
+
+- **Units:** a request of `n` bytes takes `(n + UNIT - 1) / UNIT + 1` units. Every block starts on a
+  `UNIT` boundary (the heap starts page-aligned and grows in whole units), so payloads are 16-aligned.
+  Pointer arithmetic on `block_t *` moves in units (`block + n`, `(block_t *)p - 1`).
+- **Free list** (`__malloc_free_list`, a sentinel defined in `__malloc_insert.c`): free blocks sorted
+  by address. `__malloc_insert` finds the first block above the new one, inserts before it (the
+  sentinel when it is last), then merges with the next and the previous block when they touch
+  (`a + a->size * UNIT == b`). A fully freed heap is one block again.
+- **`malloc`:** `n == 0` → NULL; `n > SIZE_MAX - UNIT` → `ENOMEM`. First fit: an exact fit is
+  unlinked; a bigger block gives its **tail** (`block + block->size` after shrinking), so the free
+  part keeps its place on the list. No fit → `__morecore(units)`, then search again (cannot fail:
+  the new memory merges with the last free block or is big enough alone). Allocations therefore come
+  from the top of the heap down.
+- **`__morecore`:** at least 64 KiB (`MORECORE_MIN_UNITS`) per `sbrk`; rejects
+  `units > INTPTR_MAX / UNIT` (a cast to the signed increment would shrink the heap); the new memory
+  becomes one free block through `__malloc_insert`. Memory is never returned to the kernel.
+- **`free`:** NULL is a no-op; a header without `MALLOC_MAGIC` (bad pointer, double free: inserting
+  overwrites `link.next`) prints to stderr and `abort()`s.
+- **`calloc`:** `number > SIZE_MAX / size` → `ENOMEM` before multiplying; always `memset` (reused
+  blocks are dirty). A zero count or size returns NULL like `malloc(0)`.
+- **`realloc`:** NULL → `malloc`; size 0 → `free` + NULL; fits in the old capacity
+  (`(size - 1) * UNIT`) → same pointer (a shrink keeps the whole block); else `malloc` + `memcpy` of
+  the old capacity + `free`, the old block untouched on failure.
+- Mixing `malloc` with direct `brk`/`sbrk` calls is unsupported (the break could lose its alignment).
 
 ## Scheduler
 
@@ -566,7 +626,7 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   scheduler documented as IRQs-off on purpose.
 - **4f-3 (done):** modules in `boot_info` and kept reserved, separate user build, `elf_load` +
   `exec_load`, `init_start` running `hello` (status 42), ELF self-test with ten rejection cases.
-- **4f-4 (in progress):** userland libc.
+- **4f-4 (done):** userland libc.
   - (a, done) uapi split: only `<mihos/...>` reaches the sysroot.
   - (b, done) `libk.a` / `libc.a` from one tree with separate flags.
   - (c, done) `crt0.o`, inline-asm syscall layer, `errno`, `unistd` wrappers, `exit`; `hello` on libc.
@@ -575,9 +635,18 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     `5 flushed by exit` (last, only via `exit`); `fputc`/`fwrite`/`printf`/`fputs("")` return
     values; after `close(2)` `fprintf(stderr, …) < 0` with `ferror(stderr)` and `errno == EBADF`.
     Bring it back as `user/tests/stdio` once `user/` is restructured and init runs test programs.
-  - (e, next) `brk` syscall + `malloc`/`free`; more user stack pages.
-- **Then (roadmap phase A):** restructure `user/` (`bin/`, `sbin/`, `tests/`, `lib/`; see
-  `ROADMAP.md`), stdio input (`fgets`/`getchar`, flushing line-buffered output before reading),
+  - (e, done) `address_space_unmap` + rollback in `address_space_map`, 64 KiB user stack, `SYS_BRK`
+    with the heap after the ELF image, libc `brk`/`sbrk`, `malloc`/`free`/`calloc`/`realloc`. Two
+    temporary tests in `hello` (not kept, bring back under `user/tests/`):
+    - brk: heap on the page after `.bss`, exact unaligned break, zeroed pages after shrink and
+      regrow, `ENOMEM` past the limit / on wrap / below `heap_start`, a 32 KiB stack array.
+    - malloc: 16-alignment and no overlap over 15 sizes, one free block after freeing everything
+      (`malloc(heap - header)` fits at the bottom without moving the break), 1000 rounds without
+      heap growth, a 100 KiB block, `calloc` zeroing reused dirty memory, `realloc` semantics,
+      `ENOMEM` cases, double free → status 134. Heap after the test: 164 KiB.
+- **Next (roadmap phase A):** restructure `user/` (`bin/`, `sbin/`, `tests/`, `lib/`; see
+  `ROADMAP.md`) and turn the temporary `hello` tests (stdio, brk, malloc) into `user/tests/`
+  programs; `init_start` must run more than one module (or a list). Then stdio input (`fgets`/`getchar`, flushing line-buffered output before reading),
   spawn/exec + wait syscalls with `argv`/`envp`, `/sbin/init` starting a first shell, freestanding
   C++ runtime (`.init_array` in `crt0`, `operator new`, `__cxa_*`).
 - **Decisions** (details in `ROADMAP.md`): own syscall ABI and numbering (porting is at the
@@ -625,7 +694,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - No `-Werror`: an incompatible-pointer warning (`spinlock_t *` vs embedded lock) went unnoticed.
 - Boot modules stay reserved forever (never returned to the allocator after loading).
 - Modules far above the kernel waste the free RAM between them (one boundary, not per-module holes).
-- One user stack page (`exec_load`); no stack growth or guard page.
+- Fixed 64 KiB user stack (`exec_load`); no stack growth. The guard page below it is only "never
+  mapped" (`brk` stops short of it), not a reserved region.
 - `NX` still off, so `PF_X`/`MMU_EXEC` from the loader are informational.
 - `init_start` looks up a hard-coded module name (`"hello"`).
 - `tty_write` holds IRQs off for the whole write plus a full 4000-byte VGA copy; long user writes
@@ -646,7 +716,15 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - Bochs (win32 GUI) sends Left Ctrl for the ABNT2 `/ ?` key, so `KEY_RO` can only be tested on QEMU.
 - No IDT gate uses the IST stacks yet; a double fault on a broken kernel stack still triple-faults.
 - `mmap_split_region` drops region remainders smaller than 16 frames.
-- `address_space_map` leaves already-mapped pages in place when it fails midway (freed on destroy).
+- `address_space_unmap` (and so a `brk` shrink) frees pages but not emptied page tables (same as
+  `page_unmap`); they go with the space.
+- No self-test exercises the rollback in `address_space_map` (frame exhaustion midway): it would need
+  all RAM; a free-frame count before/after a forced failure would do.
+- malloc never returns memory to the kernel (a free block ending at the break could be trimmed with a
+  negative `sbrk`); `realloc` never shrinks or grows in place (the freed tail or a free next block
+  is not used); first fit walks the whole list (no size classes); no lock (needed with threads).
+- `vsnprintf` has no length modifiers (`%ld`, `%lu`, `%zu`): 64-bit values must be cast to `int`.
+- The malloc test hard-codes the 32-byte header (`sizeof(block_t)`).
 - Syscalls run with IRQs off for their whole duration (interrupt gate); long writes delay IRQs.
 - The fd table has no lock (safe only with one thread per process and no `fork`).
 - No self-test proves memory comes back: compare free frames (and the console file's refs) before
