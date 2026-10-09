@@ -130,8 +130,8 @@ docs/                     # handoff, roadmap
    tests → libc programs in `user/tests/`.~~ Done. Still open: the `user_program.S` kernel
    self-tests → libc programs.
 4. ~~stdio input (`fgets`, `getchar`; flush line-buffered output before reading).~~ Done.
-5. Spawn/exec + wait syscalls, `argv`/`envp` on the initial stack; `init` starts a first `sh` with
-   builtins.
+5. ~~Spawn + wait syscalls, `argv`/`envp` on the initial stack~~ (done; `exec` comes with `fork` in
+   phase C); `/sbin/init` in user space starts a first `sh` with builtins.
 6. Phase B: initramfs + VFS; the shell runs programs by path.
 
 ## Reference projects

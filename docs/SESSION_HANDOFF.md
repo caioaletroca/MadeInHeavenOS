@@ -14,8 +14,10 @@ Working x86-64 PC kernel with:
 - 4 KiB page map/unmap/translate behind an arch-neutral MMU contract
 - Per-process address spaces: private user half, shared kernel half (`address_space_t`)
 - Ring-3 GDT segments and a loaded TSS (RSP0 + IST stacks); identity map removed after boot
-- User-mode threads preempted by the timer; `int 0x80` syscalls `write`, `read`, `close`, `exit`
-  and `brk` with user pointer validation
+- User-mode threads preempted by the timer; `int 0x80` syscalls `write`, `read`, `close`, `exit`,
+  `brk`, `spawn` and `wait` with user pointer validation
+- Programs start with `argc`/`argv`/`envp` on a System V initial stack; parents spawn children
+  (programs found by path among the boot modules) and wait for them with a POSIX wait status
 - User heap after the ELF image (`brk`), 64 KiB user stack with a guard page below it
 - Processes (`process_t`) owning their address space and fd table, waitable, refcounted; faults in
   ring 3 kill the process with 128 + signal instead of panicking
@@ -46,6 +48,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+66134b6 feat(sys): add spawn and wait
+122c426 feat(exec): pass argc, argv and envp on the initial stack
+771202b docs(architecture): document stdio input and the stdin tests in handoff
 8201ee2 test(user): add stdin tests, interactive ones in their own GRUB entry
 a40d4c9 feat(libc): add stdio input (fgetc, fgets, ungetc, feof, clearerr)
 d2c534e docs(architecture): document the user/ layout and the test runner in handoff
@@ -247,9 +252,23 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
-  `SYS_CLOSE` 10, `SYS_BRK` 11. Read and write look the fd up in the process's table and call the
-  file's ops; an empty slot, an out-of-range fd or a missing `FILE_READ`/`FILE_WRITE` flag gives
-  `-EBADF`. Generic `sys/syscall.c` → `syscall_dispatch`; x86 `syscall.c` unpacks the frame.
+  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12 (3, 4, 6–9 reserved). Read and write
+  look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
+  or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`. Generic `sys/syscall.c` →
+  `syscall_dispatch`; x86 `syscall.c` unpacks the frame. User pointers are `uintptr_t` in every
+  `sys_*` function, never C pointers: only `address_space_read/write` touch them.
+- **`spawn(path, argv, envp)`** → child pid or `-ENOENT`/`-ENOEXEC`/`-E2BIG`/`-EFAULT`/`-ENOMEM`.
+  Copies into a `kmalloc`'d `spawn_args_t`: the path (≤ 64 bytes, `-E2BIG` beyond), then each
+  vector (≤ 64 entries, all strings together ≤ 4 KiB; a NULL `envp` is an empty environment),
+  byte by byte through `address_space_read` (`user_string_copy`, `user_vector_copy`).
+  `exec_module_find(path)` (first word of the module string; boot modules stand in for files until
+  the VFS) → `exec_load` → `process_create` → `process_files_inherit` (same fd numbers, one file
+  reference each) → link as a child (the `process_create` handle is the parent's reference) →
+  `process_start`. Order matters: the child is complete before it can run.
+- **`wait(pid, status)`** → pid, or `-ECHILD` (not a child, already waited for, `pid <= 0`: "any
+  child" is not supported yet). Finds `pid` in the caller's `children`, `process_wait`s, stores the
+  POSIX status (`signal`, or `(exit_status & 0xFF) << 8`) if `status != 0` (`-EFAULT` after reaping
+  on a bad pointer), unlinks and `process_release`s it.
 - **`brk(address)`** always returns the current break, never `-errno` (Linux semantics; libc turns
   "did not move" into `ENOMEM`). It moves only for `heap_start <= address <= limit`, `limit` =
   `USER_STACK_TOP - USER_STACK_SIZE - PAGE_SIZE` (a guard page above the stack); `brk(0)` is the
@@ -283,8 +302,16 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
      refs = 1 (handle)                                          refs++ (thread), then the thread runs
 ```
 
-- `process_t`: pid, state (`RUNNING`/`EXITED`), `exit_status`, `refs`, `space`, `thread` (one per
-  process), `waiters`, `files[16]`. Allocated with `kzalloc`.
+- `process_t`: pid, state (`RUNNING`/`EXITED`), `exit_status`, `signal`, `refs`, `space`, `thread`
+  (one per process), `parent`, `children`/`sibling`, `waiters`, `files[16]`. Allocated with
+  `kzalloc`.
+- **Parent and children:** `parent` is NULL for processes the kernel started (they are not on any
+  list; their creator holds the handle). `children` holds spawned, not yet waited-for children, one
+  reference each; only the process's own thread touches it (spawn adds, wait removes, exit drops),
+  so no lock. A child never touches its parent. An exited child stays (a zombie) until `wait`.
+- **Orphans:** `process_exit` unlinks every remaining child and `process_release`s it: one still
+  running is freed when it exits, one already exited is freed right there (its space is not the
+  active one: the parent's is).
 - **Ownership:** the process owns its space (destroyed with it) and one reference on each file in its
   table. `process_fd_install` takes the caller's file reference on success (lowest free fd, POSIX);
   on `-EMFILE` the caller keeps it.
@@ -303,8 +330,10 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
 - **Locking:** `p->lock` protects `refs`, `state` and `exit_status`; `process_exit` sets the status
   and wakes waiters under it. The last release and the teardown run *after* the lock is dropped, never
   freeing a held lock. pids come from `pid_lock`.
-- **Exit status:** the value passed to `exit` (full `int`, no `& 0xFF` until `waitpid` exists), or
-  128 + signal for faults (`include/signal.h`: Linux signal numbers, no delivery yet).
+- **Exit status:** `exit_status` is the value passed to `exit` (full `int`), or 128 + signal for
+  faults (`uapi/mihos/signal.h`: Linux signal numbers, no delivery yet); the kernel self-tests and
+  the runner compare it. Faults go through `process_exit_signal(sig)`, which also records `signal`,
+  so `wait` can encode "killed by a signal" apart from "exited 139". Only `wait` truncates to 8 bits.
 - The fd table has no lock: with one thread per process only the creator (before start) and the
   process itself touch it. Needs one with threads or `fork`.
 
@@ -356,13 +385,31 @@ init_start ─▶ for each module: module_run ─▶ exec_load ─▶ address_sp
   creates a process. On error the caller destroys the
   space. Every bound is a subtraction after a `<=` check; `p_vaddr > USER_TOP` is rejected **before**
   `USER_TOP - p_vaddr`, which would wrap and let a segment map into the kernel half.
-- **`exec_load(image, size, &space, &entry)`** (`exec/exec.c`): new space + `elf_load` + the stack
-  (`USER_STACK_SIZE` below `USER_STACK_TOP`); on success `heap_start = brk = end`, so the heap starts
-  empty on the page after `.bss`. Frees everything on error. Meant for `sys_exec`/spawn later too.
+- **`exec_load(image, size, argv, envp, &space, &entry, &stack)`** (`exec/exec.c`): new space +
+  `elf_load` + the stack (`USER_STACK_SIZE` below `USER_STACK_TOP`) + `stack_build`; on success
+  `heap_start = brk = end`, so the heap starts empty on the page after `.bss`. `argv`/`envp` are
+  kernel vectors of kernel strings (constants from the runner, copies from `spawn`). Frees
+  everything on error.
+- **Initial stack** (`stack_build`, System V x86-64):
+  ```text
+  USER_STACK_TOP  argv and envp strings (packed, in order)
+                  padding
+                  0, 0                 auxiliary vector: AT_NULL only
+                  NULL, envp[envc-1] .. envp[0]
+                  NULL, argv[argc-1] .. argv[0]
+  rsp (16-aligned) argc
+  ```
+  Strings at the top, `sp = ALIGN_DOWN(strings - words * 8, 16)`; the pointer vector is built in a
+  `kmalloc`'d buffer (string addresses are known while writing the strings) and written once.
+  Everything ≤ `ARGS_MAX` (a quarter of the stack) or `-E2BIG`.
+- **`exec_modules_init(info)` / `exec_module_find(path)`** (`exec/exec.c`): `init_start` hands over
+  `boot_info` (valid for the whole run: `kmain`'s frame); lookups compare the first word of the
+  module string. Replaced by path lookup in the VFS (phase B).
 - **`init_start(info)`** (`init.c`, temporary test runner): for every module in order, splits the
   string at the first space (expected status = `atoi` of the rest, else 0), `module_run`s it and
   prints `test <name>: ok` / `FAIL (...)`, then `tests: N passed, M failed`; failures do not panic.
-  `module_run(module, &status)` = `exec_load` + process with the console on fds 0–2 + start + wait +
+  `module_run(module, name, &status)` = `exec_load` (`argv = {name}`, `envp = {"PATH=/bin"}`) +
+  process with the console on fds 0–2 + start at the built stack + wait +
   release; returns a negative errno (cleaning up: space, console reference, process) when the
   program cannot start, so the status (which can be negative) has its own out parameter. Later:
   start `/sbin/init` alone and treat its exit as fatal; running tests becomes a user-space job.
@@ -384,10 +431,18 @@ init_start ─▶ for each module: module_run ─▶ exec_load ─▶ address_sp
   - `stdin_interactive` (second menu entry: `set default=1` in `grub.cfg`, then back to 0): prompts
     without `'\n'` (seeing them checks the flush before `read`), a whole line, a line split over
     `fgets` calls, `getchar`, `abc` + Ctrl+D twice → `"abc"` then `feof`, sticky EOF, `clearerr`.
+  - `args`: `argc == 1`, `argv[0]` its path, `envp = {"PATH=/bin"}`, `environ == envp`, vectors
+    and strings on the stack, a 16-aligned frame in `main`.
+  - `spawn`: spawns itself with a mode in `argv[1]` (no extra modules): exit 7 / 300 (→ 44) /
+    SIGSEGV through the `W*` macros, `argv`/`envp` passed exactly, NULL `envp`, two children waited
+    in reverse order, waiting twice → `ECHILD`, 20 rounds, `ENOENT`/`EFAULT`/`E2BIG`/`ENOSYS`/
+    `ECHILD`/`EINVAL`, an orphaned grandchild, fd numbers kept across a closed fd 0.
 - **ELF self-test** (`selftest/elf.c`): `exec_load` of the module must succeed with the header's entry;
   ten broken copies (magic, class, machine, `ET_DYN`, truncated, program headers out of bounds,
   `p_filesz > p_memsz`, segment in the kernel half, segment wrapping past 2^64, entry outside every
-  segment) must return `-ENOEXEC` without setting the entry.
+  segment) must return `-ENOEXEC` without setting the entry. The valid load passes
+  `argv = {"elf", "selftest"}`, `envp = {"A=1"}` and checks the initial stack from the kernel side
+  (16-aligned, `argc`, the NULLs, `AT_NULL`, the strings behind `argv[1]` and `envp[0]`).
 
 ### Userland libc (`libc/`)
 
@@ -400,8 +455,14 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   `libk.a` = `mem*`/`str*` (incl. `strlcpy`, `strcmp`), `vsnprintf`, `abs`/`atoi`.
 - **`crt0.o`** (`libc/arch/x86_64/crt0.S`) is built and installed on its own, not inside `libc.a`
   (archive members are only pulled for undefined symbols, and nothing references `_start`):
-  `xor %ebp`, `call main`, `call exit` with the return value. Assembly so `main` gets the SysV
-  `RSP + 8` alignment.
+  `xor %ebp`; `argc = (%rsp)`, `argv = rsp + 8`, `envp = rsp + 16 + argc * 8` into
+  `rdi`/`rsi`/`rdx`, `environ = envp`; `call main`, `call exit` with the return value. Assembly so
+  `main` gets the SysV `RSP + 8` alignment (the kernel starts it at a 16-aligned `rsp`).
+- **Processes:** `posix_spawn` (`<spawn.h>`, `libc/spawn/`): POSIX signature, only NULL file
+  actions and attributes (`ENOSYS` otherwise); returns the error number, not `-1` + `errno`
+  (`__syscall`). `waitpid` (`<sys/wait.h>`, `libc/wait/`): options must be 0 (`EINVAL`), `-1` +
+  `errno` otherwise. `WEXITSTATUS`/`WTERMSIG`/`WIFEXITED`/`WIFSIGNALED` decode the status.
+  `environ` is in `libc/unistd/environ.c`.
 - **Private headers** (never installed, `-Iinternal -Iarch/$(ARCH)`): `internal/syscall.h`
   (`__syscall(...)` counts its arguments and picks `__syscallN`; `syscall(...)` turns `-errno` into
   `-1` + `errno` via `__syscall_ret`, Linux convention `-4095..-1`) and `arch/x86_64/syscall_arch.h`
@@ -689,8 +750,14 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   from the kernel; moving them means rewriting them as libc programs).
 - **stdio input (done):** `__fillbuf`, `fgetc`/`getc`/`getchar`, `ungetc`, `fgets`, `feof`,
   `clearerr` (tests: `tests/stdin`, `tests/stdin_interactive`).
-- **Next (roadmap phase A):** spawn/exec + wait syscalls with `argv`/`envp`, `/sbin/init` starting a first shell, freestanding
-  C++ runtime (`.init_array` in `crt0`, `operator new`, `__cxa_*`).
+- **Initial stack + spawn/wait (done):** `argc`/`argv`/`envp` on the System V stack, `crt0` and
+  `environ`; `SYS_SPAWN`/`SYS_WAIT` with parent/children, orphans, fd inheritance and the POSIX
+  wait status; `posix_spawn`, `waitpid`, `W*` (tests: `tests/args`, `tests/spawn`, the ELF
+  self-test's stack checks). Decided: `spawn` now, `fork` + `exec` in phase C.
+- **Next (roadmap phase A):** `/sbin/init` in user space (the runner moves out of `init_start`,
+  which then only starts init and panics if it exits), then a first shell with builtins;
+  `wait` for any child (`pid -1`) when the shell needs it; freestanding C++ runtime (`.init_array`
+  in `crt0`, `operator new`, `__cxa_*`).
 - **Decisions** (details in `ROADMAP.md`): own syscall ABI and numbering (porting is at the
   POSIX/libc API, not Linux binaries); own libc through phase C, mlibc via sysdeps at phase D
   together with a GCC rebuild for libstdc++; `libk.a` stays ours.
@@ -779,6 +846,13 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   and after `user_selftest` to catch a missing `process_release` / `file_put`.
 - Fault messages print the thread id, the exit line prints the pid.
 - `process_wait(NULL)` returns -1, which is also a valid exit status (should assert).
+- `wait` supports only a specific pid (no `pid -1`/any child, no `WNOHANG`); "any child" needs a
+  parent-side wait queue woken by every child's exit.
+- `spawn` copies user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
+  `ENAMETOOLONG`); programs come from boot modules only; no `posix_spawnp` (`PATH` search).
+- The default GRUB entry uses all `BOOT_MODULE_MAX` (8) modules: the next test needs a bigger limit
+  or another entry.
+- `sys_exec` (replacing the running image) is not implemented: comes with `fork` in phase C.
 - `process_start` returns -1 instead of an errno on failure.
 - In the counter test the counter shares a cache line with the loop's code, so every increment is
   handled as self-modifying code (about 25× slower than with the counter in a separate line).
