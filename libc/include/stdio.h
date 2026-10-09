@@ -181,14 +181,29 @@ int vfprintf(FILE *stream, const char *format, va_list args);
 int vprintf(const char *format, va_list args);
 
 /**
- * @brief Outputs a formatted string using va_list variables
- * Returns a size - 1 characters plus string terminator
+ * @brief Format into str, writing at most size bytes (terminator included).
  *
- * @param str Output string
- * @param size Maximum size allowed
- * @param format Formatation string
- * @param args Argument variables
- * @return int Output string size - 1
+ * The output is cut to fit and always terminated when size > 0; with size 0
+ * nothing is written (str may be NULL). Supports flags - 0 + space, width and
+ * precision (digits or *), lengths hh h l ll z, conversions d i u x X o p c s %.
+ *
+ * @param str Pointer to the output buffer.
+ * @param size Size of the buffer, terminator included.
+ * @param format Format string, as for printf.
+ * @param ... Values for the conversions in format.
+ * @return The length the full output would have had (without terminator):
+ * a value >= size means the output was cut.
+ */
+int snprintf(char *str, size_t size, const char *format, ...);
+
+/**
+ * @brief snprintf with a va_list (see snprintf for the contract).
+ *
+ * @param str Pointer to the output buffer.
+ * @param size Size of the buffer, terminator included.
+ * @param format Format string, as for printf.
+ * @param args Values for the conversions in format.
+ * @return The length the full output would have had (without terminator).
  */
 int vsnprintf(char *str, size_t size, const char *format, va_list args);
 

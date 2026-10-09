@@ -1,5 +1,6 @@
 # Formatting into a buffer: kernel (kprintf) and user programs
 local_sources := \
+snprintf.c \
 vsnprintf.c
 
 # Streams over file descriptors: user programs only
