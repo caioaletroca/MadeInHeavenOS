@@ -3,7 +3,7 @@
 
 #define BOOT_MEMORY_MAX_REGIONS 64
 #define BOOT_CMDLINE_MAX 256
-#define BOOT_MODULE_MAX 8
+#define BOOT_MODULE_MAX 32
 #define BOOT_MODULE_NAME_MAX 64
 
 #include <addresses.h>

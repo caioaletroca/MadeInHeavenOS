@@ -8,7 +8,7 @@
 #include <kprintf.h>
 
 static spinlock_t pid_lock = SPINLOCK_INIT;
-static uint32_t next_pid = 1;
+static uint32_t next_pid = PROCESS_INIT_PID + 1;
 
 /**
  * Allocates a new process ID in a thread-safe manner.
@@ -54,6 +54,15 @@ process_t *process_create(address_space_t *space)
     list_init(&p->sibling);
     wait_queue_init(&p->waiters);
     spinlock_init(&p->lock);
+
+    return p;
+}
+
+process_t *process_create_init(address_space_t *space)
+{
+    process_t *p = process_create(space);
+    if (p != NULL)
+        p->pid = PROCESS_INIT_PID;
 
     return p;
 }

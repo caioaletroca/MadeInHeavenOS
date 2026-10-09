@@ -4,9 +4,10 @@
 #include <boot_info.h>
 
 /**
- * @brief Run every boot module as a test program and report each exit status.
+ * @brief Start /sbin/init from the boot modules, with its module string as argv.
  *
- * Temporary: becomes "start /sbin/init" once spawn and wait syscalls exist.
+ * Temporary: init exiting means power off (prints its status and returns);
+ * once there is a shell, init never exits and this becomes a panic.
  *
  * @param boot_info Pointer to the boot information structure.
  */

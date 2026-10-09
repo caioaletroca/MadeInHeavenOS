@@ -9,6 +9,8 @@
 
 #define PROCESS_MAX_FILES 16
 
+#define PROCESS_INIT_PID 1 // reserved for /sbin/init (Unix programs assume it)
+
 typedef enum
 {
     PROCESS_RUNNING,
@@ -45,6 +47,14 @@ typedef struct process
  * @return A pointer to the newly created process, or NULL on failure.
  */
 process_t *process_create(struct address_space *space);
+
+/**
+ * Create the initial process, typically used for /sbin/init.
+ *
+ * @param space The address space for the new process.
+ * @return A pointer to the newly created initial process, or NULL on failure.
+ */
+process_t *process_create_init(struct address_space *space);
 
 /**
  * Install a file descriptor for the specified process.
