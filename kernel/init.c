@@ -74,6 +74,9 @@ void init_start(const boot_info_t *info)
     int passed = 0;
     int failed = 0;
 
+    // Programs spawn others by path: the boot modules stand in for files until there is a VFS
+    exec_modules_init(info);
+
     for (size_t i = 0; i < info->module_count; i++)
     {
         const boot_module_t *module = &info->modules[i];

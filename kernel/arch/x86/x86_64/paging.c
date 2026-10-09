@@ -251,7 +251,7 @@ static void page_fault_handler(isr_context_t *regs)
                                                                   : "read",
                 (error_code & 0x1) ? "protection violation" : "not present",
                 (void *)virtual_address, scheduler_current()->id, (void *)regs->rip);
-        process_exit(SIGNAL_EXIT_STATUS(SIGSEGV));
+        process_exit_signal(SIGSEGV);
     }
 
     panic("Page fault at address: %p, error: %p", virtual_address, error_code);

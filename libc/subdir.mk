@@ -5,4 +5,6 @@ string \
 errno \
 internal \
 unistd \
-malloc
+malloc \
+spawn \
+wait

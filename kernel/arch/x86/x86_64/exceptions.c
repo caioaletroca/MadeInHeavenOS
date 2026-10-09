@@ -87,7 +87,7 @@ __attribute__((noreturn)) static void exception_user_handler(isr_context_t *regs
 
     int signal = exception_signals[int_no] != 0 ? exception_signals[int_no] : SIGKILL;
 
-    process_exit(SIGNAL_EXIT_STATUS(signal));
+    process_exit_signal(signal);
 }
 
 /**

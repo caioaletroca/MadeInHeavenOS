@@ -5,6 +5,7 @@
 #include <sched/wait.h>
 #include <sched/spinlock.h>
 #include <fs/file.h>
+#include <sys/list.h>
 
 #define PROCESS_MAX_FILES 16
 
@@ -22,9 +23,14 @@ typedef struct process
     uint32_t pid;
     process_state_t state;
     int exit_status;
+    int signal; // signal that killed it, 0 if it exited (set before EXITED)
     unsigned int refs;
     struct address_space *space;
     struct thread *thread;
+    struct process *parent; // NULL for processes the kernel started
+    list_t children;        // spawned, not yet waited for; one reference each.
+    list_t sibling;         // link in parent->children
+
     wait_queue_t waiters;
 
     struct file *files[PROCESS_MAX_FILES];
@@ -60,11 +66,26 @@ int process_fd_install(process_t *p, struct file *file);
 int process_start(process_t *p, uintptr_t entry, uintptr_t user_stack);
 
 /**
+ * Inherit open file descriptors from the parent process to the child process.
+ *
+ * @param child The child process.
+ * @param parent The parent process.
+ */
+void process_files_inherit(process_t *child, process_t *parent);
+
+/**
  * Exit the current process with the given status.
  *
  * @param status The exit status of the process.
  */
 __attribute__((noreturn)) void process_exit(int status);
+
+/**
+ * Exit the current process due to the specified signal.
+ *
+ * @param signal The signal causing the process to exit.
+ */
+__attribute__((noreturn)) void process_exit_signal(int signal);
 
 /**
  * Wait for the specified process to exit and return its exit status.

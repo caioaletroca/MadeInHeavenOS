@@ -3,8 +3,24 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <boot_info.h>
 
 struct address_space;
+
+/**
+ * Initialize the exec module system with the given boot information.
+ *
+ * @param info The boot information containing module data.
+ */
+void exec_modules_init(const boot_info_t *info);
+
+/**
+ * Find a boot module by its path.
+ *
+ * @param path The path of the module to find.
+ * @return A pointer to the boot module if found, or NULL if not found.
+ */
+const boot_module_t *exec_module_find(const char *path);
 
 /**
  * Load an executable image into a new address space.

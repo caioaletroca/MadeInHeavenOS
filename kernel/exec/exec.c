@@ -7,6 +7,8 @@
 #include <string.h>
 #include <util.h>
 
+static const boot_info_t *exec_boot_info;
+
 // Maximum size of the argument and environment strings on the stack.
 #define ARGS_MAX (USER_STACK_SIZE / 4)
 
@@ -86,6 +88,37 @@ static int stack_build(address_space_t *space, char *const argv[], char *const e
 
     *stack = sp;
     return 0;
+}
+
+/**
+ * Initialize the exec module system with the given boot information.
+ *
+ * @param info The boot information containing module data.
+ */
+void exec_modules_init(const boot_info_t *info)
+{
+    exec_boot_info = info;
+}
+
+/**
+ * Find a boot module by its path.
+ *
+ * @param path The path of the module to find.
+ * @return A pointer to the boot module if found, or NULL if not found.
+ */
+const boot_module_t *exec_module_find(const char *path)
+{
+    size_t length = strlen(path);
+    for (size_t i = 0; exec_boot_info != NULL && i < exec_boot_info->module_count; i++)
+    {
+        const char *name = exec_boot_info->modules[i].name;
+        if (length < BOOT_MODULE_NAME_MAX &&
+            memcmp(name, path, length) == 0 &&
+            (name[length] == '\0' || name[length] == ' '))
+            return &exec_boot_info->modules[i];
+    }
+
+    return NULL;
 }
 
 int exec_load(const void *image,

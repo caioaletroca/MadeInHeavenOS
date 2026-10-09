@@ -14,5 +14,6 @@
 #define SYS_SLEEP 9
 #define SYS_CLOSE 10
 #define SYS_BRK 11
+#define SYS_SPAWN 12
 
 #endif /* _UAPI_MIHOS_SYSCALL_H_ */
