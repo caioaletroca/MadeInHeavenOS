@@ -21,14 +21,20 @@
  * Run a boot module as a process with the console on fds 0-2 and wait for it.
  *
  * @param module The boot module to run as a process.
+ * @param name The program's name without arguments: its argv[0].
  * @param status Set to the exit status of the process on success.
  * @return 0 with *status set, or a negative errno if it could not be started.
  */
-static int module_run(const boot_module_t *module, int *status)
+static int module_run(const boot_module_t *module, char *name, int *status)
 {
+    char *const argv[] = {name, NULL};
+    char *const envp[] = {"PATH=/bin", NULL};
+
     address_space_t *space;
     uintptr_t entry;
-    int ret = exec_load(phys_to_kern(module->start), module->end - module->start, &space, &entry);
+    uintptr_t stack;
+    int ret = exec_load(phys_to_kern(module->start), module->end - module->start, argv, envp, &space, &entry,
+                        &stack);
     if (ret < 0)
         return ret;
 
@@ -52,7 +58,7 @@ static int module_run(const boot_module_t *module, int *status)
     }
 
     // process_start returns -1, not an errno: thread creation failed
-    if (process_start(process, entry, USER_STACK_TOP) < 0)
+    if (process_start(process, entry, stack) < 0)
     {
         process_release(process);
         return -ENOMEM;
@@ -84,7 +90,7 @@ void init_start(const boot_info_t *info)
         strlcpy(name, module->name, space + 1);
 
         int status;
-        int ret = module_run(module, &status);
+        int ret = module_run(module, name, &status);
 
         if (ret < 0)
         {

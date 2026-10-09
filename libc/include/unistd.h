@@ -8,6 +8,11 @@
 
 __BEGIN_DECLS
 
+/**
+ * The environment vector for the calling process.
+ */
+extern char **environ;
+
 int execv(const char *, char *const[]);
 int execve(const char *, char *const[], char *const[]);
 int execvp(const char *, char *const[]);

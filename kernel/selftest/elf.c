@@ -90,11 +90,26 @@ void elf_selftest(const boot_info_t *info)
     // Valid image: a full exec_load must succeed with the header's entry
     address_space_t *space;
     uintptr_t entry = 0;
+    uintptr_t stack = 0;
+    char *const argv[] = {"elf", "selftest", NULL};
+    char *const envp[] = {"A=1", NULL};
 
-    if (exec_load(image, size, &space, &entry) != 0)
+    if (exec_load(image, size, argv, envp, &space, &entry, &stack) != 0)
         panic("ELF self-test: valid '%s' failed to load\n", ELF_TEST_MODULE);
     if (entry != ((const elf64_header_t *)image)->e_entry)
         panic("ELF self-test: wrong entry %p\n", (void *)entry);
+
+    // Initial stack (System V): 16-aligned argc, argv[] and envp[] each NULL-terminated,
+    // then the auxiliary vector's AT_NULL, and pointers to the strings above it
+    uint64_t words[8];
+    char string[16];
+    if ((stack & 15) != 0 || address_space_read(space, stack, words, sizeof(words)) != 0)
+        panic("ELF self-test: bad initial stack %p\n", (void *)stack);
+    if (words[0] != 2 || words[3] != 0 || words[5] != 0 || words[6] != 0 || words[7] != 0)
+        panic("ELF self-test: wrong initial stack layout\n");
+    if (address_space_read(space, words[2], string, sizeof("selftest")) != 0 || strcmp(string, "selftest") != 0 ||
+        address_space_read(space, words[4], string, sizeof("A=1")) != 0 || strcmp(string, "A=1") != 0)
+        panic("ELF self-test: initial stack strings do not match\n");
 
     address_space_destroy(space);
 
