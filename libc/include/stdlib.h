@@ -14,7 +14,14 @@ __BEGIN_DECLS
 __attribute__((__noreturn__)) void abort(void);
 
 int atexit(void (*)(void));
-char *getenv(const char *);
+
+/**
+ * @brief Retrieves the value of an environment variable.
+ *
+ * @param name The name of the environment variable.
+ * @return A pointer to the value of the environment variable, or NULL if it does not exist.
+ */
+char *getenv(const char *name);
 
 /**
  * @brief Allocates a block of memory of the specified size.
