@@ -62,6 +62,7 @@ isr_common:
     pushq %rax
 
     movq %rsp, %rdi
+    andq $-16, %rsp
     call isr_handler
     movq %rax, %rsp
 
