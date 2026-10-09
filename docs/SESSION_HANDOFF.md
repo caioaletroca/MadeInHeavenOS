@@ -23,10 +23,11 @@ Working x86-64 PC kernel with:
   ring 3 kill the process with 128 + signal instead of panicking
 - Open files (`file_t` + `file_ops_t`), console as the first backend behind fds 0–2
 - **ELF64 loader**: user programs built separately (`user/`), loaded by GRUB as Multiboot2 modules,
-  validated and mapped by `elf_load`; `init_start` (temporarily) runs every module as a test and
-  checks its exit status
+  validated and mapped by `elf_load`
+- **`/sbin/init` as pid 1**: the only program the kernel starts (its GRUB module string is its
+  `argv`); it runs one command (today the test runner) and its exit halts the system (temporary)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`; `stdin_interactive` from a second GRUB entry)
+  `stdin`, `args`, `spawn`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`): the only kernel
   headers installed into the sysroot
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
@@ -48,6 +49,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+ef89e4a feat(init): start /sbin/init as pid 1 and run the tests from user space
+b9cb7ce docs(architecture): document the initial stack, spawn and wait in handoff
 66134b6 feat(sys): add spawn and wait
 122c426 feat(exec): pass argc, argv and envp on the initial stack
 771202b docs(architecture): document stdio input and the stdin tests in handoff
@@ -100,7 +103,7 @@ kernel/
 │   └── x86_64/                   # boot, ISR stubs, gdt64.S, tss.c, arch.c, context.c, isr.c, paging.c
 ├── platform/pc/                  # pic, pit, ps2, keyboard, vga, screen (CP437), multiboot2, platform.c
 ├── sched/ mm/ driver/ sys/ fs/ exec/ selftest/
-├── init.c                        # init_start: temporary test runner over the boot modules
+├── init.c                        # init_start: starts /sbin/init (pid 1), halts when it exits
 └── kmain.c
 ```
 
@@ -155,7 +158,7 @@ tty_init → platform_boot_info_init → arch_init [TSS first] → input_init �
 → threads_init [reaper] → console_init(&keymap_abnt2) [console thread]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → mm_selftest
 → scheduler_selftest [+ sync tests] → console_selftest → user_selftest → elf_selftest(&boot_info)
-→ init_start(&boot_info) [runs every module, checks exit statuses] → boot thread idles
+→ init_start(&boot_info) [starts /sbin/init, waits; init exiting = halt] → boot thread idles
 ```
 
 ## Memory management
@@ -329,7 +332,8 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
   can read the program's variables.
 - **Locking:** `p->lock` protects `refs`, `state` and `exit_status`; `process_exit` sets the status
   and wakes waiters under it. The last release and the teardown run *after* the lock is dropped, never
-  freeing a held lock. pids come from `pid_lock`.
+  freeing a held lock. pids come from `pid_lock`, starting at 2: `PROCESS_INIT_PID` (1) is reserved
+  for `/sbin/init` (`process_create_init`), since Unix programs assume init is pid 1.
 - **Exit status:** `exit_status` is the value passed to `exit` (full `int`), or 128 + signal for
   faults (`uapi/mihos/signal.h`: Linux signal numbers, no delivery yet); the kernel self-tests and
   the runner compare it. Faults go through `process_exit_signal(sig)`, which also records `signal`,
@@ -357,9 +361,10 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private } ──▶ ops-
 
 ```text
 user/tests/hello ─build─▶ sysroot/usr/tests/hello.elf ─ISO─▶ /boot/usr/tests/hello.elf
-  ─grub.cfg─▶ module "/usr/tests/hello 42" ─▶ boot_info.modules[]
-init_start ─▶ for each module: module_run ─▶ exec_load ─▶ address_space_create + elf_load + stack
-           ─▶ process_create + console fds 0-2 + process_start(entry) ─▶ process_wait ─▶ compare
+  ─grub.cfg─▶ module "/usr/tests/hello" ─▶ boot_info.modules[] ─▶ exec_module_find by path
+init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string) ─▶ exec_load
+           ─▶ process_create_init (pid 1) + console fds 0-2 + start ─▶ process_wait ─▶ halt
+/sbin/init ─spawn─▶ /usr/tests/run ─spawn─▶ each test ─waitpid─▶ compare with its table
 ```
 
 - **User build** (`user/Makefile`): every directory under `bin/`, `sbin/` and `tests/` is a program
@@ -371,7 +376,8 @@ init_start ─▶ for each module: module_run ─▶ exec_load ─▶ address_sp
   `tests/x` → `<sysroot>/usr/tests/x.elf` (`.elf` until the initramfs). `grub/Makefile` copies every
   installed program into the ISO under `/boot`, mirroring the sysroot.
 - **`grub.cfg`** (edited by hand: a new program needs a line): `module2 <ISO file> <install path>
-  [expected exit status]`, in run order, at most `BOOT_MODULE_MAX` (8).
+  [arguments]`, at most `BOOT_MODULE_MAX` (32) per entry. Only `/sbin/init`'s line has arguments
+  (its command); every other module just makes a program spawnable by path.
 - **Modules** (`boot_info.modules[]`, Multiboot2 tag 3): physical `[start, end)` plus the whole module
   string as `name` (path and arguments), copied with `strlcpy` (the Multiboot2 structure is not
   protected after boot). Lookups compare the first word.
@@ -405,14 +411,21 @@ init_start ─▶ for each module: module_run ─▶ exec_load ─▶ address_sp
 - **`exec_modules_init(info)` / `exec_module_find(path)`** (`exec/exec.c`): `init_start` hands over
   `boot_info` (valid for the whole run: `kmain`'s frame); lookups compare the first word of the
   module string. Replaced by path lookup in the VFS (phase B).
-- **`init_start(info)`** (`init.c`, temporary test runner): for every module in order, splits the
-  string at the first space (expected status = `atoi` of the rest, else 0), `module_run`s it and
-  prints `test <name>: ok` / `FAIL (...)`, then `tests: N passed, M failed`; failures do not panic.
-  `module_run(module, name, &status)` = `exec_load` (`argv = {name}`, `envp = {"PATH=/bin"}`) +
-  process with the console on fds 0–2 + start at the built stack + wait +
-  release; returns a negative errno (cleaning up: space, console reference, process) when the
-  program cannot start, so the status (which can be negative) has its own out parameter. Later:
-  start `/sbin/init` alone and treat its exit as fatal; running tests becomes a user-space job.
+- **`init_start(info)`** (`init.c`): `exec_modules_init`, finds `/sbin/init` (missing → panic),
+  copies its module string and splits it in place at spaces into `argv` (`args_split`, at most
+  `INIT_ARGS_MAX` 8 words), `module_run`s it (cannot start → panic), then prints
+  `init exited with status N: system halted` and returns (the boot thread idles: a temporary power
+  off). `module_run(module, argv, &status)` = `exec_load` (`envp = {"PATH=/bin"}`) +
+  `process_create_init` + console on fds 0–2 + start at the built stack + wait + release; returns a
+  negative errno (cleaning up) when the program cannot start.
+- **`/sbin/init`** (`user/sbin/init`, pid 1): runs `argv[1..]` as one command (`&argv[1]` is
+  already its NULL-terminated `argv`), passing its `envp`; waits and exits with the command's status
+  (128 + signal when killed); prints why when it cannot start. Later: run a shell, restart it, never
+  exit; adopt and reap orphans once `wait(-1)` exists.
+- **`/usr/tests/run`** (`user/tests/run`): tables `{path, expected status}` for the automatic set and
+  `interactive` (its first argument); spawns each test with `argv = {path}` and `environ`, passes
+  when `WIFEXITED` and `WEXITSTATUS == expected` (so expected statuses are 0..255), prints
+  `test <path>: ok` / `FAIL (...)` and `tests: N passed, M failed`, exits with the failures.
 - **Test programs** (`user/tests/`, `user/include/test.h`): `CHECK(expr)` prints
   `FAIL line N: expr` to stdout and counts; `main` returns `test_status()` = failed checks.
   - `hello`: returns `status + zero` from a `.data` 42 and a `.bss` 0 (expected 42: checks the copy
@@ -754,10 +767,14 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   `environ`; `SYS_SPAWN`/`SYS_WAIT` with parent/children, orphans, fd inheritance and the POSIX
   wait status; `posix_spawn`, `waitpid`, `W*` (tests: `tests/args`, `tests/spawn`, the ELF
   self-test's stack checks). Decided: `spawn` now, `fork` + `exec` in phase C.
-- **Next (roadmap phase A):** `/sbin/init` in user space (the runner moves out of `init_start`,
-  which then only starts init and panics if it exits), then a first shell with builtins;
-  `wait` for any child (`pid -1`) when the shell needs it; freestanding C++ runtime (`.init_array`
-  in `crt0`, `operator new`, `__cxa_*`).
+- **`/sbin/init` (done):** pid 1 reserved, `init_start` starts only init with its module string as
+  `argv`, init runs one command, the test runner and its tables moved to `/usr/tests/run`,
+  `BOOT_MODULE_MAX` 32. Decided: init's command comes from its `argv` (GRUB), init exiting powers
+  off for now (debt), pid 1 reserved.
+- **Next (roadmap phase A):** a first shell with builtins (`user/bin/sh`), started by init and
+  restarted when it exits (then init never exits and its exit becomes a panic); `wait` for any child
+  (`pid -1`) for the shell and for init to reap orphans; freestanding C++ runtime (`.init_array` in
+  `crt0`, `operator new`, `__cxa_*`).
 - **Decisions** (details in `ROADMAP.md`): own syscall ABI and numbering (porting is at the
   POSIX/libc API, not Linux binaries); own libc through phase C, mlibc via sysdeps at phase D
   together with a GCC rebuild for libstdc++; `libk.a` stays ours.
@@ -806,8 +823,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - Fixed 64 KiB user stack (`exec_load`); no stack growth. The guard page below it is only "never
   mapped" (`brk` stops short of it), not a reserved region.
 - `NX` still off, so `PF_X`/`MMU_EXEC` from the loader are informational.
-- `init_start` is a kernel-side test runner until `/sbin/init` exists; `grub.cfg` lists every program
-  by hand (no generation from `user/`), at most `BOOT_MODULE_MAX` (8) modules.
+- `grub.cfg` lists every program by hand (no generation from `user/`), at most `BOOT_MODULE_MAX`
+  (32) modules per entry.
 - The `stdio` test's output order is only checked by eye (no pipes to capture it).
 - Stale programs stay in the sysroot after their directory is removed (`make clean` to drop them).
 - `tty_write` holds IRQs off for the whole write plus a full 4000-byte VGA copy; long user writes
@@ -850,8 +867,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   parent-side wait queue woken by every child's exit.
 - `spawn` copies user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
   `ENAMETOOLONG`); programs come from boot modules only; no `posix_spawnp` (`PATH` search).
-- The default GRUB entry uses all `BOOT_MODULE_MAX` (8) modules: the next test needs a bigger limit
-  or another entry.
+- **init exiting powers the system off** (`init_start` prints the status and returns): temporary,
+  until init runs a shell and never exits. Then `init_start` must panic when init exits.
+- Orphans are dropped, not adopted by init: a real init reaps them with `wait(-1)`.
+- `tests/run`'s table and `grub.cfg`'s module list must name the same tests (until the initramfs).
 - `sys_exec` (replacing the running image) is not implemented: comes with `fork` in phase C.
 - `process_start` returns -1 instead of an errno on failure.
 - In the counter test the counter shares a cache line with the loop's code, so every increment is
