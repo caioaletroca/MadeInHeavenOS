@@ -28,6 +28,8 @@ Working x86-64 PC kernel with:
   `argv`); it runs one command (today the test runner) and its exit halts the system (temporary)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
   `stdin`, `args`, `spawn`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+- **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
+  history, `PATH` search; `/bin/echo` as the first command
 - **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`): the only kernel
   headers installed into the sysroot
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
@@ -49,6 +51,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+6d65c61 feat(sh): add a shell with builtins, history and PATH search, and echo
+12e3d59 feat(libc): rewrite vsnprintf with C99 semantics and add snprintf
+3f99584 feat(libc): add strspn, strcspn, strpbrk, strchr, strncmp, strtok, strdup, getenv
+d05aa8a fix(arch): align the stack for C in interrupts and keep SSE out of the kernel
+ed27d4a docs(architecture): document /sbin/init and the user-space test runner in handoff
 ef89e4a feat(init): start /sbin/init as pid 1 and run the tests from user space
 b9cb7ce docs(architecture): document the initial stack, spawn and wait in handoff
 66134b6 feat(sys): add spawn and wait
@@ -115,7 +122,8 @@ headers (kernel uapi → sysroot) → libc (libk.a, libc.a, crt0.o) → kernel �
 
 The kernel includes its uapi headers through `-Iinclude/uapi`; `install-headers` copies only
 `include/uapi/`, so user code and libc see `<mihos/...>` and never kernel internals. Kernel code uses
-`CFLAGS` (`ARCH_CFLAGS`: `-mcmodel=kernel -mno-red-zone`); ring-3 code (libc.a, `user/`) uses
+`CFLAGS` (`ARCH_CFLAGS`: `-mcmodel=kernel -mno-red-zone -mgeneral-regs-only`: no SSE/x87 in the
+kernel, since a context switch saves only the general registers); ring-3 code (libc.a, `user/`) uses
 `USER_CFLAGS` from `common.mk` (freestanding, no PIE, small code model, no unwind tables).
 
 ### Include rules (enforced in `kernel/Makefile`)
@@ -465,7 +473,9 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   (`USER_CFLAGS`, `-D__is_libc`), each with its own object tree. In `subdir.mk`, `local_sources` go
   into both, `hosted_local_sources` (syscalls, stdio streams, `errno`, `exit`, `malloc`) only into
   `libc.a`.
-  `libk.a` = `mem*`/`str*` (incl. `strlcpy`, `strcmp`), `vsnprintf`, `abs`/`atoi`.
+  `libk.a` = `mem*`/`str*` (incl. `strlcpy`, `strcmp`, `strncmp`, `strchr`, `strspn`, `strcspn`,
+  `strpbrk`, `strtok_r`), `vsnprintf`/`snprintf`, `abs`/`atoi`. User-only: `strtok` (hidden static
+  position), `strdup` (`malloc`), `getenv` (`environ`).
 - **`crt0.o`** (`libc/arch/x86_64/crt0.S`) is built and installed on its own, not inside `libc.a`
   (archive members are only pulled for undefined symbols, and nothing references `_start`):
   `xor %ebp`; `argc = (%rsp)`, `argv = rsp + 8`, `envp = rsp + 16 + argc * 8` into
@@ -476,6 +486,18 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   (`__syscall`). `waitpid` (`<sys/wait.h>`, `libc/wait/`): options must be 0 (`EINVAL`), `-1` +
   `errno` otherwise. `WEXITSTATUS`/`WTERMSIG`/`WIFEXITED`/`WIFSIGNALED` decode the status.
   `environ` is in `libc/unistd/environ.c`.
+- **`vsnprintf`** (`libc/stdio/vsnprintf.c`, C99 semantics, shared with the kernel): every
+  character goes through `output_char`, which writes only while `length + 1 < size` and always
+  counts; so the output never overruns, is terminated when `size > 0` (size 0 writes nothing, `str`
+  may be NULL), and the return value is the full length (`>= size` means cut). `spec_parse` reads
+  flags `- 0 + space`, width and precision (digits or `*`), lengths `hh h l ll z`;
+  `output_number` builds digits backwards in a local buffer, applies precision (minimum digits;
+  `%.0d` of 0 prints nothing), sign and padding (`0` only without `-` and precision, zeros after
+  the sign); magnitudes as `0ULL - value` (no overflow at `LLONG_MIN`). Conversions `d i u x X o p
+  c s %`; `%p` is 16 zero-padded hex digits without `0x` (as the kernel always printed); `%s` NULL
+  prints `(null)`; unknown conversions print as written. The helpers take a `va_list *` of a
+  `va_copy`: a parameter's address is not a `va_list *` on x86-64 (array type). `snprintf` wraps
+  it; `kvprintf` and `vfprintf` clamp the returned length to their buffers.
 - **Private headers** (never installed, `-Iinternal -Iarch/$(ARCH)`): `internal/syscall.h`
   (`__syscall(...)` counts its arguments and picks `__syscallN`; `syscall(...)` turns `-errno` into
   `-1` + `errno` via `__syscall_ret`, Linux convention `-4095..-1`) and `arch/x86_64/syscall_arch.h`
@@ -718,6 +740,12 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
   into the kernel half. Caught by the ELF self-test's kernel-half case.
 - `multiboot_parse_cmdline` left `cmdline` unterminated at 256+ characters; libc `strcpy` never wrote
   the terminator.
+- `isr_common` called C with RSP 8 bytes off the SysV alignment (the CPU aligns to 16, then 21 qwords
+  are pushed). Harmless until GCC compiled the rewritten `vsnprintf` with aligned SSE stores: the
+  first `kprintf` inside a syscall (`process_exit`) took a #GP, and `panic` faulted again while
+  printing, so the boot stopped silently. Fixed with `andq $-16, %rsp` before the call, and the
+  kernel built with `-mgeneral-regs-only` (its SSE use also clobbered user vector registers, which a
+  context switch does not save). Confirmed with `objdump -d ... | grep -c xmm`.
 
 ## Recommended next steps
 
@@ -771,10 +799,40 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   `argv`, init runs one command, the test runner and its tables moved to `/usr/tests/run`,
   `BOOT_MODULE_MAX` 32. Decided: init's command comes from its `argv` (GRUB), init exiting powers
   off for now (debt), pid 1 reserved.
-- **Next (roadmap phase A):** a first shell with builtins (`user/bin/sh`), started by init and
-  restarted when it exits (then init never exits and its exit becomes a panic); `wait` for any child
-  (`pid -1`) for the shell and for init to reap orphans; freestanding C++ runtime (`.init_array` in
+- **First shell (done):** `/bin/sh` and `/bin/echo`, libc string functions, `strdup`, `getenv`,
+  `vsnprintf` rewritten with C99 semantics plus `snprintf`; the ISR alignment / kernel SSE fix.
+- **Next (roadmap phase A):** `user/tests/printf` for the new `vsnprintf` (cut output with a
+  canary, `size 0`, every flag, `%ld` above 2^32, `LLONG_MIN`); init restarting the shell (then
+  init never exits and its exit becomes a panic); `wait` for any child (`pid -1`) for init to reap
+  orphans; shell extras (`$?`, quotes, `!!`/`!n`); freestanding C++ runtime (`.init_array` in
   `crt0`, `operator new`, `__cxa_*`).
+
+### Shell (`user/bin/sh/`)
+
+```text
+main.c   loop: prompt "mihos>" ─▶ command_read ─▶ history_add ─▶ command_parse ─▶ command_run
+read.c   command_read: fgets, '\n' stripped (READ_EOF on NULL); command_parse: line_split (strtok_r
+         on " \t\n", at most MAX_ARGS words, more → error) → READ_COMMAND / READ_NOTHING
+run.c    command_run: builtin_run, else program_run
+builtins.c  table {name, function, help}; exit [n], help, history
+history.c   ring buffer of strdup'd lines
+sh.h / history.h   shared types and declarations ("..." includes)
+```
+
+- **State:** `shell_t` (owned by `main`, passed down) holds `status` (last command's: `exit`'s
+  default), `running` (cleared by `exit`) and the `history_t`. Modules take only the part they own
+  (`history_add(history_t *, line)`); `main` wires them. History is added before parsing because
+  `strtok_r` cuts the line in place.
+- **Builtins:** function pointers `int (*)(shell_t *, int argc, char *argv[])`; `builtin_run`
+  returns 1 if it ran one (its return value becomes `status`), 0 if not. `exit` with too many
+  arguments returns 1 and keeps running; `exit n` uses `atoi` (no number check yet).
+- **History:** `lines[HISTORY_MAX]` (32) `strdup`'d copies, oldest at `lines[start]`, `count`
+  stored, `total` ever added; full → free the oldest and advance `start`. Blank lines are skipped.
+  `history` prints entry `i` as number `total - count + 1 + i` (bash's numbering).
+- **Programs:** a name with `'/'` is spawned as given; otherwise each `PATH` entry is tried as
+  `dir/name` (`snprintf` with `%.*s`, so `PATH` is never cut up; empty entries skipped). `ENOENT`
+  moves to the next entry. Not found → `sh: name: not found`, 127; other spawn errors → 126; killed
+  → message and 128 + signal. Children inherit fds and `environ`.
 - **Decisions** (details in `ROADMAP.md`): own syscall ABI and numbering (porting is at the
   POSIX/libc API, not Linux binaries); own libc through phase C, mlibc via sysdeps at phase D
   together with a GCC rebuild for libstdc++; `libk.a` stays ours.
@@ -835,9 +893,14 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - No raw mode / termios; Tab, Esc, arrows and Home/End are ignored in line editing.
 - Second-port interface test runs even when no second port was detected (may hang on
   single-channel controllers).
-- `vsnprintf`: a precision is parsed and ignored (`%.3s` prints the whole string); unknown
-  specifiers are silently dropped; `%s` does not bound-check `remain`; it returns the characters
-  written, not the full length C99 requires, so `printf` silently truncates at `BUFSIZ - 1`.
+- `printf`/`vfprintf` format into one `BUFSIZ` stack buffer: longer output is cut (the return
+  value now shows it, nothing handles it yet). `vsnprintf` has no `#`, `'`, `j`/`t`, floats or `%n`;
+  it has no test of its own yet (`user/tests/printf`).
+- Tabs on the console move the cursor 8 cells without writing them and ignore tab stops
+  (`screen_put`), so tab-indented lines can look broken; the shell's `help` uses one.
+- `process_exit` prints `Process N exited with status S` for every process, interleaving with
+  program output in the shell; the runner and the shell report statuses themselves now.
+- The shell has no `$?`, quoting, `!!`, or arrow-key history (needs raw mode / termios).
 - stdio: no `fread`, `fopen`/`fclose`/`setvbuf`, no `isatty` (stdout is always line-buffered),
   `__stdio_head` is `const` (must change when `fopen` adds streams), no stream locking (needed with
   user threads); `stdio.h` is still partly a stub (`fopen`, `fread`, `fseek` declared but missing).
@@ -855,7 +918,6 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - malloc never returns memory to the kernel (a free block ending at the break could be trimmed with a
   negative `sbrk`); `realloc` never shrinks or grows in place (the freed tail or a free next block
   is not used); first fit walks the whole list (no size classes); no lock (needed with threads).
-- `vsnprintf` has no length modifiers (`%ld`, `%lu`, `%zu`): 64-bit values must be cast to `int`.
 - The malloc test hard-codes the 32-byte header (`sizeof(block_t)`).
 - Syscalls run with IRQs off for their whole duration (interrupt gate); long writes delay IRQs.
 - The fd table has no lock (safe only with one thread per process and no `fork`).
