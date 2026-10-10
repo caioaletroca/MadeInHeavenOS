@@ -29,11 +29,12 @@ typedef struct process
     unsigned int refs;
     struct address_space *space;
     struct thread *thread;
-    struct process *parent; // NULL for processes the kernel started
-    list_t children;        // spawned, not yet waited for; one reference each.
-    list_t sibling;         // link in parent->children
+    struct process *parent; // NULL for processes the kernel started. Protected by process_tree_lock.
+    list_t children;        // spawned, not yet waited for; one reference each. Protected by process_tree_lock.
+    list_t sibling;         // link in parent->children. Protected by process_tree_lock.
 
     wait_queue_t waiters;
+    wait_queue_t child_exits; // the parent sleeps here in wait; every child's exit wakes it
 
     struct file *files[PROCESS_MAX_FILES];
 
@@ -82,6 +83,31 @@ int process_start(process_t *p, uintptr_t entry, uintptr_t user_stack);
  * @param parent The parent process.
  */
 void process_files_inherit(process_t *child, process_t *parent);
+
+/**
+ * Add a child process to its parent's list of children.
+ *
+ * @param parent The parent process.
+ * @param child The child process to add.
+ */
+void process_child_add(process_t *parent, process_t *child);
+
+/**
+ * Remove a child process from its parent's list of children.
+ *
+ * @param child The child process to remove.
+ */
+void process_child_remove(process_t *child);
+
+/**
+ * Wait for a child of parent to exit and take it off the children list.
+ *
+ * @param parent The waiting process (the caller).
+ * @param pid The child's pid, or -1 for any child.
+ * @param out Set to the exited child; the caller now owns its reference and releases it.
+ * @return The child's pid, or -ECHILD if no child matches (0 and < -1: no process groups yet).
+ */
+long process_wait_child(process_t *parent, long pid, process_t **out);
 
 /**
  * Exit the current process with the given status.

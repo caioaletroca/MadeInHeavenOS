@@ -246,12 +246,11 @@ static long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
     process_files_inherit(child, parent);
 
     // The handle from process_create is the parent's reference, held until wait
-    child->parent = parent;
-    list_insert_before(&parent->children, &child->sibling);
+    process_child_add(parent, child);
 
     if (process_start(child, entry, stack) < 0)
     {
-        list_delete(&child->sibling);
+        process_child_remove(child);
         process_release(child);
         return -ENOMEM;
     }
@@ -271,38 +270,23 @@ static int wait_status_encode(const process_t *p)
 }
 
 /**
- * wait(pid, status): waits for the specified child process to exit and retrieves its exit status.
+ * wait(pid, status): waits for child pid, or any child for -1, and retrieves its exit status.
  */
 static long sys_wait(long pid, uintptr_t status)
 {
+    process_t *child;
     process_t *parent = scheduler_current()->process;
-    process_t *child = NULL;
+    long ret = process_wait_child(parent, pid, &child);
+    if (ret < 0)
+        return ret;
 
-    list_t *pos;
-    list_for_each(pos, &parent->children)
-    {
-        process_t *p = list_container(pos, process_t, sibling);
-        if ((long)p->pid == pid)
-        {
-            child = p;
-            break;
-        }
-    }
-
-    // Not a child, already waited for, or pid <= 0 (any child: not supported yet)
-    if (child == NULL)
-        return -ECHILD;
-
-    process_wait(child);
     int encoded = wait_status_encode(child);
-
-    list_delete(&child->sibling);
     process_release(child);
 
     if (status != 0 && address_space_write(syscall_space(), status, &encoded, sizeof(encoded)) != 0)
         return -EFAULT;
 
-    return pid;
+    return ret;
 }
 
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)

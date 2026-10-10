@@ -1,4 +1,5 @@
 #include <mihos/signal.h>
+#include <stdbool.h>
 #include <sched/process.h>
 #include <sched/scheduler.h>
 #include <sched/thread.h>
@@ -9,6 +10,10 @@
 
 static spinlock_t pid_lock = SPINLOCK_INIT;
 static uint32_t next_pid = PROCESS_INIT_PID + 1;
+
+// Protects parent, children and sibling of every process. Lock order: this
+// first, then a process's lock (never take this while holding p->lock).
+static spinlock_t process_tree_lock = SPINLOCK_INIT;
 
 /**
  * Allocates a new process ID in a thread-safe manner.
@@ -53,6 +58,7 @@ process_t *process_create(address_space_t *space)
     list_init(&p->children);
     list_init(&p->sibling);
     wait_queue_init(&p->waiters);
+    wait_queue_init(&p->child_exits);
     spinlock_init(&p->lock);
 
     return p;
@@ -111,6 +117,65 @@ void process_files_inherit(process_t *child, process_t *parent)
             child->files[fd] = file_get(parent->files[fd]);
 }
 
+void process_child_add(process_t *parent, process_t *child)
+{
+    scoped_guard(spinlock, &process_tree_lock)
+    {
+        list_insert_before(&parent->children, &child->sibling);
+        child->parent = parent;
+    }
+}
+
+void process_child_remove(process_t *child)
+{
+    scoped_guard(spinlock, &process_tree_lock)
+    {
+        list_delete(&child->sibling);
+        child->parent = NULL;
+    }
+}
+
+long process_wait_child(process_t *parent, long pid, process_t **out)
+{
+    // pid 0 and pid < -1 name process groups, which do not exist yet
+    if (pid == 0 || pid < -1)
+        return -ECHILD;
+
+    scoped_guard(spinlock, &process_tree_lock)
+    {
+        for (;;)
+        {
+            bool found = false;
+
+            list_t *pos;
+            list_for_each(pos, &parent->children)
+            {
+                process_t *p = list_container(pos, process_t, sibling);
+                if (pid != -1 && (long)p->pid != pid)
+                    continue;
+
+                found = true;
+
+                if (p->state == PROCESS_EXITED)
+                {
+                    list_delete(&p->sibling);
+                    p->parent = NULL;
+                    *out = p;
+                    return p->pid;
+                }
+            }
+
+            if (!found)
+                return -ECHILD;
+
+            // Releases the lock while asleep, retakes it before returning; then scan again
+            wait_queue_sleep_locked(&parent->child_exits, &process_tree_lock);
+        }
+    }
+
+    return -ECHILD;
+}
+
 __attribute__((noreturn)) void process_exit(int status)
 {
     process_t *current = scheduler_current()->process;
@@ -122,16 +187,33 @@ __attribute__((noreturn)) void process_exit(int status)
         wait_queue_wake_all(&current->waiters);
     }
 
+    scoped_guard(spinlock, &process_tree_lock)
+    {
+        if (current->parent != NULL)
+            wait_queue_wake_all(&current->parent->child_exits);
+    }
+
     // One thread per process: only this thread touches the table now (needs a lock with threads or fork)
     process_close_files(current);
 
     // Children nobody will wait for: drop our reference; each is freed once it exits too
-    list_t *pos, *next;
-    list_for_each_safe(pos, next, &current->children)
+    list_t *pos, *next, orphans;
+    list_init(&orphans);
+    scoped_guard(spinlock, &process_tree_lock)
+    {
+        list_for_each_safe(pos, next, &current->children)
+        {
+            process_t *child = list_container(pos, process_t, sibling);
+            list_delete(&child->sibling);
+            list_insert_before(&orphans, &child->sibling);
+            child->parent = NULL;
+        }
+    }
+
+    // Release references to orphaned children outside of the process_tree_lock to avoid deadlocks.
+    list_for_each_safe(pos, next, &orphans)
     {
         process_t *child = list_container(pos, process_t, sibling);
-        list_delete(&child->sibling);
-        child->parent = NULL;
         process_release(child);
     }
 
