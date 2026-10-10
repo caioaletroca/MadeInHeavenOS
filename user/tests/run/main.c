@@ -28,6 +28,7 @@ static const test_t automatic[] = {
     {"/usr/tests/stdin", 0},
     {"/usr/tests/args", 0},
     {"/usr/tests/spawn", 0},
+    {"/usr/tests/printf", 0},
     {NULL, 0},
 };
 
