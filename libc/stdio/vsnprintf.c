@@ -15,10 +15,12 @@
 
 typedef enum
 {
-    LENGTH_NONE,      // int / unsigned (hh and h too: those arrive as int)
+    LENGTH_NONE,      // int / unsigned
     LENGTH_LONG,      // l
     LENGTH_LONG_LONG, // ll
     LENGTH_SIZE,      // z: size_t (and its signed counterpart for d/i)
+    LENGTH_CHAR,      // hh: signed / unsigned char, passed as int and narrowed back
+    LENGTH_SHORT,     // h: short / unsigned short, passed as int and narrowed back
 } length_t;
 
 /**
@@ -231,6 +233,7 @@ static const char *spec_parse(const char *f, spec_t *spec, va_list *args)
 
     if (f[0] == 'h')
     {
+        spec->length = f[1] == 'h' ? LENGTH_CHAR : LENGTH_SHORT;
         f += f[1] == 'h' ? 2 : 1;
     }
     else if (f[0] == 'l' && f[1] == 'l')
@@ -269,6 +272,10 @@ static long long argument_signed(length_t length, va_list *args)
         return va_arg(*args, long);
     case LENGTH_SIZE:
         return va_arg(*args, long); // the signed type of size_t's width (ssize_t)
+    case LENGTH_SHORT:
+        return (short)va_arg(*args, int); // promoted from short
+    case LENGTH_CHAR:
+        return (signed char)va_arg(*args, int); // promoted from char
     default:
         return va_arg(*args, int);
     }
@@ -291,6 +298,10 @@ static unsigned long long argument_unsigned(length_t length, va_list *args)
         return va_arg(*args, unsigned long);
     case LENGTH_SIZE:
         return va_arg(*args, size_t);
+    case LENGTH_SHORT:
+        return (unsigned short)va_arg(*args, unsigned int); // promoted from unsigned short
+    case LENGTH_CHAR:
+        return (unsigned char)va_arg(*args, unsigned int); // promoted from unsigned char
     default:
         return va_arg(*args, unsigned int);
     }
@@ -353,9 +364,11 @@ int vsnprintf(char *str, size_t size, const char *format, va_list args)
             break;
         }
         case 'c':
+        {
             char c = (char)va_arg(ap, int);
             output_padded(&out, &spec, &c, 1);
             break;
+        }
         case 's':
             output_string(&out, &spec, va_arg(ap, const char *));
             break;
