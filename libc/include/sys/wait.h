@@ -22,6 +22,14 @@ __BEGIN_DECLS
  */
 pid_t waitpid(pid_t pid, int *status, int options);
 
+/**
+ * Wait for any child process to change state.
+ *
+ * @param status Pointer to an integer to store the child's exit status.
+ * @return The PID of the child process that changed state, or -1 on error.
+ */
+pid_t wait(int *status);
+
 __END_DECLS
 
 #endif /* _SYS_WAIT_H_ */

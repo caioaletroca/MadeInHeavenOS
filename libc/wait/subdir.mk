@@ -1,2 +1,3 @@
 hosted_local_sources := \
-waitpid.c
+waitpid.c \
+wait.c
