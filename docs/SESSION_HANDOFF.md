@@ -27,7 +27,7 @@ Working x86-64 PC kernel with:
 - **`/sbin/init` as pid 1**: the only program the kernel starts (its GRUB module string is its
   `argv`); it runs one command (today the test runner) and its exit halts the system (temporary)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
   history, `PATH` search; `/bin/echo` as the first command
 - **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`): the only kernel
@@ -51,6 +51,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+937a1e8 test(user): add a printf test for vsnprintf
+5a71556 fix(libc): narrow hh and h arguments in vsnprintf
+7a8759b docs(architecture): document the shell, the new vsnprintf and the ISR fix in handoff
 6d65c61 feat(sh): add a shell with builtins, history and PATH search, and echo
 12e3d59 feat(libc): rewrite vsnprintf with C99 semantics and add snprintf
 3f99584 feat(libc): add strspn, strcspn, strpbrk, strchr, strncmp, strtok, strdup, getenv
@@ -458,6 +461,12 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
     SIGSEGV through the `W*` macros, `argv`/`envp` passed exactly, NULL `envp`, two children waited
     in reverse order, waiting twice → `ECHILD`, 20 rounds, `ENOENT`/`EFAULT`/`E2BIG`/`ENOSYS`/
     `ECHILD`/`EINVAL`, an orphaned grandchild, fd numbers kept across a closed fd 0.
+  - `printf`: `vsnprintf` through an `EXPECT(expected, format, ...)` helper that compares output
+    and returned length and prints what it got. Every conversion, flag and length (`hh`/`h`
+    narrowing, `%ld` above 2^32, `INT64_MIN`, 22-digit octal), `*` width/precision (negative ones),
+    `%.3s` on an unterminated array, unknown conversions and a trailing `%`; the C99 contract with
+    `#` canaries: cut mid-text/padding/number, exact fit, one short, size 1, size 0 with NULL,
+    `%300d` returning 300.
 - **ELF self-test** (`selftest/elf.c`): `exec_load` of the module must succeed with the header's entry;
   ten broken copies (magic, class, machine, `ET_DYN`, truncated, program headers out of bounds,
   `p_filesz > p_memsz`, segment in the kernel half, segment wrapping past 2^64, entry outside every
@@ -490,7 +499,7 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   character goes through `output_char`, which writes only while `length + 1 < size` and always
   counts; so the output never overruns, is terminated when `size > 0` (size 0 writes nothing, `str`
   may be NULL), and the return value is the full length (`>= size` means cut). `spec_parse` reads
-  flags `- 0 + space`, width and precision (digits or `*`), lengths `hh h l ll z`;
+  flags `- 0 + space`, width and precision (digits or `*`), lengths `hh h l ll z` (`hh`/`h` read an `int` and narrow it back to `char`/`short`, C11 7.21.6.1);
   `output_number` builds digits backwards in a local buffer, applies precision (minimum digits;
   `%.0d` of 0 prints nothing), sign and padding (`0` only without `-` and precision, zeros after
   the sign); magnitudes as `0ULL - value` (no overflow at `LLONG_MIN`). Conversions `d i u x X o p
@@ -801,8 +810,8 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   off for now (debt), pid 1 reserved.
 - **First shell (done):** `/bin/sh` and `/bin/echo`, libc string functions, `strdup`, `getenv`,
   `vsnprintf` rewritten with C99 semantics plus `snprintf`; the ISR alignment / kernel SSE fix.
-- **Next (roadmap phase A):** `user/tests/printf` for the new `vsnprintf` (cut output with a
-  canary, `size 0`, every flag, `%ld` above 2^32, `LLONG_MIN`); init restarting the shell (then
+- **printf test (done):** `user/tests/printf`; it found `hh`/`h` being parsed and ignored (fixed).
+- **Next (roadmap phase A):** init restarting the shell (then
   init never exits and its exit becomes a panic); `wait` for any child (`pid -1`) for init to reap
   orphans; shell extras (`$?`, quotes, `!!`/`!n`); freestanding C++ runtime (`.init_array` in
   `crt0`, `operator new`, `__cxa_*`).
@@ -894,8 +903,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - Second-port interface test runs even when no second port was detected (may hang on
   single-channel controllers).
 - `printf`/`vfprintf` format into one `BUFSIZ` stack buffer: longer output is cut (the return
-  value now shows it, nothing handles it yet). `vsnprintf` has no `#`, `'`, `j`/`t`, floats or `%n`;
-  it has no test of its own yet (`user/tests/printf`).
+  value now shows it, nothing handles it yet). `vsnprintf` has no `#`, `'`, `j`/`t`, floats or `%n`.
 - Tabs on the console move the cursor 8 cells without writing them and ignore tab stops
   (`screen_put`), so tab-indented lines can look broken; the shell's `help` uses one.
 - `process_exit` prints `Process N exited with status S` for every process, interleaving with
