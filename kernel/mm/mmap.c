@@ -2,6 +2,7 @@
 #include <mm/mmap.h>
 #include <util.h>
 #include <kprintf.h>
+#include <panic.h>
 
 #define MMAP_MAX_REGIONS 128
 
@@ -53,6 +54,12 @@ static void mmap_release_regions(const mmap_type_t *type)
     }
 }
 
+/**
+ * Swaps two memory regions.
+ *
+ * @param x Pointer to the first memory region.
+ * @param y Pointer to the second memory region.
+ */
 static void mmap_swap_region(mmap_region_t *x, mmap_region_t *y)
 {
     mmap_region_t temp = *x;
@@ -60,6 +67,11 @@ static void mmap_swap_region(mmap_region_t *x, mmap_region_t *y)
     *y = temp;
 }
 
+/**
+ * Sorts the memory regions in ascending order based on their base addresses.
+ *
+ * @param type Pointer to the memory type containing the regions to sort.
+ */
 static void mmap_sort_region(mmap_type_t *type)
 {
     if (type->length < 2)
@@ -92,34 +104,45 @@ static void mmap_sort_region(mmap_type_t *type)
     }
 }
 
-static void mmap_merge_region(mmap_type_t *type)
+/**
+ * Removes a memory region at the specified index.
+ *
+ * @param type Pointer to the memory type containing the regions.
+ * @param i Index of the region to remove.
+ */
+static void mmap_remove_region(mmap_type_t *type, size_t i)
 {
-    if (type->length < 2)
-        return;
-
-    size_t i = type->length - 1;
-
-    // Loops in descending order through all regions
-    while (i > 0)
-    {
-        uintptr_t current_address = type->regions[i].base;
-        size_t current_size = type->regions[i].size;
-
-        // If the region before end address is equal to the current address
-        // That means we can merge those two regions
-        if (type->regions[i - 1].base + type->regions[i - 1].size == current_address)
-        {
-            // Merge the sizes
-            type->regions[i - 1].size += current_size;
-
-            // Remove the current and now extra region
-            mmap_remove_region(type, i);
-        }
-
-        i--;
-    }
+    memmove(type->regions + i, type->regions + i + 1, (type->length - i - 1) * sizeof(mmap_region_t));
+    type->length--;
 }
 
+/**
+ * Inserts a new memory region into the memory type.
+ *
+ * @param type Pointer to the memory type containing the regions.
+ * @param address Base address of the new region.
+ * @param size Size of the new region.
+ */
+static void mmap_insert_region(mmap_type_t *type, uintptr_t address, size_t size)
+{
+    if (size == 0)
+    {
+        return;
+    }
+
+    // Adds new region to the end of array
+    const mmap_region_t new_region = {
+        .base = address,
+        .size = size};
+    type->regions[type->length++] = new_region;
+}
+
+/**
+ * Splits memory regions into smaller chunks based on the specified frame size.
+ *
+ * @param type Pointer to the memory type containing the regions.
+ * @param frame_size Size of the frame to split the regions into.
+ */
 static void mmap_split_region(mmap_type_t *type, size_t frame_size)
 {
     // Loop through all regions
@@ -150,26 +173,45 @@ static void mmap_split_region(mmap_type_t *type, size_t frame_size)
     }
 }
 
-static void mmap_remove_region(mmap_type_t *type, size_t i)
+/**
+ * Merges adjacent memory regions within the memory type.
+ *
+ * @param type Pointer to the memory type containing the regions.
+ */
+static void mmap_merge_region(mmap_type_t *type)
 {
-    memmove(type->regions + i, type->regions + i + 1, (type->length - i - 1) * sizeof(mmap_region_t));
-    type->length--;
-}
-
-static void mmap_insert_region(mmap_type_t *type, uintptr_t address, size_t size)
-{
-    if (size == 0)
-    {
+    if (type->length < 2)
         return;
-    }
 
-    // Adds new region to the end of array
-    const mmap_region_t new_region = {
-        .base = address,
-        .size = size};
-    type->regions[type->length++] = new_region;
+    size_t i = type->length - 1;
+
+    // Loops in descending order through all regions
+    while (i > 0)
+    {
+        uintptr_t current_address = type->regions[i].base;
+        size_t current_size = type->regions[i].size;
+
+        // If the region before end address is equal to the current address
+        // That means we can merge those two regions
+        if (type->regions[i - 1].base + type->regions[i - 1].size == current_address)
+        {
+            // Merge the sizes
+            type->regions[i - 1].size += current_size;
+
+            // Remove the current and now extra region
+            mmap_remove_region(type, i);
+        }
+
+        i--;
+    }
 }
 
+/**
+ * Registers memory regions with the frame allocator.
+ *
+ * @param type Pointer to the memory type containing the regions.
+ * @param frame_size Size of the frames to register.
+ */
 static void mmap_register_region(mmap_type_t *type, size_t frame_size)
 {
     for (size_t i = 0; i < type->length; i++)
