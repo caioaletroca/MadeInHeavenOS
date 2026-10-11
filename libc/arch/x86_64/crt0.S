@@ -13,10 +13,7 @@ _start:
     xor %ebp, %ebp                      # end of the frame-pointer chain for debuggers
     mov (%rsp), %rdi                    # argc
     lea 8(%rsp), %rsi                   # argv
-    lea 16(%rsp, %rdi, 8), %rdx          # envp
-    mov %rdx, environ(%rip)             # for getenv
-    call main
-    mov %eax, %edi                      # exit(main's return value)
-    call exit
+    lea 16(%rsp, %rdi, 8), %rdx         # envp
+    call __libc_start_main              # environ, constructors, main, exit: never returns
     ud2                                 # exit never returns
 .size _start, . - _start
