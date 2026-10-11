@@ -7,4 +7,5 @@ internal \
 unistd \
 malloc \
 spawn \
-wait
+wait \
+cxx
