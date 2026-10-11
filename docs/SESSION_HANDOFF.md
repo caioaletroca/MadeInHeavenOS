@@ -23,8 +23,8 @@ Working x86-64 PC kernel with:
 - Processes (`process_t`) owning their address space and fd table, waitable, refcounted; faults in
   ring 3 kill the process with 128 + signal instead of panicking
 - Open files (`file_t` + `file_ops_t`), console as the first backend behind fds 0–2
-- **Initramfs**: every program in one ustar archive that GRUB loads as the `initrd` module;
-  `initrd_find(path)` returns a file's bytes in place
+- **VFS**: `vfs_node_t` per file or directory, path lookup (`.`, `..`, repeated `/`), the
+  initrd (one ustar archive GRUB loads as the `initrd` module) mounted as `/` as a tree of nodes
 - **ELF64 loader**: user programs built separately (`user/`), validated and mapped by `elf_load`
 - **`/sbin/init` as pid 1**: the only program the kernel starts (the kernel command line is its
   arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
@@ -56,6 +56,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+e0f666d test(user): spawn of a directory, a file with '/' and a relative path
+654ab46 feat(fs): mount the initrd as a VFS tree and find programs by path
+f899388 feat(fs): add the VFS core
+6c28da3 docs(architecture): document the initramfs in handoff
 2dbb6a3 feat(exec): load programs from an initramfs
 b4e3e2a feat(fs): add an initrd reader for ustar archives
 ac14f64 feat(libc): add strnlen
@@ -222,7 +226,7 @@ tty_init → platform_boot_info_init → arch_init [TSS first] → input_init �
 → scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [console thread]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → mm_selftest
-→ scheduler_selftest [+ sync tests] → console_selftest → user_selftest → initrd_selftest
+→ scheduler_selftest [+ sync tests] → console_selftest → user_selftest → vfs_selftest
 → elf_selftest
 → init_start(&boot_info) [starts /sbin/init, waits; init exiting = panic; init halts via SYS_REBOOT]
 ```
@@ -331,7 +335,8 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   Copies into a `kmalloc`'d `spawn_args_t`: the path (≤ 64 bytes, `-E2BIG` beyond), then each
   vector (≤ 64 entries, all strings together ≤ 4 KiB; a NULL `envp` is an empty environment),
   byte by byte through `address_space_read` (`user_string_copy`, `user_vector_copy`).
-  `initrd_find(path, &size)` (`-ENOENT` if missing) → `exec_load` → `process_create` → `process_files_inherit` (same fd numbers, one file
+  `vfs_read_file(path)` (a kmalloc'd copy; `-EISDIR` becomes `-EACCES`, as POSIX exec) →
+  `exec_load` → `kfree` of the copy → `process_create` → `process_files_inherit` (same fd numbers, one file
   reference each) → link as a child (the `process_create` handle is the parent's reference) →
   `process_start`. Order matters: the child is complete before it can run.
 - **`wait(pid, status)`** → the reaped child's pid, or `-ECHILD` (no matching child: not a child,
@@ -447,8 +452,9 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private } ──▶ ops-
 
 ```text
 user/tests/hello ─build─▶ sysroot/usr/tests/hello ─grub/Makefile─▶ initrd.tar (usr/tests/hello)
-  ─ISO /boot/initrd.tar─▶ module "initrd" ─▶ initrd_init ─▶ initrd_find("/usr/tests/hello")
-init_start ─▶ initrd_find("/sbin/init") ─▶ argv = {"/sbin/init", words of the cmdline} ─▶ exec_load
+  ─ISO /boot/initrd.tar─▶ module "initrd" ─▶ initrd_init: tree of nodes, mounted as "/"
+  ─▶ vfs_lookup("/usr/tests/hello") / vfs_read_file (kmalloc'd copy)
+init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words of the cmdline} ─▶ exec_load
            ─▶ process_create_init (pid 1) + console fds 0-2 + start ─▶ process_wait ─▶ halt
 /sbin/init ─spawn─▶ /usr/tests/run ─spawn─▶ each test ─waitpid─▶ compare with its table
 ```
@@ -473,12 +479,35 @@ init_start ─▶ initrd_find("/sbin/init") ─▶ argv = {"/sbin/init", words o
   its string), then walks every ustar header once: magic `ustar`, checksum (the 512 bytes summed
   with the checksum field counted as spaces), octal size (`tar_octal`: optional leading spaces,
   digits up to a NUL/space), and data inside the module (`size > initrd_size - data` → panic). A
-  corrupt archive panics, so `initrd_find` trusts it: `tar_next` steps header + data rounded to
-  512, stopping at a zero block. `initrd_find(path, &size)` takes absolute paths only (relative
-  → NULL: no current directory), skips non-regular entries (`type` not `'0'`/`'\0'`, so
-  directories are never returned), and compares `prefix + "/" + name` (`tar_name_equals`,
-  `strnlen` since a full 100-byte name has no NUL). Returns a pointer into the archive (read-only,
-  never freed: the module stays reserved) and the size; `size` may be NULL.
+  corrupt archive panics, so the build trusts it: `tar_next` steps header + data rounded to 512,
+  stopping at a zero block. Then the tree: `initrd_node_t` embeds a `vfs_node_t` (`INITRD_NODE`
+  = `list_container`) plus a `kmalloc`'d name, `data` (files: a pointer into the archive, never
+  copied or freed) and `children`/`sibling` lists. `initrd_add_entry` rebuilds each entry's path
+  (`prefix/name`, `%.*s` since a full 100-byte field has no NUL), walks it with `vfs_path_next`
+  looking one component ahead: every component before the last is a directory, found or created
+  (`initrd_child_dir`, `mkdir -p`: tar lists `usr/tests/` but never `usr/`), the last is the file
+  (type `'0'`/`'\0'`) or directory (`'5'`); other types are skipped; a name that is both a file
+  and a directory, or a file listed twice, panics. The root is its own parent; `vfs_mount_root`.
+  Ops: `lookup` (linear search of `children`, returns a new reference), `read` (copies
+  `min(count, size - offset)` from `data`), no `release` (the tree lives for the whole run).
+- **VFS** (`fs/vfs.c`, `include/fs/vfs.h`):
+  ```text
+  fd ─▶ file_t (open file: ops, flags; offset later) ─▶ vfs_node_t (the file) ─▶ file system
+  ```
+  `vfs_node_t`: `type` (`VFS_FILE`/`VFS_DIRECTORY`), `size`, `ops`, `parent` (for `..`), `refs`
+  under `lock`. `vfs_node_ops_t`: `lookup(dir, name, length, &child)` (name not terminated: a
+  pointer into the path), `read(file, buffer, count, offset)` (bytes, 0 at the end, or -errno),
+  `release` (after the last `put`; NULL: never freed). `vfs_node_put` decrements under the lock
+  and calls `release` after it. `vfs_path_next(&p, &length)`: skips any `/`, returns a component
+  as pointer + length, no copy (a non-writing `strtok_r`). `vfs_lookup(path, &node)`: absolute
+  paths only (relative or `""` → `-ENOENT`: no current directory yet); holds exactly one
+  reference per step (gets the next node, puts the current one, a single `put` on every exit);
+  `.` keeps the node, `..` takes `parent`; a component longer than `VFS_NAME_MAX` (255) →
+  `-ENAMETOOLONG`, a file before another component → `-ENOTDIR`, a file with a trailing `/` →
+  `-ENOTDIR` (POSIX). Returns a new reference. `vfs_read` checks the type (`-EISDIR`).
+  `vfs_read_file(path, &data, &size)`: the whole file in a `kmalloc`'d buffer (loops on `read`;
+  0 before the end → `-EIO`), the outputs set only on success. Mounts beyond the root come with
+  `/dev`.
 - **`elf_load(space, image, size, &entry, &end)`** (`exec/elf.c`): validates `ELF64`, little-endian,
   version, `ET_EXEC`, `e_machine == ELF_MACHINE` and that the program header table is inside the
   image; for every non-empty `PT_LOAD` (empty ones, e.g. an unused RW segment, are skipped) checks the
@@ -506,7 +535,8 @@ init_start ─▶ initrd_find("/sbin/init") ─▶ argv = {"/sbin/init", words o
   Strings at the top, `sp = ALIGN_DOWN(strings - words * 8, 16)`; the pointer vector is built in a
   `kmalloc`'d buffer (string addresses are known while writing the strings) and written once.
   Everything ≤ `ARGS_MAX` (a quarter of the stack) or `-E2BIG`.
-- **`init_start(info)`** (`init.c`): `initrd_find("/sbin/init")` (missing → panic), copies the
+- **`init_start(info)`** (`init.c`): `vfs_read_file("/sbin/init")` (error → panic; the copy is
+  never freed: `program_run` returns only when init exits, then the kernel panics), copies the
   kernel command line into a `BOOT_CMDLINE_MAX` buffer, `argv[0] = "/sbin/init"`, then splits the
   copy in place at spaces into `&argv[1]` (`args_split`, at most `INIT_ARGS_MAX - 1` words; 8
   entries with the path), `program_run`s it (cannot start → panic) and panics if it ever returns
@@ -558,7 +588,8 @@ init_start ─▶ initrd_find("/sbin/init") ─▶ argv = {"/sbin/init", words o
   - `spawn`: spawns itself with a mode in `argv[1]` (no extra modules): exit 7 / 300 (→ 44) /
     SIGSEGV through the `W*` macros, `argv`/`envp` passed exactly, NULL `envp`, two children waited
     in reverse order, waiting twice → `ECHILD`, 20 rounds, `ENOENT`/`EFAULT`/`E2BIG`/`ENOSYS`/
-    `ECHILD`/`EINVAL`, an orphaned grandchild (adopted by init, not waitable), fd numbers kept across a closed fd
+    `ECHILD`/`EINVAL`, `EACCES` for a directory, `ENOTDIR` for `hello/`, `ENOENT` for a
+    relative path, an orphaned grandchild (adopted by init, not waitable), fd numbers kept across a closed fd
     0. `wait`/`waitpid(-1)`: `ECHILD` with no children, a still-running child (sleep and rescan),
     three children reaped once each with their own status, `waitpid(pid)` then `wait` for the
     other, `ECHILD` for `pid` 0 and -2 with a child alive.
@@ -568,12 +599,18 @@ init_start ─▶ initrd_find("/sbin/init") ─▶ argv = {"/sbin/init", words o
     `%.3s` on an unterminated array, unknown conversions and a trailing `%`; the C99 contract with
     `#` canaries: cut mid-text/padding/number, exact fit, one short, size 1, size 0 with NULL,
     `%300d` returning 300.
-- **Initrd self-test** (`selftest/initrd.c`, before the ELF one): `/sbin/init`, `/bin/sh` and
-  `/usr/tests/hello` are found and start with an ELF header; a NULL size works; `/nope`,
-  `/usr/tests` and `/usr/tests/` (a directory), a relative path, `""`, `hello/`, `hell` (a prefix),
-  `hello.elf` and `/sbin/init/x` are not found and leave the size untouched.
-- **ELF self-test** (`selftest/elf.c`): `exec_load` of `/usr/tests/hello` (from the initrd) must
-  succeed with the header's entry;
+- **VFS self-test** (`selftest/vfs.c`, before the ELF one): types of `/`, `/usr`, `/usr/tests`
+  (also with a trailing `/`), `/sbin/init`, `/bin/sh`; `//usr///tests/hello`,
+  `/./usr/./tests/./hello`, `/usr/tests/../tests/hello`, `/bin/../usr/tests/hello` give the same
+  node pointer, `/..` and `/usr/..` the root; `ENOENT` (`/nope`, `/usr/nope/hello`, relative,
+  `""`, `hell`, `hello.elf`), `ENOTDIR` (`hello/`, `/sbin/init/x`, `/sbin/init/.`), a 255-char
+  component is `ENOENT`, 256 `ENAMETOOLONG`, a failed lookup never sets the node;
+  `vfs_read_file` size equals the node's and starts with an ELF header; `vfs_read` at 0 and 100
+  matches it, across the end returns the rest, at or past the end 0; `EISDIR` from `vfs_read` and
+  `vfs_read_file` on a directory; the root's and `hello`'s reference counts are unchanged after
+  all of it (a missing `put` in lookup fails here).
+- **ELF self-test** (`selftest/elf.c`): `exec_load` of `/usr/tests/hello` (read with
+  `vfs_read_file`, freed at the end) must succeed with the header's entry;
   ten broken copies (magic, class, machine, `ET_DYN`, truncated, program headers out of bounds,
   `p_filesz > p_memsz`, segment in the kernel half, segment wrapping past 2^64, entry outside every
   segment) must return `-ENOEXEC` without setting the entry. The valid load passes
@@ -954,10 +991,13 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **Initramfs (done):** one ustar `initrd.tar` instead of a module per program, `initrd_find` in
   spawn, `init_start` and the ELF self-test, init's arguments on the kernel command line, programs
   without `.elf`, an initrd self-test.
-- **Next (roadmap phase B):** a VFS (vnodes/inodes, path lookup, mounts) with the initrd as its
-  first file system (read-only), `open`/`read`/`close` on files and `readdir` (the runner's test
-  list could then come from `/usr/tests`); then `/dev`, a block driver,
-  ext2.
+- **VFS step (a) (done):** `vfs_node_t` and its ops, path lookup, the initrd as a tree mounted as
+  `/`, `vfs_read_file` for spawn, init and the ELF self-test; a VFS self-test.
+- **Next (roadmap phase B, VFS step (b)):** `open(path, flags)` making a `file_t` over a node
+  (`file_t` gains `offset` and `node`, `file_ops` for VFS files read through `vfs_read` at the
+  offset), `read` on files, `lseek`, libc `open`/`lseek`; then (c) `getdents` + `opendir`/
+  `readdir`, an `ls`, the runner listing `/usr/tests`; (d) `stat`/`fstat`; then `/dev` (mounts,
+  the console as `/dev/console`), a block driver, ext2.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1049,8 +1089,12 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The initrd module stays reserved forever (files are used in place; never returned to the
   allocator).
 - Modules far above the kernel waste the free RAM between them (one boundary, not per-module holes).
-- `initrd_find` walks the whole archive on every lookup (fine for ~20 files; a VFS keeps a tree).
-  No symlinks, hard links or `..`/`.` resolution; no file modes used (everything is executable).
+- Initrd directories are linear lists (`initrd_child` compares every name). No symlinks or hard
+  links (skipped), no file modes used (everything is executable), read-only.
+- `vfs_read_file` copies every program once more (archive → `kmalloc` buffer → address space);
+  fine at ~100 KiB, replaced by mapping later. `kmalloc` above 1024 B rounds to a power-of-two
+  number of pages.
+- The VFS has no mount table yet (only the root); no current directory (absolute paths only).
 - A program removed from `user/` stays in the sysroot, and so in the initrd, until `make clean`;
   the initrd is only rebuilt when an existing program changes.
 - Fixed 64 KiB user stack (`exec_load`); no stack growth. The guard page below it is only "never
