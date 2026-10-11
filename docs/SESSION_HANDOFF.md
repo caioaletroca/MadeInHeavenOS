@@ -31,7 +31,8 @@ Working x86-64 PC kernel with:
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
   `stdin`, `args`, `spawn`, `printf`, `reboot`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
-  history, `PATH` search; `/bin/echo` as the first command
+  history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
+  `/bin/echo` as the first command
 - **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`): the only kernel
   headers installed into the sysroot
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
@@ -53,6 +54,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+a85b547 feat(sh): expand !!, !n and !-n from the history
+089736d refactor(sh): check a variable name's first character once
+df44eb9 feat(sh): split commands with a quote-aware tokenizer and expand $
+a02dc21 test: add run-tests.sh, a headless QEMU test run
+f2b6c0c docs(architecture): document power off, the debug console and getpid in handoff
 554cb4f test(user): cover getpid, getppid and adoption by init
 1fbb87a feat(sys): add getpid and getppid
 e73d622 feat(platform): mirror console output to the 0xE9 debug port
@@ -884,16 +890,18 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **Power off, debug console, getpid/getppid (done):** a test run ends with the emulator exiting;
   the whole output is on the host (`-debugcon`, `port_e9_hack`); the spawn test checks adoption.
   Found on the way: `outw`/`outl`/`inw`/`inl` only moved one byte.
-- **Next (roadmap phase A):** shell extras (`$?`, quotes, `!!`/`!n`); freestanding C++ runtime
-  (`.init_array` in `crt0`, `operator new`, `__cxa_*`); a script that runs QEMU headless and checks
-  the debug log for `tests: N passed, 0 failed` (done: `run-tests.sh`).
+- **Headless test script (done):** `./run-tests.sh`.
+- **Shell extras (done):** quote-aware tokenizer, `$` expansion, history expansion.
+- **Next (roadmap phase A):** freestanding C++ runtime (`.init_array` in `crt0`, `operator new`,
+  `__cxa_*`); then phase B (initramfs + VFS).
 
 ### Shell (`user/bin/sh/`)
 
 ```text
-main.c   loop: prompt "mihos>" ─▶ command_read ─▶ history_add ─▶ command_parse ─▶ command_run
-read.c   command_read: fgets, '\n' stripped (READ_EOF on NULL); command_parse: line_split (strtok_r
-         on " \t\n", at most MAX_ARGS words, more → error) → READ_COMMAND / READ_NOTHING
+main.c   loop: prompt "mihos>" ─▶ command_read ─▶ history_expand ─▶ history_add ─▶ command_parse
+         ─▶ command_run
+read.c   command_read: fgets, '\n' stripped (READ_EOF on NULL); command_parse: the tokenizer
+         (quotes, escapes, $ expansion) → READ_COMMAND / READ_NOTHING
 run.c    command_run: builtin_run, else program_run
 builtins.c  table {name, function, help}; exit [n], help, history
 history.c   ring buffer of strdup'd lines
@@ -902,8 +910,25 @@ sh.h / history.h   shared types and declarations ("..." includes)
 
 - **State:** `shell_t` (owned by `main`, passed down) holds `status` (last command's: `exit`'s
   default), `running` (cleared by `exit`) and the `history_t`. Modules take only the part they own
-  (`history_add(history_t *, line)`); `main` wires them. History is added before parsing because
-  `strtok_r` cuts the line in place.
+  (`history_add(history_t *, line)`); `main` wires them. The tokenizer never modifies the line.
+- **Tokenizer** (`command_parse(sh, cmd)`): a state machine (`STATE_UNQUOTED`, `STATE_SINGLE`,
+  `STATE_DOUBLE`) over `cmd->command` writes the words, each `'\0'`-terminated, into
+  `cmd->words`; `argv` points there. `parser_t` holds `pos`, `start` and `in_word` (a word is open
+  even when empty, so `''` and `""` make empty arguments) and `error`. Helpers: `word_open`,
+  `word_append` (bounds check, keeps a byte for the `'\0'`), `word_append_string`, `word_close`
+  (`MAX_ARGS`, stores the word). Unquoted: space/tab closes a word, quotes switch state without
+  closing it (`"a b"x` is one word), `\` makes the next character literal. Single quotes: all
+  literal. Double quotes: `\` escapes only `"` `\` `$`. An open quote at the end is
+  `sh: unmatched quote` (no continuation lines).
+- **`$` expansion** (`expand`, unquoted and in double quotes): `$?` (`status`), `$$` (`getpid`),
+  `$NAME` (`NAME_START` then `strspn` over `NAME_CHARS`, `getenv`, nothing if unset, so a bare
+  `$NOPE` makes no word); anything else is a literal `$` (`$5`, a trailing `$`). No field
+  splitting: a value with spaces stays one word.
+- **History expansion** (`history_expand(history, line, out, size)`, before `history_add`): copies
+  the line, replacing `!!`, `!n` (bash number, as `history` prints it) and `!-n` anywhere outside
+  `'...'` (`reference_length` decides what is a reference; a `!` before anything else is literal).
+  Returns 1 (expanded: `main` prints the line and stores the expanded form), 0, or -1 with the
+  error printed (`event not found`, `line too long`: the line is neither run nor stored).
 - **Builtins:** function pointers `int (*)(shell_t *, int argc, char *argv[])`; `builtin_run`
   returns 1 if it ran one (its return value becomes `status`), 0 if not. `exit` with too many
   arguments returns 1 and keeps running; `exit n` uses `atoi` (no number check yet).
@@ -982,7 +1007,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   still print their fault messages; the user self-test's `files` program prints `Files test: stdout
   still works`. The stdio test's last line has no `'\n'` (it checks the flush at `exit`), so the
   runner's `test /usr/tests/stdio: ok` follows on the same line.
-- The shell has no `$?`, quoting, `!!`, or arrow-key history (needs raw mode / termios).
+- The shell has no arrow-key history (needs raw mode / termios), no `;`, `&&`, pipes or
+  redirections, no field splitting, no continuation lines for an open quote; a `'` inside `"..."`
+  flips history expansion's quote tracking. Its features are checked by hand until pipes let a
+  test feed it a script.
 - stdio: no `fread`, `fopen`/`fclose`/`setvbuf`, no `isatty` (stdout is always line-buffered),
   `__stdio_head` is `const` (must change when `fopen` adds streams), no stream locking (needed with
   user threads); `stdio.h` is still partly a stub (`fopen`, `fread`, `fseek` declared but missing).

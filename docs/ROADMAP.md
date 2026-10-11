@@ -133,7 +133,7 @@ docs/                     # handoff, roadmap
 5. ~~Spawn + wait syscalls, `argv`/`envp` on the initial stack~~ (done; `exec` comes with `fork` in
    phase C); ~~`/sbin/init` in user space~~ (done: pid 1, runs the test runner) ~~starts a first
    `sh` with builtins~~ (done: `/bin/sh` with `exit`/`help`/`history` and `PATH` search; init
-   restarts it with `respawn` and halts through `reboot` with `once`).
+   restarts it with `respawn` and halts through `reboot` with `once`). Shell extras done: quotes, `$?`/`$NAME`, `!!`/`!n`.
 6. Phase B: initramfs + VFS; the shell runs programs by path.
 
 ## Reference projects
