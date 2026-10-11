@@ -6,4 +6,5 @@ pit.c \
 ps2.c \
 keyboard.c \
 vga.c \
-screen.c
+screen.c \
+power.c

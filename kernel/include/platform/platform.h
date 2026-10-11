@@ -1,6 +1,7 @@
 #ifndef _PLATFORM_PLATFORM_H_
 #define _PLATFORM_PLATFORM_H_
 
+#include <stddef.h>
 #include <stdint.h>
 #include <boot_info.h>
 
@@ -38,5 +39,21 @@ void platform_irq_enable(unsigned int irq);
  * @brief Acknowledge a handled IRQ on the interrupt controller.
  */
 void platform_irq_eoi(unsigned int irq);
+
+/**
+ * @brief Write a string to the platform's debug output.
+ *
+ * @param s The string to write.
+ * @param n The number of bytes to write.
+ */
+void platform_debug_write(const char *s, size_t n);
+
+/**
+ * @brief Power the machine off if the platform knows how.
+ *
+ * @note Returns if nothing worked (real hardware without ACPI support yet):
+ *       the caller falls back to halting the CPU.
+ */
+void platform_power_off(void);
 
 #endif // _PLATFORM_PLATFORM_H_
