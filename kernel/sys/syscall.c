@@ -307,6 +307,18 @@ static long sys_reboot(long command)
     }
 }
 
+static long sys_getpid(void)
+{
+    process_t *current = scheduler_current()->process;
+    return current->pid;
+}
+
+static long sys_getppid(void)
+{
+    process_t *current = scheduler_current()->process;
+    return process_parent_pid(current);
+}
+
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {
     (void)arg3;
@@ -331,6 +343,10 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_wait((long)arg0, arg1);
     case SYS_REBOOT:
         return sys_reboot((long)arg0);
+    case SYS_GETPID:
+        return sys_getpid();
+    case SYS_GETPPID:
+        return sys_getppid();
     default:
         return -ENOSYS;
     }

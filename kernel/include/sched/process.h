@@ -110,6 +110,14 @@ void process_child_remove(process_t *child);
 long process_wait_child(process_t *parent, long pid, process_t **out);
 
 /**
+ * Get the parent process ID of the specified process.
+ *
+ * @param p The process whose parent PID is to be retrieved.
+ * @return The parent process ID, or 0 if the process has no parent.
+ */
+uint32_t process_parent_pid(process_t *p);
+
+/**
  * Exit the current process with the given status.
  *
  * @param status The exit status of the process.

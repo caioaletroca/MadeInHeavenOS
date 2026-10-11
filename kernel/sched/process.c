@@ -183,6 +183,16 @@ long process_wait_child(process_t *parent, long pid, process_t **out)
     return -ECHILD;
 }
 
+uint32_t process_parent_pid(process_t *p)
+{
+    scoped_guard(spinlock, &process_tree_lock)
+    {
+        return p->parent ? p->parent->pid : 0;
+    }
+
+    return 0; // Unreachable, but required to satisfy the compiler
+}
+
 __attribute__((noreturn)) void process_exit(int status)
 {
     process_t *current = scheduler_current()->process;

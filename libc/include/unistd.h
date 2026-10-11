@@ -63,6 +63,20 @@ ssize_t read(int fd, void *buf, size_t count);
 int close(int fd);
 
 /**
+ * Get the process ID of the calling process.
+ *
+ * @return The process ID of the calling process.
+ */
+pid_t getpid(void);
+
+/**
+ * Get the parent process ID of the calling process.
+ *
+ * @return The parent process ID of the calling process.
+ */
+pid_t getppid(void);
+
+/**
  * Terminate the calling process immediately.
  *
  * @param status The exit status of the process.
