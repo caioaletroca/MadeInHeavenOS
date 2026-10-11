@@ -5,4 +5,5 @@ sbrk.c \
 read.c \
 write.c \
 close.c \
+reboot.c \
 _exit.c
