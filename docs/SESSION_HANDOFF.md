@@ -53,6 +53,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+12789bb feat(sched): hand orphans to init
+9cb20ad build(grub): show the boot menu for 5 seconds
+1f04740 docs(architecture): document reboot and init's once and respawn modes in handoff
 ae1ee7b test(user): add the reboot permission test
 cc2bae7 feat(init): add once and respawn modes; init never exits
 509a9a8 feat(libc): add reboot
@@ -347,10 +350,14 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
   on the parent's `child_exits` and scan again; no match → `-ECHILD`. `process_exit` sets `EXITED`,
   then wakes `parent->child_exits` under the tree lock. A child dereferences `parent` only under that
   lock, and the parent clears it (wait, exit) under the same lock, so a woken parent is never freed.
-- **Orphans:** `process_exit` moves every remaining child to a local list under the tree lock
-  (clearing its `parent`), then `process_release`s each after the lock: one still running is freed
-  when it exits, one already exited is freed right there (its space is not the active one: the
-  parent's is).
+- **Orphans go to init:** `process_create_init` remembers init (`init_process`, never cleared).
+  In the same tree-lock section that wakes its own parent, `process_exit` moves every remaining
+  child onto init's `children` with its reference (`parent = init`): a running one wakes init when
+  it exits, an already exited one makes `process_exit` wake `init->child_exits` right away. Init
+  reaps them in its `wait(-1)` loops. Without an adopter (before init exists: kernel self-tests;
+  or init itself exiting, which panics next) children are dropped: moved to a local list,
+  `parent` cleared, `process_release`d after the lock (one still running is freed when it exits,
+  one already exited right there: its space is not the active one).
 - **Ownership:** the process owns its space (destroyed with it) and one reference on each file in its
   table. `process_fd_install` takes the caller's file reference on success (lowest free fd, POSIX);
   on `-EMFILE` the caller keeps it.
@@ -463,7 +470,7 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
     shell, like a new login), with a message after a kill; `CRASHES_MAX` (5) kills in a row
     (reset by a clean exit) → `keeps crashing, giving up` and halt.
   - Unknown mode or no command → usage line and halt. Failing `start` or `wait` → halt.
-  - Orphans: once the kernel hands them to init (not yet), the `wait(-1)` loops already reap them.
+  - Orphans the kernel hands to init come back through the same `wait(-1)` loops and are reaped.
 - **`/usr/tests/run`** (`user/tests/run`): tables `{path, expected status}` for the automatic set and
   `interactive` (its first argument); spawns each test with `argv = {path}` and `environ`, passes
   when `WIFEXITED` and `WEXITSTATUS == expected` (so expected statuses are 0..255), prints
@@ -493,7 +500,7 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
   - `spawn`: spawns itself with a mode in `argv[1]` (no extra modules): exit 7 / 300 (→ 44) /
     SIGSEGV through the `W*` macros, `argv`/`envp` passed exactly, NULL `envp`, two children waited
     in reverse order, waiting twice → `ECHILD`, 20 rounds, `ENOENT`/`EFAULT`/`E2BIG`/`ENOSYS`/
-    `ECHILD`/`EINVAL`, an orphaned grandchild (not waitable), fd numbers kept across a closed fd
+    `ECHILD`/`EINVAL`, an orphaned grandchild (adopted by init, not waitable), fd numbers kept across a closed fd
     0. `wait`/`waitpid(-1)`: `ECHILD` with no children, a still-running child (sleep and rescan),
     three children reaped once each with their own status, `waitpid(pid)` then `wait` for the
     other, `ECHILD` for `pid` 0 and -2 with a child alive.
@@ -852,9 +859,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   stdio ordering lines and the messages of the faults the tests cause on purpose.
 - **Init modes (done):** `SYS_REBOOT` (init only), libc `reboot`, `/sbin/init once|respawn`,
   `init_start` panics if init exits.
-- **Next (roadmap phase A):** the kernel handing orphans to init (re-parent in `process_exit`, wake
-  init's `child_exits` for an already exited one); shell extras (`$?`, quotes, `!!`/`!n`); freestanding C++ runtime (`.init_array` in
-  `crt0`, `operator new`, `__cxa_*`).
+- **Orphans to init (done):** re-parented in `process_exit`, reaped by init's `wait(-1)` loops.
+- **Next (roadmap phase A):** emulator power off in `platform/pc` (Bochs shutdown port `0x8900`,
+  QEMU ACPI `0x604`) so `system halted` ends the run; `getpid`/`getppid` (`SYS_GETPID` 6) to test
+  adoption from user space; shell extras (`$?`, quotes, `!!`/`!n`); freestanding C++ runtime
+  (`.init_array` in `crt0`, `operator new`, `__cxa_*`).
 
 ### Shell (`user/bin/sh/`)
 
@@ -982,8 +991,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   with IRQs off, the same as after a `panic`. An emulator power off (Bochs's shutdown port, QEMU's
   ACPI port) in the platform layer would end the run cleanly.
 - The crash loop guard counts kills in a row, not kills per time (no clock in user space).
-- Orphans are dropped, not adopted by init: init already reaps any child with `wait(-1)`, the
-  kernel just never hands them over.
+- Adoption by init is not tested from user space (no `getppid`); the spawn test's orphan only
+  shows it does not crash or double release.
 - `tests/run`'s table and `grub.cfg`'s module list must name the same tests (until the initramfs).
 - `sys_exec` (replacing the running image) is not implemented: comes with `fork` in phase C.
 - `process_start` returns -1 instead of an errno on failure.
