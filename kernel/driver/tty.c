@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <driver/tty.h>
 #include <asm/irq_flags.h>
+#include <platform/platform.h>
 
 // Drawn for malformed UTF-8
 #define UTF8_REPLACEMENT 0xFFFD
@@ -84,6 +85,9 @@ size_t tty_write(const void *str, size_t n)
     const unsigned char *bytes = str;
 
     irq_flags_t flags = irq_save();
+
+    // Raw bytes, before decoding: the host terminal expects UTF-8, not CP437 glyphs
+    platform_debug_write(str, n);
 
     for (size_t i = 0; i < n; i++)
         tty_putchar(bytes[i]);

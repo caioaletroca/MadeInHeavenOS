@@ -7,4 +7,5 @@ ps2.c \
 keyboard.c \
 vga.c \
 screen.c \
+debugcon.c \
 power.c
