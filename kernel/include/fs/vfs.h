@@ -1,0 +1,118 @@
+#ifndef _FS_VFS_H_
+#define _FS_VFS_H_
+
+#include <stddef.h>
+#include <stdint.h>
+#include <sched/spinlock.h>
+
+#define VFS_NAME_MAX 255
+
+/**
+ * @brief Defines the types of nodes in the virtual file system.
+ */
+typedef enum
+{
+    VFS_FILE,
+    VFS_DIRECTORY
+} vfs_node_type_t;
+
+struct vfs_node_ops;
+
+/**
+ * @brief Represents a node in the virtual file system.
+ */
+typedef struct vfs_node
+{
+    vfs_node_type_t type;
+    uint64_t size;
+    const struct vfs_node_ops *ops;
+    struct vfs_node *parent;
+    unsigned int refs;
+    spinlock_t lock;
+} vfs_node_t;
+
+/**
+ * What a file system implements. Every function receives its own nodes.
+ */
+typedef struct vfs_node_ops
+{
+    // Directory: the child called name[0..length) (not '\0'-terminated), as a new reference
+    int (*lookup)(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
+
+    // File: copies up to count bytes from offset; returns the count (0 at the end) or -errno
+    long (*read)(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
+
+    // Called after the last reference is dropped; NULL: the node is never freed
+    void (*release)(vfs_node_t *node);
+} vfs_node_ops_t;
+
+/**
+ * @brief Initialize a VFS node.
+ *
+ * @param node The node to initialize.
+ * @param type The type of the node.
+ * @param ops The operations associated with the node.
+ */
+void vfs_node_init(vfs_node_t *node, vfs_node_type_t type, const vfs_node_ops_t *ops);
+
+/**
+ * @brief Increment the reference count of a VFS node.
+ *
+ * @param node The node to increment the reference count for.
+ */
+void vfs_node_get(vfs_node_t *node);
+
+/**
+ * @brief Decrement the reference count of a VFS node.
+ *
+ * @param node The node to decrement the reference count for.
+ */
+void vfs_node_put(vfs_node_t *node);
+
+/**
+ * Get the next component of a path.
+ *
+ * @param path Pointer to the path string.
+ * @param length Pointer to store the length of the next component.
+ * @return Pointer to the start of the next component.
+ */
+const char *vfs_path_next(const char **path, size_t *length);
+
+/**
+ * @brief Mount the root of the virtual file system.
+ *
+ * @param root The root node to mount.
+ */
+void vfs_mount_root(vfs_node_t *root);
+
+/**
+ * @brief Look up a node by its path.
+ *
+ * @param path The path to look up.
+ * @param node Pointer to store the resulting node.
+ * @return 0 on success, -errno on failure.
+ */
+int vfs_lookup(const char *path, vfs_node_t **node);
+
+/**
+ * @brief Read data from a node.
+ *
+ * @param node The node to read from.
+ * @param buffer The buffer to store the read data.
+ * @param count The number of bytes to read.
+ * @param offset The offset within the node to start reading from.
+ * @return The number of bytes read on success, -errno on failure.
+ */
+long vfs_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset);
+
+/**
+ * @brief Read the entire contents of a file into memory.
+ *
+ * @param path The path to the file.
+ * @param data Pointer to store the allocated buffer containing the file data.
+ * @param size Pointer to store the size of the file data.
+ * @return 0 on success, -errno on failure.
+ */
+int vfs_read_file(const char *path, void **data, size_t *size);
+
+#endif /* _FS_VFS_H_ */
