@@ -197,6 +197,4 @@ void mm_selftest(void)
     mm_kmalloc_test();
 
     mm_address_space_test();
-
-    kprintf("MM self-test completed successfully\n");
 }

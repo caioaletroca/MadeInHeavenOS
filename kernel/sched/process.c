@@ -217,8 +217,6 @@ __attribute__((noreturn)) void process_exit(int status)
         process_release(child);
     }
 
-    kprintf("Process %u exited with status %d\n", current->pid, status);
-
     thread_exit();
 }
 

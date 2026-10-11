@@ -144,6 +144,4 @@ void elf_selftest(const boot_info_t *info)
     }
 
     kfree(copy);
-
-    kprintf("ELF self-test completed successfully\n");
 }

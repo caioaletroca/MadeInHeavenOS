@@ -90,6 +90,4 @@ void guard_selftest(void)
     spinlock_irqrestore(&lock, flags);
     if (lock.locked || !irq_enabled())
         panic("spinlock_irqsave: lock not released\n");
-
-    kprintf("Guard self-test completed successfully\n");
 }

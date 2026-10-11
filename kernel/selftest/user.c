@@ -73,8 +73,6 @@ static void user_loop_test(void)
         thread_sleep(TIMER_FREQUENCY_HZ);
 
         uint64_t counter = user_variable_read(process, user_loop_start, user_loop_counter);
-        kprintf("User mode counter: %u\n", (unsigned int)counter);
-
         if (counter <= previous)
             panic("User thread is not making progress\n");
 
@@ -175,6 +173,4 @@ void user_selftest(void)
     user_fault_test("Hlt", user_hlt_start, user_hlt_before, user_hlt_after, user_hlt_end,
                     SIGNAL_EXIT_STATUS(SIGSEGV));
     user_files_test();
-
-    kprintf("User mode self-test completed successfully\n");
 }

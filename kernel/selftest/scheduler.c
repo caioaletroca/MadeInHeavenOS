@@ -155,8 +155,6 @@ static void sync_selftest(void)
 
     KASSERT(shared_counter == 2 * MUTEX_TEST_ITERATIONS);
     KASSERT(cond_waiter_woke && !cond_lock.locked);
-
-    kprintf("Sync self-test completed successfully\n");
 }
 
 void scheduler_selftest(void)
@@ -189,8 +187,6 @@ void scheduler_selftest(void)
 
     if (scheduler_current()->state != THREAD_RUNNING)
         panic("Boot thread is not running after preemption test");
-
-    kprintf("Scheduler preemption self-test completed successfully\n");
 
     sync_selftest();
 }

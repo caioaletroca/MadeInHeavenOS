@@ -59,6 +59,7 @@ void kmain(uintptr_t boot_handoff)
     console_selftest();
     user_selftest();
     elf_selftest(&boot_info);
+    kprintf("self-tests: ok\n"); // each one panics on failure
 
     init_start(&boot_info);
 

@@ -226,6 +226,5 @@ int main(int argc, char **argv, char **envp)
     test_orphan();
     test_fds();
 
-    printf("spawn: %d failure(s)\n", test_failures);
     return test_status();
 }

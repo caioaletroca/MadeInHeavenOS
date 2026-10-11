@@ -1,10 +1,5 @@
-#include <stddef.h>
-#include <unistd.h>
-#include <stdio.h>
-
 /*
- * First ELF program: prints a line and exits with 42, so the exit status
- * the kernel reports visibly comes from the program.
+ * First ELF program: exits with 42, so the status visibly comes from it.
  *
  * The status also checks the loader: 42 comes from .data (copied from the
  * file) plus a .bss variable that must be zero (only in memory). Missing
@@ -17,6 +12,5 @@ static volatile int zero;        // .bss
 
 int main(void)
 {
-    printf("Hello from an ELF program!\n");
     return status + zero;
 }

@@ -54,6 +54,4 @@ void console_selftest(void)
 
     if (length != 0)
         panic("Console self-test: EOF read returned %u bytes instead of 0\n", (unsigned int)length);
-
-    kprintf("Console self-test completed successfully\n");
 }

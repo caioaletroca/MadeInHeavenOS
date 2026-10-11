@@ -183,8 +183,5 @@ int main(void)
     test_realloc();
     test_failures_enomem();
     check_one_free_block(__LINE__);
-
-    // vsnprintf has no length modifiers yet: %u with an unsigned int
-    printf("malloc: heap %u KiB\n", (unsigned int)((heap_end() - heap_base) / 1024));
     return test_status();
 }
