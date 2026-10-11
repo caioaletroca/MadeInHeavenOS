@@ -51,6 +51,12 @@ $(libc_dir)/%.o: $(SOURCE_DIR)/%.S
 	mkdir -p $(@D)
 	$(CC) -MMD -MP -c $< -o $@ $(CPPFLAGS) $(LIBC_PRIVATE_CPPFLAGS) -D__is_libc $(USER_CFLAGS)
 
+# The C++ runtime (cxx/: operator new, __cxa_pure_virtual): libc.a only, as
+# hosted_local_sources. It leaves with our libc when libstdc++ arrives (phase D).
+$(libc_dir)/%.o: $(SOURCE_DIR)/%.cpp
+	mkdir -p $(@D)
+	$(CXX) -MMD -MP -c $< -o $@ $(CPPFLAGS) $(LIBC_PRIVATE_CPPFLAGS) -D__is_libc $(USER_CXXFLAGS)
+
 $(crt0): $(SOURCE_DIR)/arch/$(ARCH)/crt0.S
 	mkdir -p $(@D)
 	$(CC) -MMD -MP -c $< -o $@ $(CPPFLAGS) $(LIBC_PRIVATE_CPPFLAGS) -D__is_libc $(USER_CFLAGS)

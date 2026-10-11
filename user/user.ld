@@ -21,6 +21,30 @@ SECTIONS
     .rodata : ALIGN(4096) { *(.rodata*) } :rodata
 
     .data : ALIGN(4096) { *(.data*) } :data
+
+    /*
+     * Constructors and destructors of global objects: arrays of function
+     * pointers that libc's startup walks before main and exit walks after.
+     * Prioritized entries first, in priority order. GCC may emit .ctors/.dtors
+     * instead of .init_array/.fini_array depending on how it was configured:
+     * both are collected into the same arrays.
+     */
+    .init_array : ALIGN(8)
+    {
+        PROVIDE_HIDDEN(__init_array_start = .);
+        KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*) SORT_BY_INIT_PRIORITY(.ctors.*)))
+        KEEP(*(.init_array .ctors))
+        PROVIDE_HIDDEN(__init_array_end = .);
+    } :data
+
+    .fini_array : ALIGN(8)
+    {
+        PROVIDE_HIDDEN(__fini_array_start = .);
+        KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*) SORT_BY_INIT_PRIORITY(.dtors.*)))
+        KEEP(*(.fini_array .dtors))
+        PROVIDE_HIDDEN(__fini_array_end = .);
+    } :data
+
     .bss : { *(.bss*) *(COMMON) } :data
 
     /* No unwinder, debugger notes or toolchain comments in the image */

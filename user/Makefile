@@ -6,11 +6,12 @@ include ../common.mk
 # crt0.o and libc.a come from our sysroot and are named explicitly.
 # include/ (via CPPFLAGS) holds headers shared by programs, e.g. test.h.
 CFLAGS := $(USER_CFLAGS)
+CXXFLAGS := $(USER_CXXFLAGS)
 LDFLAGS := --sysroot=$(SYSROOT_DIR) -L$(LIB_DIR) -nostdlib -static -no-pie \
            -Wl,-z,max-page-size=4096 -Wl,--build-id=none -T user.ld
 
 ###########################################
-# Programs: one directory each under a category. Every .c/.S inside is linked
+# Programs: one directory each under a category. Every .c/.cpp/.S inside is linked
 # between crt0.o (first: holds _start) and libc (after: resolves what the
 # program uses). The category decides the install path in the sysroot.
 
@@ -24,7 +25,7 @@ programs := $(patsubst %/,%,$(foreach category,$(categories),$(wildcard $(catego
 
 crt0 := $(LIB_DIR)/crt0.o
 libs := -lc -lgcc
-program_sources = $(wildcard $(SOURCE_DIR)/$1/*.c $(SOURCE_DIR)/$1/*.S)
+program_sources = $(wildcard $(SOURCE_DIR)/$1/*.c $(SOURCE_DIR)/$1/*.cpp $(SOURCE_DIR)/$1/*.S)
 program_objects = $(call src_to_bin_dir,$(addsuffix .o,$(basename $(call program_sources,$1))))
 program_elf = $(BINARY_DIR)/$1.elf
 # tests/hello → <sysroot>/usr/tests/hello.elf (.elf until the initramfs, phase B)

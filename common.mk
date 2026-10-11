@@ -20,6 +20,7 @@ libk := ../libc/$(BINARY_DIR)/libk.a
 #####################################################################
 # Common Programs and Flags
 CC := $(HOST)-gcc
+CXX := $(HOST)-g++
 AR := $(HOST)-ar
 OBJDUMP ?= $(HOST)-objdump
 RM := rm -rf
@@ -32,8 +33,14 @@ CFLAGS := -O2 -g -std=gnu11 -Wall -Wextra $(ARCH_CFLAGS)
 # Code that runs in ring 3 (user programs, libc.a): not the kernel's ARCH_CFLAGS.
 # Linked at USER_BASE, so the default small code model; the red zone is fine
 # (int $0x80 switches to the kernel stack). No unwinder or stack protector yet.
-USER_CFLAGS := -O2 -g -std=gnu11 -Wall -Wextra -ffreestanding -fno-pie \
-               -fno-stack-protector -fno-asynchronous-unwind-tables
+USER_COMMON_FLAGS := -O2 -g -Wall -Wextra -ffreestanding -fno-pie \
+                     -fno-stack-protector -fno-asynchronous-unwind-tables
+USER_CFLAGS := -std=gnu11 $(USER_COMMON_FLAGS)
+# Freestanding C++ until mlibc and libstdc++ (roadmap phase D): no exceptions
+# or RTTI (no unwinder, no typeinfo library), no thread-safe local statics
+# (no __cxa_guard_*: one thread per process). The runtime is in libc/cxx/.
+USER_CXXFLAGS := -std=gnu++20 $(USER_COMMON_FLAGS) -fno-exceptions -fno-rtti \
+                 -fno-threadsafe-statics
 CPPFLAGS = -Iinclude --sysroot=$(SYSROOT_DIR) -isystem $(INCLUDE_DIR)
 LDFLAGS = -fno-PIC --sysroot=$(SYSROOT_DIR) -L$(LIB_DIR)
 LDFLAGS_EXTRA := -nostdlib -lk -lgcc
@@ -79,7 +86,7 @@ depends = $(patsubst %.o,%.d,$(objects))
 $(eval $(call include_dir,$(SOURCE_DIR)))
 
 .PHONY: all clean purge print-config
-.SUFFIXES: .o .c .S
+.SUFFIXES: .o .c .S .cpp
 
 all:
 
@@ -104,3 +111,7 @@ $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.c
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.S
 	mkdir -p $(@D)
 	$(CC) -MMD -MP -c $< -o $@ $(CPPFLAGS) $(CFLAGS)
+
+$(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.cpp
+	mkdir -p $(@D)
+	$(CXX) -MMD -MP -c $< -o $@ $(CPPFLAGS) $(CXXFLAGS)
