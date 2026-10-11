@@ -247,6 +247,9 @@ static void test_errors(void)
     char *argv[] = {"x", NULL};
 
     CHECK(posix_spawn(&pid, "/usr/tests/missing", NULL, NULL, argv, NULL) == ENOENT);
+    CHECK(posix_spawn(&pid, "/usr/tests", NULL, NULL, argv, NULL) == EACCES); // a directory
+    CHECK(posix_spawn(&pid, "/usr/tests/hello/", NULL, NULL, argv, NULL) == ENOTDIR);
+    CHECK(posix_spawn(&pid, "usr/tests/hello", NULL, NULL, argv, NULL) == ENOENT); // relative
     CHECK(posix_spawn(&pid, self, NULL, NULL, (char *const *)1, NULL) == EFAULT);
     CHECK(posix_spawn(&pid, (const char *)1, NULL, NULL, argv, NULL) == EFAULT);
 
