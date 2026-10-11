@@ -1,2 +1,3 @@
 local_sources := \
-file.c
+file.c \
+initrd.c
