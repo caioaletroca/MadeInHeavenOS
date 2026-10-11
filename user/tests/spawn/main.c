@@ -8,7 +8,7 @@
 #include <test.h>
 
 /*
- * posix_spawn and waitpid. The test spawns itself: argv[1] picks what the
+ * posix_spawn, waitpid and wait. The test spawns itself: argv[1] picks what the
  * child does, so no other program has to be on the boot modules.
  */
 
@@ -147,6 +147,59 @@ static void test_wait_order(void)
     CHECK(waitpid(pid, NULL, 0) == pid);
 }
 
+static void test_wait_any(void)
+{
+    int status;
+
+    // No children at all
+    errno = 0;
+    CHECK(wait(&status) == -1 && errno == ECHILD);
+
+    // Most likely still running when wait is called: it must sleep until the exit
+    pid_t pid = child_spawn("exit", "5", NULL);
+    CHECK(wait(&status) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 5);
+
+    // Three at once: each comes back exactly once, with its own status
+    const char *values[] = {"3", "4", "6"};
+    pid_t pids[3];
+    for (int i = 0; i < 3; i++)
+        pids[i] = child_spawn("exit", values[i], NULL);
+
+    int seen[3] = {0, 0, 0};
+    for (int n = 0; n < 3; n++)
+    {
+        pid_t got = waitpid(-1, &status, 0);
+        int match = -1;
+        for (int i = 0; i < 3; i++)
+            if (got == pids[i])
+                match = i;
+
+        CHECK(match >= 0);
+        if (match >= 0)
+        {
+            CHECK(!seen[match]);
+            CHECK(WIFEXITED(status) && WEXITSTATUS(status) == atoi(values[match]));
+            seen[match] = 1;
+        }
+    }
+    errno = 0;
+    CHECK(wait(NULL) == -1 && errno == ECHILD);
+
+    // Waiting for one by pid leaves the other for "any child"
+    pid_t first = child_spawn("exit", "1", NULL);
+    pid_t second = child_spawn("exit", "2", NULL);
+    CHECK(waitpid(second, &status, 0) == second && WEXITSTATUS(status) == 2);
+    CHECK(wait(&status) == first && WEXITSTATUS(status) == 1);
+
+    // Process groups (0, < -1) do not exist yet: ECHILD even with a child alive
+    pid = child_spawn("exit", "0", NULL);
+    errno = 0;
+    CHECK(waitpid(0, &status, 0) == -1 && errno == ECHILD);
+    errno = 0;
+    CHECK(waitpid(-2, &status, 0) == -1 && errno == ECHILD);
+    CHECK(waitpid(pid, NULL, 0) == pid);
+}
+
 static void test_many(void)
 {
     // References are dropped every time: a leak or a double release shows up here
@@ -191,7 +244,7 @@ static void test_errors(void)
     errno = 0;
     CHECK(waitpid(1, &status, 0) == -1 && errno == ECHILD); // not our child
     errno = 0;
-    CHECK(waitpid(-1, &status, 0) == -1 && errno == ECHILD); // "any child": not yet
+    CHECK(waitpid(-1, &status, 0) == -1 && errno == ECHILD); // no children left
     errno = 0;
     CHECK(waitpid(1, &status, 1) == -1 && errno == EINVAL); // WNOHANG: not yet
 }
@@ -201,6 +254,10 @@ static void test_orphan(void)
     // The child returns posix_spawn's result: 0 if the grandchild started
     int status = child_run("orphan", NULL, NULL);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    // The grandchild is not ours to wait for
+    errno = 0;
+    CHECK(wait(NULL) == -1 && errno == ECHILD);
 }
 
 static void test_fds(void)
@@ -221,6 +278,7 @@ int main(int argc, char **argv, char **envp)
     test_status_encoding();
     test_arguments();
     test_wait_order();
+    test_wait_any();
     test_many();
     test_errors();
     test_orphan();
