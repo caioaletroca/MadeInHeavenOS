@@ -90,7 +90,16 @@ size_t strlcpy(char *dest, const char *src, size_t size);
  * @param str Input string.
  * @return Number of characters in the string, excluding the null terminator.
  */
-size_t strlen(const char *);
+size_t strlen(const char *str);
+
+/**
+ * @brief Get the length of a string with a maximum limit.
+ *
+ * @param s Input string.
+ * @param maxlen Maximum number of characters to examine.
+ * @return Number of characters in the string, excluding the null terminator, up to maxlen.
+ */
+size_t strnlen(const char *s, size_t maxlen);
 
 /**
  * @brief Get the length of the initial segment of a string consisting entirely of characters in another string.

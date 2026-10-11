@@ -8,6 +8,7 @@ strncmp.c \
 strcpy.c \
 strlcpy.c \
 strlen.c \
+strnlen.c \
 strspn.c \
 strcspn.c \
 strtok_r.c \
