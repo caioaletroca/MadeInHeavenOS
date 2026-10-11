@@ -17,7 +17,8 @@ Working x86-64 PC kernel with:
 - User-mode threads preempted by the timer; `int 0x80` syscalls `write`, `read`, `close`, `exit`,
   `brk`, `spawn` and `wait` with user pointer validation
 - Programs start with `argc`/`argv`/`envp` on a System V initial stack; parents spawn children
-  (programs found by path among the boot modules) and wait for them with a POSIX wait status
+  (programs found by path among the boot modules) and wait for one or any of them with a POSIX
+  wait status
 - User heap after the ELF image (`brk`), 64 KiB user stack with a guard page below it
 - Processes (`process_t`) owning their address space and fd table, waitable, refcounted; faults in
   ring 3 kill the process with 128 + signal instead of panicking
@@ -51,6 +52,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+1d20f15 test(user): cover wait and waitpid(-1) in the spawn test
+d42b444 refactor(test): print only failures and one line per passing test
+965ce0f feat(libc): add wait
+1bc19f3 feat(sys): wait for any child with pid -1
+a2a78d1 docs(architecture): document the printf test and the hh/h fix in handoff
 937a1e8 test(user): add a printf test for vsnprintf
 5a71556 fix(libc): narrow hh and h arguments in vsnprintf
 7a8759b docs(architecture): document the shell, the new vsnprintf and the ISR fix in handoff
@@ -279,10 +285,11 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   the VFS) → `exec_load` → `process_create` → `process_files_inherit` (same fd numbers, one file
   reference each) → link as a child (the `process_create` handle is the parent's reference) →
   `process_start`. Order matters: the child is complete before it can run.
-- **`wait(pid, status)`** → pid, or `-ECHILD` (not a child, already waited for, `pid <= 0`: "any
-  child" is not supported yet). Finds `pid` in the caller's `children`, `process_wait`s, stores the
-  POSIX status (`signal`, or `(exit_status & 0xFF) << 8`) if `status != 0` (`-EFAULT` after reaping
-  on a bad pointer), unlinks and `process_release`s it.
+- **`wait(pid, status)`** → the reaped child's pid, or `-ECHILD` (no matching child: not a child,
+  already waited for, no children; `pid` 0 and `< -1` are process groups, which do not exist yet).
+  `pid` -1 is any child. `process_wait_child` returns the child unlinked; `sys_wait` stores the POSIX
+  status (`signal`, or `(exit_status & 0xFF) << 8`) if `status != 0` (`-EFAULT` after reaping on a
+  bad pointer) and `process_release`s it.
 - **`brk(address)`** always returns the current break, never `-errno` (Linux semantics; libc turns
   "did not move" into `ENOMEM`). It moves only for `heap_start <= address <= limit`, `limit` =
   `USER_STACK_TOP - USER_STACK_SIZE - PAGE_SIZE` (a guard page above the stack); `brk(0)` is the
@@ -317,15 +324,23 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
 ```
 
 - `process_t`: pid, state (`RUNNING`/`EXITED`), `exit_status`, `signal`, `refs`, `space`, `thread`
-  (one per process), `parent`, `children`/`sibling`, `waiters`, `files[16]`. Allocated with
-  `kzalloc`.
+  (one per process), `parent`, `children`/`sibling`, `waiters`, `child_exits`, `files[16]`.
+  Allocated with `kzalloc`.
 - **Parent and children:** `parent` is NULL for processes the kernel started (they are not on any
   list; their creator holds the handle). `children` holds spawned, not yet waited-for children, one
-  reference each; only the process's own thread touches it (spawn adds, wait removes, exit drops),
-  so no lock. A child never touches its parent. An exited child stays (a zombie) until `wait`.
-- **Orphans:** `process_exit` unlinks every remaining child and `process_release`s it: one still
-  running is freed when it exits, one already exited is freed right there (its space is not the
-  active one: the parent's is).
+  reference each (`process_child_add` at spawn, `process_child_remove` if it cannot start). An
+  exited child stays (a zombie) until `wait`. `parent`, `children` and `sibling` of every process are
+  protected by the global `process_tree_lock` (taken *before* a `p->lock`, never inside one).
+- **Waiting for children** (`process_wait_child(parent, pid, &child)`): one Mesa loop under the tree
+  lock scans `children` for a match (`pid`, or any for -1): an exited match is unlinked, its
+  `parent` cleared, and returned (the caller now owns the reference); matches all running → sleep
+  on the parent's `child_exits` and scan again; no match → `-ECHILD`. `process_exit` sets `EXITED`,
+  then wakes `parent->child_exits` under the tree lock. A child dereferences `parent` only under that
+  lock, and the parent clears it (wait, exit) under the same lock, so a woken parent is never freed.
+- **Orphans:** `process_exit` moves every remaining child to a local list under the tree lock
+  (clearing its `parent`), then `process_release`s each after the lock: one still running is freed
+  when it exits, one already exited is freed right there (its space is not the active one: the
+  parent's is).
 - **Ownership:** the process owns its space (destroyed with it) and one reference on each file in its
   table. `process_fd_install` takes the caller's file reference on success (lowest free fd, POSIX);
   on `-EMFILE` the caller keeps it.
@@ -338,7 +353,8 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
   `refs == 0` closes any remaining fds (a process that never ran), destroys the space and frees the
   struct; only the decrement runs with IRQs off. The last release is always on a kernel thread, so the
   space is never active when destroyed.
-- `process_wait(p)`: Mesa loop on `waiters` until `EXITED` (`wait_queue_sleep_locked` on `p->lock`),
+- `process_wait(p)` (kernel callers waiting for a parentless process: `init_start`, self-tests):
+  Mesa loop on `waiters` until `EXITED` (`wait_queue_sleep_locked` on `p->lock`),
   returns `exit_status`. The struct and space stay valid until the caller's `process_release`, so tests
   can read the program's variables.
 - **Locking:** `p->lock` protects `refs`, `state` and `exit_status`; `process_exit` sets the status
@@ -432,14 +448,14 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
 - **`/sbin/init`** (`user/sbin/init`, pid 1): runs `argv[1..]` as one command (`&argv[1]` is
   already its NULL-terminated `argv`), passing its `envp`; waits and exits with the command's status
   (128 + signal when killed); prints why when it cannot start. Later: run a shell, restart it, never
-  exit; adopt and reap orphans once `wait(-1)` exists.
+  exit; adopt orphans and reap them with `wait(-1)`.
 - **`/usr/tests/run`** (`user/tests/run`): tables `{path, expected status}` for the automatic set and
   `interactive` (its first argument); spawns each test with `argv = {path}` and `environ`, passes
   when `WIFEXITED` and `WEXITSTATUS == expected` (so expected statuses are 0..255), prints
   `test <path>: ok` / `FAIL (...)` and `tests: N passed, M failed`, exits with the failures.
 - **Test programs** (`user/tests/`, `user/include/test.h`): `CHECK(expr)` prints
   `FAIL line N: expr` to stdout and counts; `main` returns `test_status()` = failed checks.
-  - `hello`: returns `status + zero` from a `.data` 42 and a `.bss` 0 (expected 42: checks the copy
+  - `hello`: prints nothing, returns `status + zero` from a `.data` 42 and a `.bss` 0 (expected 42: checks the copy
     and the zeroing).
   - `stdio`: buffering order checked by eye (`1`, `3`, `2 no newline... 4`, `checks: …`,
     `5 flushed by exit` last, only via `exit`), return values, `ferror` + `EBADF` after `close(2)`.
@@ -448,7 +464,7 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
   - `malloc`: 16-alignment and no overlap over 15 sizes, one free block after freeing everything
     (`malloc(heap - header)` fits at the bottom without moving the break), 1000 rounds without heap
     growth, a 100 KiB block, `calloc` zeroing reused dirty memory, `realloc` semantics, `ENOMEM`
-    cases. Prints the heap size (164 KiB).
+    cases.
   - `malloc_abort`: double free (expected 134).
   - `stdin`: pushback (incl. a negative `char` coming back as 0..255, `fgets` with `n` 2 and 1),
     `fgetc(stdout)` → `EOF` + `ferror`, closed stdin → `EOF` + `EBADF` + `ferror`, `fgets` NULL.
@@ -460,7 +476,10 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
   - `spawn`: spawns itself with a mode in `argv[1]` (no extra modules): exit 7 / 300 (→ 44) /
     SIGSEGV through the `W*` macros, `argv`/`envp` passed exactly, NULL `envp`, two children waited
     in reverse order, waiting twice → `ECHILD`, 20 rounds, `ENOENT`/`EFAULT`/`E2BIG`/`ENOSYS`/
-    `ECHILD`/`EINVAL`, an orphaned grandchild, fd numbers kept across a closed fd 0.
+    `ECHILD`/`EINVAL`, an orphaned grandchild (not waitable), fd numbers kept across a closed fd
+    0. `wait`/`waitpid(-1)`: `ECHILD` with no children, a still-running child (sleep and rescan),
+    three children reaped once each with their own status, `waitpid(pid)` then `wait` for the
+    other, `ECHILD` for `pid` 0 and -2 with a child alive.
   - `printf`: `vsnprintf` through an `EXPECT(expected, format, ...)` helper that compares output
     and returned length and prints what it got. Every conversion, flag and length (`hh`/`h`
     narrowing, `%ld` above 2^32, `INT64_MIN`, 22-digit octal), `*` width/precision (negative ones),
@@ -811,9 +830,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **First shell (done):** `/bin/sh` and `/bin/echo`, libc string functions, `strdup`, `getenv`,
   `vsnprintf` rewritten with C99 semantics plus `snprintf`; the ISR alignment / kernel SSE fix.
 - **printf test (done):** `user/tests/printf`; it found `hh`/`h` being parsed and ignored (fixed).
-- **Next (roadmap phase A):** init restarting the shell (then
-  init never exits and its exit becomes a panic); `wait` for any child (`pid -1`) for init to reap
-  orphans; shell extras (`$?`, quotes, `!!`/`!n`); freestanding C++ runtime (`.init_array` in
+- **`wait` for any child (done):** `pid -1`, `child_exits` + `process_tree_lock`, libc `wait`.
+- **Quiet tests (done):** a passing run prints only `self-tests: ok`, one `ok` line per test, the
+  stdio ordering lines and the messages of the faults the tests cause on purpose.
+- **Next (roadmap phase A):** init restarting the shell (then init never exits and its exit becomes
+  a panic) and reaping adopted orphans with `wait(-1)`; shell extras (`$?`, quotes, `!!`/`!n`); freestanding C++ runtime (`.init_array` in
   `crt0`, `operator new`, `__cxa_*`).
 
 ### Shell (`user/bin/sh/`)
@@ -906,8 +927,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   value now shows it, nothing handles it yet). `vsnprintf` has no `#`, `'`, `j`/`t`, floats or `%n`.
 - Tabs on the console move the cursor 8 cells without writing them and ignore tab stops
   (`screen_put`), so tab-indented lines can look broken; the shell's `help` uses one.
-- `process_exit` prints `Process N exited with status S` for every process, interleaving with
-  program output in the shell; the runner and the shell report statuses themselves now.
+- Faults the tests cause on purpose (the `null`/`hlt` self-tests, the spawn test's `segv` child)
+  still print their fault messages; the user self-test's `files` program prints `Files test: stdout
+  still works`. The stdio test's last line has no `'\n'` (it checks the flush at `exit`), so the
+  runner's `test /usr/tests/stdio: ok` follows on the same line.
 - The shell has no `$?`, quoting, `!!`, or arrow-key history (needs raw mode / termios).
 - stdio: no `fread`, `fopen`/`fclose`/`setvbuf`, no `isatty` (stdout is always line-buffered),
   `__stdio_head` is `const` (must change when `fopen` adds streams), no stream locking (needed with
@@ -931,10 +954,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The fd table has no lock (safe only with one thread per process and no `fork`).
 - No self-test proves memory comes back: compare free frames (and the console file's refs) before
   and after `user_selftest` to catch a missing `process_release` / `file_put`.
-- Fault messages print the thread id, the exit line prints the pid.
+- Fault messages print the thread id, not the pid.
 - `process_wait(NULL)` returns -1, which is also a valid exit status (should assert).
-- `wait` supports only a specific pid (no `pid -1`/any child, no `WNOHANG`); "any child" needs a
-  parent-side wait queue woken by every child's exit.
+- `wait` has no `WNOHANG` and no process groups (`pid` 0, `< -1` give `-ECHILD`); waking every
+  waiter on any child's exit is fine with one thread per process.
 - `spawn` copies user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
   `ENAMETOOLONG`); programs come from boot modules only; no `posix_spawnp` (`PATH` search).
 - **init exiting powers the system off** (`init_start` prints the status and returns): temporary,
