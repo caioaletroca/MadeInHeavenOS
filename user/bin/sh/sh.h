@@ -35,6 +35,7 @@ typedef struct command
     char command[COMMAND_MAX];
     char *argv[MAX_ARGS + 1];
     int argc;
+    char words[COMMAND_MAX]; // the words, each '\0'-terminated; argv points here
 } command_t;
 
 /**
@@ -48,10 +49,11 @@ read_result_t command_read(command_t *cmd);
 /**
  * Parses a command.
  *
+ * @param sh The shell instance.
  * @param cmd The command structure containing the command to parse.
  * @return READ_COMMAND if a command was successfully parsed, READ_NOTHING if no command was read.
  */
-read_result_t command_parse(command_t *cmd);
+read_result_t command_parse(shell_t *sh, command_t *cmd);
 
 /**
  * Runs a builtin command.

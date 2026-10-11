@@ -28,7 +28,7 @@ int main(void)
 
         history_add(&sh.history, cmd.command);
 
-        if (command_parse(&cmd) == READ_NOTHING)
+        if (command_parse(&sh, &cmd) == READ_NOTHING)
             continue;
 
         command_run(&sh, &cmd);
