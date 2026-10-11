@@ -53,6 +53,12 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+554cb4f test(user): cover getpid, getppid and adoption by init
+1fbb87a feat(sys): add getpid and getppid
+e73d622 feat(platform): mirror console output to the 0xE9 debug port
+418c311 feat(platform): power off Bochs and QEMU on halt
+5109905 fix(arch): use the operand's width in the port I/O helpers
+330c95d docs(architecture): document orphans going to init in handoff
 12789bb feat(sched): hand orphans to init
 9cb20ad build(grub): show the boot menu for 5 seconds
 1f04740 docs(architecture): document reboot and init's once and respawn modes in handoff
@@ -174,7 +180,15 @@ from the same directory.
 ### Platform contract
 
 `platform_boot_info_init(handoff, info)`, `platform_init()`, `platform_timer_init(hz)`,
-`platform_irq_enable(irq)`, `platform_irq_eoi(irq)`, plus a `screen` backend.
+`platform_irq_enable(irq)`, `platform_irq_eoi(irq)`, `platform_debug_write(s, n)`,
+`platform_power_off()` (returns if it could not), plus a `screen` backend.
+
+- **PC power off** (`platform/pc/power.c`): `SLP_EN` with sleep type 0 (S5) to the ACPI PM1a
+  control register of both QEMU machines (`q35`: `0x604`; `pc`, the default: `0xB004`, where
+  SeaBIOS puts the PM base), then `"Shutdown"` to Bochs's port `0x8900`. Real hardware needs the
+  register from the ACPI tables (FADT): not yet, so it returns and the CPU halts.
+- **Debug console** (`platform/pc/debugcon.c`): `platform_debug_write` copies bytes to port
+  `0xE9`, which Bochs (`port_e9_hack: enabled=1`) and QEMU (`-debugcon`) send to the host.
 
 ### Boot sequence (`kmain`)
 
@@ -281,7 +295,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
-  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13 (3, 4, 6–9 reserved). Read and write
+  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14 (3, 4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
   or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`. Generic `sys/syscall.c` →
   `syscall_dispatch`; x86 `syscall.c` unpacks the frame. User pointers are `uintptr_t` in every
@@ -301,8 +315,10 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   bad pointer) and `process_release`s it.
 - **`reboot(command)`**: only pid 1, else `-EPERM` (checked before the command); `REBOOT_HALT`
   (uapi `<mihos/syscall.h>`) → `system_halt()` (`sys/power.c`: IRQs off, `system halted`,
-  `cpu_halt`; no ACPI power off yet), anything else `-EINVAL`. libc: `<sys/reboot.h>`,
-  `reboot(RB_HALT_SYSTEM)`.
+  `platform_power_off()`, `cpu_halt` if that returned), anything else `-EINVAL`. libc:
+  `<sys/reboot.h>`, `reboot(RB_HALT_SYSTEM)`.
+- **`getpid()`** → the caller's pid (no lock: it never changes). **`getppid()`** → the parent's pid
+  read under `process_tree_lock` (`process_parent_pid`), 0 without one (init, like Linux).
 - **`brk(address)`** always returns the current break, never `-errno` (Linux semantics; libc turns
   "did not move" into `ENOMEM`). It moves only for `heap_start <= address <= limit`, `limit` =
   `USER_STACK_TOP - USER_STACK_SIZE - PAGE_SIZE` (a guard page above the stack); `brk(0)` is the
@@ -740,7 +756,9 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
 - **Console self-test** (`selftest/console.c`): a feeder thread injects `h i Enter` and `Ctrl+D`
   through `input_report_key` while the reader is asleep; it must read `"hi\n"`, then 0 (EOF).
 - **Output:** `tty_write` decodes UTF-8 (U+FFFD for malformed/overlong) and runs under `irq_save`,
-  so each `kprintf` is atomic and callable from IRQs, panic and early boot. The PC `screen_glyph`
+  so each `kprintf` is atomic and callable from IRQs, panic and early boot. Inside that section it
+  first passes the raw bytes (UTF-8, before decoding) to `platform_debug_write`, so the host log
+  gets every call whole and in screen order, panics and keyboard echo included. The PC `screen_glyph`
   maps code points to CP437 and falls back to the unaccented letter (`ã → a`).
 - User programs reach the console through its `file_t` (see Files), never `console_read/write`
   directly.
@@ -798,6 +816,9 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
   printing, so the boot stopped silently. Fixed with `andq $-16, %rsp` before the call, and the
   kernel built with `-mgeneral-regs-only` (its SSE use also clobbered user vector registers, which a
   context switch does not save). Confirmed with `objdump -d ... | grep -c xmm`.
+- `out_asm`/`in_asm` used `%b0`, forcing `%al`: `outw`/`outl` wrote one byte and `inw`/`inl` read
+  one. Unnoticed while only `outb`/`inb` had callers; found when QEMU ignored the ACPI power off
+  (`outw(0xB004, 0x2000)` wrote `0x00`). A plain `%0` takes the width from the operand.
 
 ## Recommended next steps
 
@@ -860,10 +881,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **Init modes (done):** `SYS_REBOOT` (init only), libc `reboot`, `/sbin/init once|respawn`,
   `init_start` panics if init exits.
 - **Orphans to init (done):** re-parented in `process_exit`, reaped by init's `wait(-1)` loops.
-- **Next (roadmap phase A):** emulator power off in `platform/pc` (Bochs shutdown port `0x8900`,
-  QEMU ACPI `0x604`) so `system halted` ends the run; `getpid`/`getppid` (`SYS_GETPID` 6) to test
-  adoption from user space; shell extras (`$?`, quotes, `!!`/`!n`); freestanding C++ runtime
-  (`.init_array` in `crt0`, `operator new`, `__cxa_*`).
+- **Power off, debug console, getpid/getppid (done):** a test run ends with the emulator exiting;
+  the whole output is on the host (`-debugcon`, `port_e9_hack`); the spawn test checks adoption.
+  Found on the way: `outw`/`outl`/`inw`/`inl` only moved one byte.
+- **Next (roadmap phase A):** shell extras (`$?`, quotes, `!!`/`!n`); freestanding C++ runtime
+  (`.init_array` in `crt0`, `operator new`, `__cxa_*`); a script that runs QEMU headless and checks
+  the debug log for `tests: N passed, 0 failed`.
 
 ### Shell (`user/bin/sh/`)
 
@@ -987,12 +1010,12 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   waiter on any child's exit is fine with one thread per process.
 - `spawn` copies user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
   `ENAMETOOLONG`); programs come from boot modules only; no `posix_spawnp` (`PATH` search).
-- `system_halt` stops with `cli; hlt` (no ACPI power off): Bochs shows a popup when the CPU halts
-  with IRQs off, the same as after a `panic`. An emulator power off (Bochs's shutdown port, QEMU's
-  ACPI port) in the platform layer would end the run cleanly.
+- Power off works only on Bochs and QEMU (fixed ports); real hardware halts (needs the ACPI FADT).
+  A `panic` still halts with `cli; hlt` (Bochs shows a popup), on purpose: the screen stays.
+- Bochs reports the shutdown port as `>>PANIC<<` and exits with code 1 (its convention).
 - The crash loop guard counts kills in a row, not kills per time (no clock in user space).
-- Adoption by init is not tested from user space (no `getppid`); the spawn test's orphan only
-  shows it does not crash or double release.
+- The adoption test's grandchild cannot be waited for: a failure is only its printed `FAIL` line,
+  not counted by the runner.
 - `tests/run`'s table and `grub.cfg`'s module list must name the same tests (until the initramfs).
 - `sys_exec` (replacing the running image) is not implemented: comes with `fork` in phase C.
 - `process_start` returns -1 instead of an errno on failure.
@@ -1017,17 +1040,26 @@ Inspect a user program's segments (each `LOAD` page-aligned, no overlaps):
 x86_64-mihos-readelf -l sysroot/usr/tests/hello.elf
 ```
 
-Run Bochs:
+Run Bochs (`port_e9_hack: enabled=1` in `.bochsrc` sends the output to its console; the window
+closes by itself at `system halted`):
 
 ```sh
 bochs -q -f .bochsrc
 ```
 
-Run QEMU (verifies keys Bochs drops; `cpu_breakpoint` is a no-op there):
+Run QEMU (verifies keys Bochs drops; `cpu_breakpoint` is a no-op there). `-debugcon stdio` copies
+the output to the terminal; `-no-shutdown` keeps the window after the power off:
 
 ```sh
-qemu-system-x86_64 -cdrom mihos.iso -m 1024 -no-reboot -no-shutdown
+qemu-system-x86_64 -cdrom mihos.iso -m 1024 -no-reboot -no-shutdown -debugcon stdio
 qemu-system-x86_64 -cdrom mihos.iso -m 1024 -no-reboot -no-shutdown -d int,cpu_reset -D qemu.log
+```
+
+Headless test run (exits by itself, about 10 s with the menu; on Windows the log path must be a
+Windows path):
+
+```sh
+qemu-system-x86_64 -cdrom mihos.iso -m 1024 -no-reboot -display none -debugcon file:run.log
 ```
 
 Local, intentionally uncommitted: `.bochsrc`, `bx_enh_dbg.ini`.
