@@ -81,7 +81,7 @@ pid_t getppid(void);
  *
  * @param status The exit status of the process.
  */
-_Noreturn void _exit(int status);
+__attribute__((__noreturn__)) void _exit(int status);
 
 __END_DECLS
 
