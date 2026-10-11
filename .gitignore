@@ -57,6 +57,7 @@ dkms.conf
 *.ini
 bochslog.txt
 mihos.txt
+run-tests.log
 
 # Build results
 /*/build

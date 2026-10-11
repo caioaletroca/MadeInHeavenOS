@@ -886,7 +886,7 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   Found on the way: `outw`/`outl`/`inw`/`inl` only moved one byte.
 - **Next (roadmap phase A):** shell extras (`$?`, quotes, `!!`/`!n`); freestanding C++ runtime
   (`.init_array` in `crt0`, `operator new`, `__cxa_*`); a script that runs QEMU headless and checks
-  the debug log for `tests: N passed, 0 failed`.
+  the debug log for `tests: N passed, 0 failed` (done: `run-tests.sh`).
 
 ### Shell (`user/bin/sh/`)
 
@@ -1055,8 +1055,14 @@ qemu-system-x86_64 -cdrom mihos.iso -m 1024 -no-reboot -no-shutdown -debugcon st
 qemu-system-x86_64 -cdrom mihos.iso -m 1024 -no-reboot -no-shutdown -d int,cpu_reset -D qemu.log
 ```
 
-Headless test run (exits by itself, about 10 s with the menu; on Windows the log path must be a
-Windows path):
+Automatic test run, no window (about 10 s; exits 0 only after a clean power off with
+`tests: N passed, 0 failed` and no `FAIL` line; prints the log otherwise, kept in `run-tests.log`):
+
+```sh
+./run-tests.sh
+```
+
+The same by hand (on Windows the log path must be a Windows path):
 
 ```sh
 qemu-system-x86_64 -cdrom mihos.iso -m 1024 -no-reboot -display none -debugcon file:run.log
