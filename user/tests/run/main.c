@@ -9,8 +9,8 @@
  * status with the expected one. /sbin/init starts it from grub.cfg:
  *   /usr/tests/run               the automatic tests
  *   /usr/tests/run interactive   the tests that need typing
- * Exits with the number of failed tests. Every program listed here must
- * also be a module in grub.cfg (until the initramfs, phase B).
+ * Exits with the number of failed tests. Every program in user/ is in the
+ * initrd; the list is kept here by hand until there is readdir.
  */
 
 typedef struct test

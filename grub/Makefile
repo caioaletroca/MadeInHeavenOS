@@ -8,12 +8,18 @@ GRUB ?= grub-mkrescue
 GRUBFLAGS ?= /usr/lib/grub/i386-pc
 GRUB_CFG := grub.cfg
 
-# Every program user/ installed, loaded by GRUB as a Multiboot2 module (see
-# grub.cfg). The ISO mirrors the sysroot under /boot: <sysroot>/usr/tests/hello.elf
-# → /boot/usr/tests/hello.elf. Evaluated when this Makefile starts, after user/.
+# The initramfs: every program user/ installed, packed into one ustar archive
+# that GRUB loads as the "initrd" module (see grub.cfg); the kernel finds files
+# in it by path (kernel/fs/initrd.c). Headers and libraries in the sysroot are
+# for building, not running, so only the program directories go in. Leftover
+# .elf files from older builds are left out. Evaluated when this Makefile
+# starts, after user/ has installed.
 PROGRAM_DIRS := bin sbin usr/tests
-MODULES := $(foreach dir,$(PROGRAM_DIRS),$(wildcard $(SYSROOT_DIR)/$(dir)/*.elf))
-iso_path = $(ISO_DIR)/boot$(patsubst $(SYSROOT_DIR)%,%,$1)
+PROGRAMS := $(filter-out %.elf,$(foreach dir,$(PROGRAM_DIRS),$(wildcard $(SYSROOT_DIR)/$(dir)/*)))
+
+INITRD_STAGING := $(BINARY_DIR)/initrd
+INITRD := $(BINARY_DIR)/initrd.tar
+staging_path = $(INITRD_STAGING)$(patsubst $(SYSROOT_DIR)%,%,$1)
 
 .PHONY: all iso
 
@@ -21,9 +27,21 @@ all: iso
 
 iso: $(ISO)
 
-$(ISO): $(BOOT_DIR)/kernel $(MODULES) $(GRUB_CFG)
+# ustar: the format the kernel reads. Owner 0 and names sorted, so the archive
+# only changes when a program does.
+$(INITRD): $(PROGRAMS)
+	rm -rf $(INITRD_STAGING)
+	$(foreach program,$(PROGRAMS),mkdir -p $(dir $(call staging_path,$(program))) && cp $(program) $(call staging_path,$(program));)
+	mkdir -p $(@D)
+	tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name \
+	    -cf $@ -C $(INITRD_STAGING) $(PROGRAM_DIRS)
+
+# The ISO holds the kernel, grub.cfg and the initrd: rebuilt from scratch, so
+# files from older layouts (one module per program) never linger
+$(ISO): $(BOOT_DIR)/kernel $(INITRD) $(GRUB_CFG)
+	rm -rf $(ISO_DIR)
 	mkdir -p $(GRUB_DIR)
 	cp $(GRUB_CFG) $(GRUB_DIR)
 	cp $(BOOT_DIR)/kernel $(ISO_DIR)/boot/mihos.kernel
-	$(foreach module,$(MODULES),mkdir -p $(dir $(call iso_path,$(module))) && cp $(module) $(call iso_path,$(module));)
+	cp $(INITRD) $(ISO_DIR)/boot/initrd.tar
 	$(GRUB) $(GRUBFLAGS) -o $@ $(ISO_DIR)

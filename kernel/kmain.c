@@ -11,12 +11,14 @@
 #include <platform/platform.h>
 #include <sched/thread.h>
 #include <sched/scheduler.h>
+#include <fs/initrd.h>
 #include <boot_info.h>
 #include <init.h>
 
 #include "selftest/console.h"
 #include "selftest/elf.h"
 #include "selftest/guard.h"
+#include "selftest/initrd.h"
 #include "selftest/mm.h"
 #include "selftest/scheduler.h"
 #include "selftest/user.h"
@@ -45,6 +47,8 @@ void kmain(uintptr_t boot_handoff)
 
     mm_init(&boot_info);
 
+    initrd_init(&boot_info);
+
     scheduler_init(&boot_thread);
     threads_init();
     console_init(&keymap_abnt2);
@@ -58,7 +62,8 @@ void kmain(uintptr_t boot_handoff)
     scheduler_selftest();
     console_selftest();
     user_selftest();
-    elf_selftest(&boot_info);
+    initrd_selftest();
+    elf_selftest();
     kprintf("self-tests: ok\n"); // each one panics on failure
 
     init_start(&boot_info);

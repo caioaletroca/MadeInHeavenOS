@@ -4,6 +4,7 @@
 #include <mm/address_space.h>
 #include <asm/memory.h>
 #include <fs/file.h>
+#include <fs/initrd.h>
 #include <boot_info.h>
 #include <syscall.h>
 #include <string.h>
@@ -11,19 +12,20 @@
 #include <panic.h>
 
 /*
- * TEMPORARY test runner: runs every boot module in grub.cfg order and checks
- * its exit status. Replaced by starting /sbin/init alone once spawn and wait
- * syscalls exist; running the tests then becomes a user-space job.
+ * Starts /sbin/init from the initrd as pid 1. Its arguments are the words of
+ * the kernel command line (grub.cfg: "multiboot2 /boot/mihos.kernel once
+ * /usr/tests/run"). Init never exits: if it does, the kernel panics.
  */
 
-#define INIT_ARGS_MAX 8
+#define INIT_PATH "/sbin/init"
+#define INIT_ARGS_MAX 8 // argv entries, INIT_PATH included
 
 /**
- * Splits a line into arguments, similar to how a shell would.
+ * Splits a line in place at spaces into arguments (no quotes or escapes).
  *
  * @param line The input line to split.
  * @param argv Array to store the argument pointers.
- * @param max Maximum number of arguments to store.
+ * @param max Maximum number of arguments to store; argv needs max + 1 slots (NULL).
  * @return The number of arguments found.
  */
 static size_t args_split(char *line, char *argv[], size_t max)
@@ -50,22 +52,22 @@ static size_t args_split(char *line, char *argv[], size_t max)
 }
 
 /**
- * Run a boot module as a process with the console on fds 0-2 and wait for it.
+ * Run a program as pid 1 with the console on fds 0-2 and wait for it.
  *
- * @param module The boot module to run as a process.
- * @param name The program's name without arguments: its argv[0].
+ * @param image The program's ELF image (in place in the initrd).
+ * @param size The image's size in bytes.
+ * @param argv The argument vector for the program.
  * @param status Set to the exit status of the process on success.
  * @return 0 with *status set, or a negative errno if it could not be started.
  */
-static int module_run(const boot_module_t *module, char *const argv[], int *status)
+static int program_run(const void *image, size_t size, char *const argv[], int *status)
 {
     char *const envp[] = {"PATH=/bin", NULL};
 
     address_space_t *space;
     uintptr_t entry;
     uintptr_t stack;
-    int ret = exec_load(phys_to_kern(module->start), module->end - module->start, argv, envp, &space, &entry,
-                        &stack);
+    int ret = exec_load(image, size, argv, envp, &space, &entry, &stack);
     if (ret < 0)
         return ret;
 
@@ -102,20 +104,20 @@ static int module_run(const boot_module_t *module, char *const argv[], int *stat
 
 void init_start(const boot_info_t *info)
 {
-    // Programs spawn others by path: the boot modules stand in for files until there is a VFS
-    exec_modules_init(info);
+    size_t size;
+    const void *image = initrd_find(INIT_PATH, &size);
+    if (image == NULL)
+        panic("init_start: no %s in the initrd\n", INIT_PATH);
 
-    const boot_module_t *module = exec_module_find("/sbin/init");
-    if (module == NULL)
-        panic("init_start: no /sbin/init module\n");
-
-    char line[BOOT_MODULE_NAME_MAX];
+    // argv = {"/sbin/init", the words of the kernel command line...}
+    char line[BOOT_CMDLINE_MAX];
     char *argv[INIT_ARGS_MAX + 1];
-    strlcpy(line, module->name, sizeof(line));
-    args_split(line, argv, INIT_ARGS_MAX);
+    strlcpy(line, info->cmdline, sizeof(line));
+    argv[0] = INIT_PATH;
+    args_split(line, &argv[1], INIT_ARGS_MAX - 1); // slot 0 is INIT_PATH
 
     int status;
-    int ret = module_run(module, argv, &status);
+    int ret = program_run(image, size, argv, &status);
     if (ret < 0)
         panic("init_start: failed to start /sbin/init: %d\n", ret);
 

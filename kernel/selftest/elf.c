@@ -1,6 +1,7 @@
 #include <selftest/elf.h>
 #include <exec/elf.h>
 #include <exec/exec.h>
+#include <fs/initrd.h>
 #include <asm/elf.h>
 #include <asm/memory.h>
 #include <mm/address_space.h>
@@ -11,7 +12,7 @@
 #include <kprintf.h>
 #include <panic.h>
 
-#define ELF_TEST_MODULE "/usr/tests/hello"
+#define ELF_TEST_PROGRAM "/usr/tests/hello"
 
 /**
  * One way to break a valid image. `size` replaces the image size when non-zero.
@@ -52,21 +53,6 @@ static const elf_test_case_t elf_test_cases[] = {
     {"entry outside every segment", break_entry, 0},
 };
 
-static const boot_module_t *elf_test_module(const boot_info_t *info)
-{
-    // The module string is "<name> [arguments]": compare the first word only
-    size_t length = strlen(ELF_TEST_MODULE);
-
-    for (size_t i = 0; i < info->module_count; i++)
-    {
-        const char *name = info->modules[i].name;
-        if (memcmp(name, ELF_TEST_MODULE, length) == 0 && (name[length] == '\0' || name[length] == ' '))
-            return &info->modules[i];
-    }
-
-    panic("ELF self-test: boot module '%s' not found\n", ELF_TEST_MODULE);
-}
-
 /**
  * The first executable PT_LOAD, so cases can break the segment holding the entry.
  */
@@ -78,14 +64,15 @@ static elf64_program_header_t *elf_test_text(elf64_header_t *header)
         if (phdrs[i].p_type == PT_LOAD && (phdrs[i].p_flags & PF_X))
             return &phdrs[i];
 
-    panic("ELF self-test: no executable segment in '%s'\n", ELF_TEST_MODULE);
+    panic("ELF self-test: no executable segment in '%s'\n", ELF_TEST_PROGRAM);
 }
 
-void elf_selftest(const boot_info_t *info)
+void elf_selftest(void)
 {
-    const boot_module_t *module = elf_test_module(info);
-    const void *image = phys_to_kern(module->start);
-    size_t size = module->end - module->start;
+    size_t size;
+    const void *image = initrd_find(ELF_TEST_PROGRAM, &size);
+    if (image == NULL)
+        panic("ELF self-test: '%s' not in the initrd\n", ELF_TEST_PROGRAM);
 
     // Valid image: a full exec_load must succeed with the header's entry
     address_space_t *space;
@@ -95,7 +82,7 @@ void elf_selftest(const boot_info_t *info)
     char *const envp[] = {"A=1", NULL};
 
     if (exec_load(image, size, argv, envp, &space, &entry, &stack) != 0)
-        panic("ELF self-test: valid '%s' failed to load\n", ELF_TEST_MODULE);
+        panic("ELF self-test: valid '%s' failed to load\n", ELF_TEST_PROGRAM);
     if (entry != ((const elf64_header_t *)image)->e_entry)
         panic("ELF self-test: wrong entry %p\n", (void *)entry);
 

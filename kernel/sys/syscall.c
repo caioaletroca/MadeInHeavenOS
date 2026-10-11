@@ -7,6 +7,7 @@
 #include <sched/thread.h>
 #include <sched/process.h>
 #include <exec/exec.h>
+#include <fs/initrd.h>
 #include <power.h>
 #include <util.h>
 
@@ -219,18 +220,19 @@ static long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
             ret = user_vector_copy(envp, args->envp, args);
     }
 
-    const boot_module_t *module = NULL;
+    const void *image = NULL;
+    size_t size = 0;
     if (ret >= 0)
     {
-        module = exec_module_find(args->path);
-        if (module == NULL)
+        image = initrd_find(args->path, &size);
+        if (image == NULL)
             ret = -ENOENT;
     }
 
     address_space_t *space = NULL;
     uintptr_t entry, stack;
     if (ret >= 0)
-        ret = exec_load(phys_to_kern(module->start), module->end - module->start, args->argv, args->envp, &space, &entry, &stack);
+        ret = exec_load(image, size, args->argv, args->envp, &space, &entry, &stack);
 
     kfree(args);
     if (ret < 0)

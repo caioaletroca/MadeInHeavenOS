@@ -28,8 +28,9 @@ libs := -lc -lgcc
 program_sources = $(wildcard $(SOURCE_DIR)/$1/*.c $(SOURCE_DIR)/$1/*.cpp $(SOURCE_DIR)/$1/*.S)
 program_objects = $(call src_to_bin_dir,$(addsuffix .o,$(basename $(call program_sources,$1))))
 program_elf = $(BINARY_DIR)/$1.elf
-# tests/hello → <sysroot>/usr/tests/hello.elf (.elf until the initramfs, phase B)
-program_installed = $(install_dir_$(firstword $(subst /, ,$1)))/$(notdir $1).elf
+# tests/hello → <sysroot>/usr/tests/hello: the build tree keeps .elf, the
+# installed program is a plain file, as it appears in the initrd
+program_installed = $(install_dir_$(firstword $(subst /, ,$1)))/$(notdir $1)
 
 define program_rule
 $(call program_elf,$1): $(crt0) $(LIB_DIR)/libc.a $(call program_objects,$1) user.ld
