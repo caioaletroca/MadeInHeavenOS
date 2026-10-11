@@ -8,7 +8,7 @@
 #include <test.h>
 
 /*
- * posix_spawn, waitpid and wait. The test spawns itself: argv[1] picks what the
+ * posix_spawn, waitpid, wait, getpid and getppid. The test spawns itself: argv[1] picks what the
  * child does, so no other program has to be on the boot modules.
  */
 
@@ -95,6 +95,33 @@ static int child_main(int argc, char **argv, char **envp)
         char *argv_grandchild[] = {self, "exit", "0", NULL};
         pid_t pid;
         return posix_spawn(&pid, self, NULL, NULL, argv_grandchild, NULL);
+    }
+
+    // getppid is the parent's pid (argv[2]); the parent compares the status with our pid
+    if (strcmp(mode, "pids") == 0)
+    {
+        if (getppid() != atoi(argv[2]))
+            return 255;
+        return getpid() % 200;
+    }
+
+    // Spawns a grandchild and exits at once: init must adopt the grandchild
+    if (strcmp(mode, "adopt") == 0)
+    {
+        char *argv_grandchild[] = {self, "adopted", NULL};
+        pid_t pid;
+        return posix_spawn(&pid, self, NULL, NULL, argv_grandchild, NULL);
+    }
+
+    // Nobody can wait for an orphan: a missing adoption shows as this FAIL line
+    if (strcmp(mode, "adopted") == 0)
+    {
+        for (long i = 0; i < 1000000; i++)
+            if (getppid() == 1)
+                return 0;
+
+        printf("FAIL: orphan never adopted by init (getppid %d)\n", getppid());
+        return 1;
     }
 
     printf("unknown child mode %s\n", mode);
@@ -260,6 +287,24 @@ static void test_orphan(void)
     CHECK(wait(NULL) == -1 && errno == ECHILD);
 }
 
+static void test_pids(void)
+{
+    // Spawned by the runner, not by the kernel: neither init nor parentless
+    CHECK(getpid() > 1);
+    CHECK(getppid() > 1 && getppid() != getpid());
+
+    char self_pid[12];
+    snprintf(self_pid, sizeof(self_pid), "%d", getpid());
+    pid_t pid = child_spawn("pids", self_pid, NULL);
+    int status;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == pid % 200);
+
+    // The grandchild checks its own adoption (see "adopted")
+    status = child_run("adopt", NULL, NULL);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 static void test_fds(void)
 {
     // Last: the parent gives up its stdin
@@ -282,6 +327,7 @@ int main(int argc, char **argv, char **envp)
     test_many();
     test_errors();
     test_orphan();
+    test_pids();
     test_fds();
 
     return test_status();
