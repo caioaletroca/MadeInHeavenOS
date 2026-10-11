@@ -4,7 +4,7 @@
 #include <mm/address_space.h>
 #include <asm/memory.h>
 #include <fs/file.h>
-#include <fs/initrd.h>
+#include <fs/vfs.h>
 #include <boot_info.h>
 #include <syscall.h>
 #include <string.h>
@@ -104,10 +104,13 @@ static int program_run(const void *image, size_t size, char *const argv[], int *
 
 void init_start(const boot_info_t *info)
 {
+    // image is a kmalloc'd copy. It is never freed: program_run only returns
+    // once init has exited, and the kernel panics right after
     size_t size;
-    const void *image = initrd_find(INIT_PATH, &size);
-    if (image == NULL)
-        panic("init_start: no %s in the initrd\n", INIT_PATH);
+    void *image;
+    int ret = vfs_read_file(INIT_PATH, &image, &size);
+    if (ret < 0)
+        panic("init_start: cannot read %s: %d\n", INIT_PATH, ret);
 
     // argv = {"/sbin/init", the words of the kernel command line...}
     char line[BOOT_CMDLINE_MAX];
@@ -117,7 +120,7 @@ void init_start(const boot_info_t *info)
     args_split(line, &argv[1], INIT_ARGS_MAX - 1); // slot 0 is INIT_PATH
 
     int status;
-    int ret = program_run(image, size, argv, &status);
+    ret = program_run(image, size, argv, &status);
     if (ret < 0)
         panic("init_start: failed to start /sbin/init: %d\n", ret);
 

@@ -1,7 +1,7 @@
 #include <selftest/elf.h>
 #include <exec/elf.h>
 #include <exec/exec.h>
-#include <fs/initrd.h>
+#include <fs/vfs.h>
 #include <asm/elf.h>
 #include <asm/memory.h>
 #include <mm/address_space.h>
@@ -70,9 +70,10 @@ static elf64_program_header_t *elf_test_text(elf64_header_t *header)
 void elf_selftest(void)
 {
     size_t size;
-    const void *image = initrd_find(ELF_TEST_PROGRAM, &size);
-    if (image == NULL)
-        panic("ELF self-test: '%s' not in the initrd\n", ELF_TEST_PROGRAM);
+    void *image;
+    int read = vfs_read_file(ELF_TEST_PROGRAM, &image, &size);
+    if (read < 0)
+        panic("ELF self-test: cannot read '%s': %d\n", ELF_TEST_PROGRAM, read);
 
     // Valid image: a full exec_load must succeed with the header's entry
     address_space_t *space;
@@ -131,4 +132,5 @@ void elf_selftest(void)
     }
 
     kfree(copy);
+    kfree(image);
 }

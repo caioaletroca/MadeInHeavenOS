@@ -7,7 +7,7 @@
 #include <sched/thread.h>
 #include <sched/process.h>
 #include <exec/exec.h>
-#include <fs/initrd.h>
+#include <fs/vfs.h>
 #include <power.h>
 #include <util.h>
 
@@ -220,13 +220,13 @@ static long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
             ret = user_vector_copy(envp, args->envp, args);
     }
 
-    const void *image = NULL;
+    void *image = NULL;
     size_t size = 0;
     if (ret >= 0)
     {
-        image = initrd_find(args->path, &size);
-        if (image == NULL)
-            ret = -ENOENT;
+        ret = vfs_read_file(args->path, &image, &size);
+        if (ret == -EISDIR)
+            ret = -EACCES;
     }
 
     address_space_t *space = NULL;
@@ -235,6 +235,7 @@ static long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
         ret = exec_load(image, size, args->argv, args->envp, &space, &entry, &stack);
 
     kfree(args);
+    kfree(image);
     if (ret < 0)
         return ret;
 

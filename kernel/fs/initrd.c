@@ -1,4 +1,9 @@
 #include <fs/initrd.h>
+#include <fs/vfs.h>
+#include <mm/kmalloc.h>
+#include <sys/list.h>
+#include <mihos/errno.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include <panic.h>
@@ -37,6 +42,28 @@ _Static_assert(sizeof(tar_header_t) == TAR_BLOCK, "a tar header is one 512-byte 
 
 static const unsigned char *initrd_image;
 static size_t initrd_size;
+
+typedef struct initrd_node
+{
+    vfs_node_t node; // what the VFS sees (the "base class")
+    char *name;      // kmalloc'd copy, '\0'-terminated
+    size_t name_length;
+    const void *data; // files: their bytes inside the tar
+    list_t children;  // directories: initrd_node_t's, via sibling
+    list_t sibling;   // link in the parent's children
+} initrd_node_t;
+
+// The initrd_node_t around a vfs_node_t (C#: (InitrdNode)node)
+#define INITRD_NODE(n) list_container(n, initrd_node_t, node)
+
+static int initrd_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
+static long initrd_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
+
+static const vfs_node_ops_t initrd_ops = {
+    .lookup = initrd_lookup,
+    .read = initrd_read,
+    .release = NULL,
+};
 
 /**
  * tar_octal converts a string representing an octal number in a tar header
@@ -89,27 +116,6 @@ static int tar_header_valid(const tar_header_t *header)
 }
 
 /**
- * tar_name_equals checks if the name in the tar header matches the given path.
- * It considers the prefix and the name fields.
- * Returns true if they match, false otherwise.
- */
-static bool tar_name_equals(const tar_header_t *header, const char *path)
-{
-    size_t prefix_length = strnlen(header->prefix, sizeof(header->prefix));
-    if (prefix_length > 0)
-    {
-        if (strncmp(header->prefix, path, prefix_length) != 0 || path[prefix_length] != '/')
-            return false;
-
-        path += prefix_length + 1; // Skip the prefix and the '/'
-    }
-
-    size_t name_length = strnlen(header->name, sizeof(header->name));
-
-    return strlen(path) == name_length && memcmp(path, header->name, name_length) == 0;
-}
-
-/**
  * tar_next retrieves the next file in the tar archive.
  * It updates the offset, size, and data pointer.
  * Returns a pointer to the tar header, or NULL if there are no more files.
@@ -132,6 +138,156 @@ static const tar_header_t *tar_next(size_t *offset, size_t *size, const void **d
     *offset += TAR_BLOCK + ALIGN_UP(file_size, TAR_BLOCK);
 
     return header;
+}
+
+/**
+ * initrd_node_create creates a new initrd node with the given type and name.
+ * It allocates memory for the node and its name, initializes the VFS node,
+ * and sets up the children and sibling lists.
+ * Returns a pointer to the newly created node.
+ */
+static initrd_node_t *initrd_node_create(vfs_node_type_t type, const char *name, size_t length)
+{
+    initrd_node_t *n = kzalloc(sizeof(*n));
+    char *copy = kmalloc(length + 1);
+    if (n == NULL || copy == NULL)
+        panic("initrd: out of memory building the tree\n");
+
+    vfs_node_init(&n->node, type, &initrd_ops);
+    memcpy(copy, name, length);
+    copy[length] = '\0';
+    n->name = copy;
+    n->name_length = length;
+    list_init(&n->children);
+    list_init(&n->sibling);
+
+    return n;
+}
+
+/**
+ * initrd_child searches for a child node with the given name and length
+ * within the specified directory node.
+ * Returns a pointer to the child node if found, or NULL if not found.
+ */
+static initrd_node_t *initrd_child(initrd_node_t *dir, const char *name, size_t length)
+{
+    list_t *pos;
+    list_for_each(pos, &dir->children)
+    {
+        initrd_node_t *child = list_container(pos, initrd_node_t, sibling);
+        if (child->name_length == length && memcmp(child->name, name, length) == 0)
+            return child;
+    }
+
+    return NULL;
+}
+
+/**
+ * initrd_add adds a child node to the specified directory node.
+ * It sets the parent of the child node and inserts it into the
+ * children list of the directory.
+ */
+static void initrd_add(initrd_node_t *dir, initrd_node_t *child)
+{
+    child->node.parent = &dir->node;
+    list_insert_before(&dir->children, &child->sibling);
+}
+
+/**
+ * initrd_child_dir searches for a child directory with the given name and length
+ * within the specified directory node. If the child does not exist, it creates
+ * a new directory node and adds it to the parent directory.
+ * Returns a pointer to the child directory node.
+ */
+static initrd_node_t *initrd_child_dir(initrd_node_t *dir, const char *name, size_t length)
+{
+    initrd_node_t *child = initrd_child(dir, name, length);
+    if (child == NULL)
+    {
+        child = initrd_node_create(VFS_DIRECTORY, name, length);
+        initrd_add(dir, child);
+    }
+    else if (child->node.type != VFS_DIRECTORY)
+        panic("initrd: '%.*s' is both a file and a directory\n", (int)length, name);
+
+    return child;
+}
+
+/**
+ * initrd_lookup searches for a child node with the given name and length
+ * within the specified directory node.
+ * Returns 0 and sets the child pointer if found, or -ENOENT if not found.
+ */
+static int initrd_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child)
+{
+    initrd_node_t *found = initrd_child(INITRD_NODE(dir), name, length);
+    if (found == NULL)
+        return -ENOENT;
+
+    vfs_node_get(&found->node);
+    *child = &found->node;
+    return 0;
+}
+
+/**
+ * initrd_read reads data from the specified file node into the buffer.
+ * It reads up to 'count' bytes starting from the given 'offset'.
+ * Returns the number of bytes read, or 0 if the offset is beyond the end of the file.
+ */
+static long initrd_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset)
+{
+    if (offset >= file->size)
+        return 0;
+
+    uint64_t available = file->size - offset;
+    if (count > available)
+        count = (size_t)available;
+
+    memcpy(buffer, (const char *)INITRD_NODE(file)->data + offset, count);
+    return (long)count;
+}
+
+static void initrd_add_entry(initrd_node_t *root, const tar_header_t *header, size_t size, const void *data)
+{
+    bool is_file = header->type == '0' || header->type == '\0';
+    if (!is_file && header->type != '5')
+        return;
+
+    // Full path: "prefix/name", or just name. %.*s stops at a NUL or after the field's size
+    char path[sizeof(header->prefix) + 1 + sizeof(header->name) + 1];
+    size_t prefix_length = strnlen(header->prefix, sizeof(header->prefix));
+    if (prefix_length > 0)
+        snprintf(path, sizeof(path), "%.*s/%.*s", (int)prefix_length, header->prefix, (int)sizeof(header->name), header->name);
+    else
+        snprintf(path, sizeof(path), "%.*s", (int)sizeof(header->name), header->name);
+
+    initrd_node_t *dir = root;
+    const char *p = path;
+    size_t length;
+    const char *name = vfs_path_next(&p, &length);
+
+    while (length > 0)
+    {
+        // Look ahead: is this the last component?
+        size_t next_length;
+        const char *next_name = vfs_path_next(&p, &next_length);
+
+        if (next_length > 0 || !is_file)
+            dir = initrd_child_dir(dir, name, length);
+        else
+        {
+            if (initrd_child(dir, name, length) != NULL)
+                panic("initrd: '%s' listed twice\n", path);
+
+            initrd_node_t *file = initrd_node_create(VFS_FILE, name, length);
+            file->node.size = size;
+            file->data = data;
+            initrd_add(dir, file);
+        }
+
+        name = next_name;
+        length = next_length;
+    }
 }
 
 /**
@@ -161,6 +317,7 @@ void initrd_init(const boot_info_t *boot_info)
     initrd_image = phys_to_kern(module->start);
     initrd_size = module->end - module->start;
 
+    // Validate the tar archive and calculate offsets for each file.
     size_t file_offset = 0;
     while (file_offset + TAR_BLOCK <= initrd_size)
     {
@@ -178,33 +335,17 @@ void initrd_init(const boot_info_t *boot_info)
 
         file_offset = data + ALIGN_UP(file_size, TAR_BLOCK);
     }
-}
 
-const void *initrd_find(const char *path, size_t *size)
-{
-    const char *relative_path = path;
+    // The archive is valid: build the tree and make it "/"
+    initrd_node_t *root = initrd_node_create(VFS_DIRECTORY, "", 0);
+    root->node.parent = &root->node;
 
-    if (path[0] != '/')
-        return NULL;
-    relative_path++; // Skip the leading '/'
-
-    size_t file_offset = 0;
-    size_t file_size = 0;
-    const void *data = NULL;
+    size_t offset = 0;
+    size_t size;
+    const void *data;
     const tar_header_t *header;
-    while ((header = tar_next(&file_offset, &file_size, &data)) != NULL)
-    {
-        // Only regular files: '0', or '\0' from old tar versions
-        if (header->type != '0' && header->type != '\0')
-            continue;
+    while ((header = tar_next(&offset, &size, &data)) != NULL)
+        initrd_add_entry(root, header, size, data);
 
-        if (tar_name_equals(header, relative_path))
-        {
-            if (size)
-                *size = file_size;
-            return data;
-        }
-    }
-
-    return NULL;
+    vfs_mount_root(&root->node);
 }

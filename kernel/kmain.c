@@ -18,10 +18,10 @@
 #include "selftest/console.h"
 #include "selftest/elf.h"
 #include "selftest/guard.h"
-#include "selftest/initrd.h"
 #include "selftest/mm.h"
 #include "selftest/scheduler.h"
 #include "selftest/user.h"
+#include "selftest/vfs.h"
 
 static thread_t boot_thread;
 static boot_info_t boot_info;
@@ -62,7 +62,7 @@ void kmain(uintptr_t boot_handoff)
     scheduler_selftest();
     console_selftest();
     user_selftest();
-    initrd_selftest();
+    vfs_selftest();
     elf_selftest();
     kprintf("self-tests: ok\n"); // each one panics on failure
 

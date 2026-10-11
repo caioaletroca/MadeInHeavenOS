@@ -5,21 +5,13 @@
 #include <boot_info.h>
 
 /**
- * Initializes the initial ramdisk (initrd) subsystem.
- * This function must be called early during the boot process.
- * It locates the initrd boot module and prepares it for file access.
+ * Finds the "initrd" boot module, checks every tar header (panics on a corrupt
+ * archive), builds a tree of nodes from it (files point into the archive, which
+ * stays reserved) and mounts it as the VFS root "/". Once, after mm_init and
+ * before anything looks up a path.
  *
  * @param boot_info Pointer to the boot information structure containing the initrd module.
  */
 void initrd_init(const boot_info_t *boot_info);
-
-/**
- * Finds a file within the initial ramdisk (initrd) by its path.
- *
- * @param path The path to the file within the initrd. Must start with '/'.
- * @param size Pointer to a variable where the size of the found file will be stored. Can be NULL.
- * @return Pointer to the file data if found, or NULL if the file does not exist.
- */
-const void *initrd_find(const char *path, size_t *size);
 
 #endif // _FS_INITRD_H_
