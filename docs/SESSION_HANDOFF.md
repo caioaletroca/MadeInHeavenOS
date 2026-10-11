@@ -29,7 +29,7 @@ Working x86-64 PC kernel with:
   `argv`); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
   `/bin/echo` as the first command
@@ -37,7 +37,8 @@ Working x86-64 PC kernel with:
   headers installed into the sysroot
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
   layer, `errno`, `write`/`read`/`close`/`_exit`/`brk`/`sbrk`, `exit`/`abort`; buffered stdio over
-  fds with `printf`, `fgetc`/`fgets`/`ungetc`; `malloc`/`free`/`calloc`/`realloc` on `sbrk`
+  fds with `printf`, `fgetc`/`fgets`/`ungetc`; `malloc`/`free`/`calloc`/`realloc` on `sbrk`;
+  `atexit`; a freestanding C++ runtime (global constructors and destructors, `operator new`)
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
@@ -54,6 +55,13 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+d2df97b test(user): add a C++ runtime test
+5447b68 feat(libc): add the freestanding C++ runtime
+cc2901a feat(libc): run global constructors and exit handlers
+87d9b30 fix(libc): make stdbool.h and unistd.h usable from C++
+7beaa43 build: compile C++ for user space and collect constructor arrays
+3deb87f refactor(mm): keep mmap's private helpers out of its header
+a5d8aa7 docs(architecture): document the shell tokenizer and expansions in handoff
 a85b547 feat(sh): expand !!, !n and !-n from the history
 089736d refactor(sh): check a variable name's first character once
 df44eb9 feat(sh): split commands with a quote-aware tokenizer and expand $
@@ -155,6 +163,10 @@ The kernel includes its uapi headers through `-Iinclude/uapi`; `install-headers`
 `CFLAGS` (`ARCH_CFLAGS`: `-mcmodel=kernel -mno-red-zone -mgeneral-regs-only`: no SSE/x87 in the
 kernel, since a context switch saves only the general registers); ring-3 code (libc.a, `user/`) uses
 `USER_CFLAGS` from `common.mk` (freestanding, no PIE, small code model, no unwind tables).
+C++ (`.cpp` in programs and in `libc/cxx/`) is compiled with `$(CXX)` and `USER_CXXFLAGS`: the
+same shared `USER_COMMON_FLAGS` plus `-std=gnu++20 -fno-exceptions -fno-rtti
+-fno-threadsafe-statics` (no unwinder, no typeinfo, no `__cxa_guard_*`). Programs still link with
+`gcc -nostdlib`.
 
 ### Include rules (enforced in `kernel/Makefile`)
 
@@ -519,6 +531,11 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
     and strings on the stack, a 16-aligned frame in `main`.
   - `reboot`: `reboot` from a non-init process returns `EPERM`, also for an unknown command (a
     missing check halts the machine mid-run instead).
+  - `cxx` (C++): global constructors in declaration order before `main`, a local static built
+    once, virtual calls and `delete` through a virtual destructor, 16-aligned `new`,
+    `new[]`/`delete[]` over 10 objects, an `atexit` handler from `main` running before the global
+    destructors, which run in reverse; the last one calls `_exit(42)` (1 on a failure), so
+    missing destructors show as `main`'s 0. Expected status 42.
   - `spawn`: spawns itself with a mode in `argv[1]` (no extra modules): exit 7 / 300 (→ 44) /
     SIGSEGV through the `W*` macros, `argv`/`envp` passed exactly, NULL `envp`, two children waited
     in reverse order, waiting twice → `ECHILD`, 20 rounds, `ENOENT`/`EFAULT`/`E2BIG`/`ENOSYS`/
@@ -553,8 +570,24 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
 - **`crt0.o`** (`libc/arch/x86_64/crt0.S`) is built and installed on its own, not inside `libc.a`
   (archive members are only pulled for undefined symbols, and nothing references `_start`):
   `xor %ebp`; `argc = (%rsp)`, `argv = rsp + 8`, `envp = rsp + 16 + argc * 8` into
-  `rdi`/`rsi`/`rdx`, `environ = envp`; `call main`, `call exit` with the return value. Assembly so
-  `main` gets the SysV `RSP + 8` alignment (the kernel starts it at a 16-aligned `rsp`).
+  `rdi`/`rsi`/`rdx`, `call __libc_start_main` (never returns). Assembly so the call gets the SysV
+  `RSP + 8` alignment (the kernel starts it at a 16-aligned `rsp`).
+- **Process start and exit** (`libc/stdlib/`, declarations in `internal/libc.h`):
+  `__libc_start_main(argc, argv, envp)` sets `environ` (first: constructors may call `getenv`),
+  runs `.init_array` in order, then `exit(main(argc, argv, envp))`. `exit` runs the
+  `atexit`/`__cxa_atexit` table newest first (`__run_exit_handlers`, decrementing before each call
+  so a handler calling `exit` never reruns one), then `.fini_array` backwards, then
+  `__stdio_exit()`, then `_exit`. The table holds 32 `{function, arg}` entries (POSIX's minimum);
+  `atexit(f)` stores `f` cast to take a `void *` (not portable C, fine on x86-64, as in musl).
+  `__dso_handle` is defined in `atexit.c` (no toolchain `crtbegin.o`); never compared.
+- **Constructor arrays** (`user.ld`): `.init_array`/`.fini_array` (and `.ctors`/`.dtors`, in
+  case GCC emits the older form), prioritized entries first, between `__init_array_start/end` and
+  `__fini_array_start/end` (hidden), in the data segment. C programs have empty arrays.
+- **C++ runtime** (`libc/cxx/`, in `libc.a` so it leaves with our libc at phase D): `operator
+  new`/`new[]` on `malloc` (size 0 → 1; out of memory prints and `abort`s: no `std::bad_alloc`),
+  `delete`/`delete[]` and their sized variants on `free`, `__cxa_pure_virtual` (prints, aborts).
+  No `<new>` header yet (no placement new). `stdbool.h` defines `bool` only for C; `_exit` uses
+  `__attribute__((noreturn))` instead of `_Noreturn`, so every libc header works from C++.
 - **Processes:** `posix_spawn` (`<spawn.h>`, `libc/spawn/`): POSIX signature, only NULL file
   actions and attributes (`ENOSYS` otherwise); returns the error number, not `-1` + `errno`
   (`__syscall`). `waitpid` (`<sys/wait.h>`, `libc/wait/`): options must be 0 (`EINVAL`), `-1` +
@@ -581,8 +614,8 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   internals, `internal/malloc.h` the allocator's. Shared internals are `__`-prefixed, one per file,
   declared (and `extern` for data) in the internal header, defined once.
 - `errno` is a plain global (thread-local once user threads exist). `unistd`: `write`, `read`,
-  `close`, `_exit`, `brk`, `sbrk`, one function per file. `exit` flushes stdio (`__stdio_exit`) then
-  `_exit`; `abort` is `_exit(134)` (128 + SIGABRT, no signals yet).
+  `close`, `_exit`, `brk`, `sbrk`, one function per file. `exit`: see process start and exit;
+  `abort` is `_exit(134)` (128 + SIGABRT, no signals yet: no handlers or destructors run).
 - **`brk`/`sbrk`:** `brk` uses `__syscall` (the kernel returns an address, not `-errno`) and sets
   `ENOMEM` when the answer differs from the request. `sbrk` asks the kernel for the break on every
   call (no cache to go stale after a direct `brk`), rejects increments that wrap, returns the old
@@ -892,8 +925,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   Found on the way: `outw`/`outl`/`inw`/`inl` only moved one byte.
 - **Headless test script (done):** `./run-tests.sh`.
 - **Shell extras (done):** quote-aware tokenizer, `$` expansion, history expansion.
-- **Next (roadmap phase A):** freestanding C++ runtime (`.init_array` in `crt0`, `operator new`,
-  `__cxa_*`); then phase B (initramfs + VFS).
+- **C++ runtime (done):** constructor arrays, `__libc_start_main`, `atexit`/`__cxa_atexit`,
+  `operator new`/`delete`, `__cxa_pure_virtual`. **Phase A is complete.**
+- **Next (roadmap phase B):** initramfs (a tar archive as a GRUB module) and a VFS (inodes, path
+  lookup, mounts), so programs are files and lose the `.elf` suffix; then `/dev`, a block driver,
+  ext2.
 
 ### Shell (`user/bin/sh/`)
 
