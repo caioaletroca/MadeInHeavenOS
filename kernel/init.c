@@ -119,6 +119,6 @@ void init_start(const boot_info_t *info)
     if (ret < 0)
         panic("init_start: failed to start /sbin/init: %d\n", ret);
 
-    // TODO: init must never exit; until there is a shell, its exit means power off
-    kprintf("init exited with status %d: system halted\n", status);
+    // Init never exits: it halts the system through SYS_REBOOT
+    panic("init exited with status %d\n", status);
 }
