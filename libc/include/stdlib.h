@@ -13,8 +13,6 @@ __BEGIN_DECLS
  */
 __attribute__((__noreturn__)) void abort(void);
 
-int atexit(void (*)(void));
-
 /**
  * @brief Retrieves the value of an environment variable.
  *
@@ -67,6 +65,14 @@ int abs(int i);
  * @return int
  */
 int atoi(const char *str);
+
+/**
+ * @brief Registers a function to be called at program exit.
+ *
+ * @param function The function to register.
+ * @return 0 on success, -1 if the maximum number of handlers is reached.
+ */
+int atexit(void (*function)(void));
 
 /**
  * @brief Terminates the program with the given status.
