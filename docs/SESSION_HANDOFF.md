@@ -483,7 +483,7 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
   - `malloc_abort`: double free (expected 134).
   - `stdin`: pushback (incl. a negative `char` coming back as 0..255, `fgets` with `n` 2 and 1),
     `fgetc(stdout)` → `EOF` + `ferror`, closed stdin → `EOF` + `EBADF` + `ferror`, `fgets` NULL.
-  - `stdin_interactive` (second menu entry: `set default=1` in `grub.cfg`, then back to 0): prompts
+  - `stdin_interactive` (second GRUB menu entry, picked within the 5-second timeout): prompts
     without `'\n'` (seeing them checks the flush before `read`), a whole line, a line split over
     `fgets` calls, `getchar`, `abc` + Ctrl+D twice → `"abc"` then `feof`, sticky EOF, `clearerr`.
   - `args`: `argc == 1`, `argv[0]` its path, `envp = {"PATH=/bin"}`, `environ == envp`, vectors
@@ -957,7 +957,6 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   `fgets` copies byte by byte through `fgetc` (could copy `[pos, len)` up to the `'\n'` at once).
   Switching one stream from reading to writing drops unread input (`__fwritex` resets the buffer);
   fine for the console, needs `fseek` semantics once files exist.
-- The interactive test needs editing `grub.cfg` (`default=1`): with `timeout=0` there is no menu.
 - Bochs (win32 GUI) sends Left Ctrl for the ABNT2 `/ ?` key, so `KEY_RO` can only be tested on QEMU.
 - No IDT gate uses the IST stacks yet; a double fault on a broken kernel stack still triple-faults.
 - `mmap_split_region` drops region remainders smaller than 16 frames.
