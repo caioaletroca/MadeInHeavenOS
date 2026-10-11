@@ -1,6 +1,7 @@
 #ifndef _UAPI_MIHOS_ERRNO_H_
 #define _UAPI_MIHOS_ERRNO_H_
 
+#define EPERM 1  // operation not permitted
 #define ENOENT 2 // no such file: spawn of an unknown path
 #define E2BIG 7  // argument list too long
 #define ENOEXEC 8

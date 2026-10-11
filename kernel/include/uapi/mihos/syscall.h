@@ -15,5 +15,9 @@
 #define SYS_CLOSE 10
 #define SYS_BRK 11
 #define SYS_SPAWN 12
+#define SYS_REBOOT 13
+
+// SYS_REBOOT commands
+#define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)
 
 #endif /* _UAPI_MIHOS_SYSCALL_H_ */

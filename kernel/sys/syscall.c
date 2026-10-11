@@ -7,6 +7,7 @@
 #include <sched/thread.h>
 #include <sched/process.h>
 #include <exec/exec.h>
+#include <power.h>
 #include <util.h>
 
 // Bytes moved per copy; bounds the kernel stack buffer
@@ -289,6 +290,23 @@ static long sys_wait(long pid, uintptr_t status)
     return ret;
 }
 
+static long sys_reboot(long command)
+{
+    process_t *current = scheduler_current()->process;
+
+    if (current->pid != PROCESS_INIT_PID)
+        return -EPERM;
+
+    switch (command)
+    {
+    case REBOOT_HALT:
+        system_halt();
+        return 0;
+    default:
+        return -EINVAL;
+    }
+}
+
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {
     (void)arg3;
@@ -311,6 +329,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_spawn(arg0, arg1, arg2);
     case SYS_WAIT:
         return sys_wait((long)arg0, arg1);
+    case SYS_REBOOT:
+        return sys_reboot((long)arg0);
     default:
         return -ENOSYS;
     }
