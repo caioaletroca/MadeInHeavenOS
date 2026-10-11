@@ -17,16 +17,17 @@ Working x86-64 PC kernel with:
 - User-mode threads preempted by the timer; `int 0x80` syscalls `write`, `read`, `close`, `exit`,
   `brk`, `spawn` and `wait` with user pointer validation
 - Programs start with `argc`/`argv`/`envp` on a System V initial stack; parents spawn children
-  (programs found by path among the boot modules) and wait for one or any of them with a POSIX
+  (programs found by path in the initramfs) and wait for one or any of them with a POSIX
   wait status
 - User heap after the ELF image (`brk`), 64 KiB user stack with a guard page below it
 - Processes (`process_t`) owning their address space and fd table, waitable, refcounted; faults in
   ring 3 kill the process with 128 + signal instead of panicking
 - Open files (`file_t` + `file_ops_t`), console as the first backend behind fds 0–2
-- **ELF64 loader**: user programs built separately (`user/`), loaded by GRUB as Multiboot2 modules,
-  validated and mapped by `elf_load`
-- **`/sbin/init` as pid 1**: the only program the kernel starts (its GRUB module string is its
-  `argv`); `once <command>` (the test entries) runs it and halts the system through `reboot`,
+- **Initramfs**: every program in one ustar archive that GRUB loads as the `initrd` module;
+  `initrd_find(path)` returns a file's bytes in place
+- **ELF64 loader**: user programs built separately (`user/`), validated and mapped by `elf_load`
+- **`/sbin/init` as pid 1**: the only program the kernel starts (the kernel command line is its
+  arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
   `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
@@ -55,6 +56,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+2dbb6a3 feat(exec): load programs from an initramfs
+b4e3e2a feat(fs): add an initrd reader for ustar archives
+ac14f64 feat(libc): add strnlen
+68d6605 docs(libc): document atexit in stdlib.h
+1de9855 docs(architecture): document the C++ runtime and the end of phase A in handoff
 d2df97b test(user): add a C++ runtime test
 5447b68 feat(libc): add the freestanding C++ runtime
 cc2901a feat(libc): run global constructors and exit handlers
@@ -126,7 +132,7 @@ cd7b843 refactor(driver): protect the console ring with a spinlock
 ```text
 libc/                             # libk.a (kernel) + libc.a + crt0.o (user); see "Userland libc"
 user/                             # user.ld, include/ (test.h), bin/ sbin/ tests/<program>/
-grub/                             # grub.cfg + ISO build (kernel + modules)
+grub/                             # grub.cfg + ISO build (kernel + initrd.tar)
 kernel/
 ├── include/                      # GENERIC: no asm, no x86, no PC
 │   ├── arch/                     # contract every arch implements
@@ -212,10 +218,12 @@ from the same directory.
 
 ```text
 tty_init → platform_boot_info_init → arch_init [TSS first] → input_init → platform_init (PIC, PS/2, keyboard IRQ)
-→ mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init] → scheduler_init [idle thread]
+→ mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init] → initrd_init(&boot_info)
+→ scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [console thread]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → mm_selftest
-→ scheduler_selftest [+ sync tests] → console_selftest → user_selftest → elf_selftest(&boot_info)
+→ scheduler_selftest [+ sync tests] → console_selftest → user_selftest → initrd_selftest
+→ elf_selftest
 → init_start(&boot_info) [starts /sbin/init, waits; init exiting = panic; init halts via SYS_REBOOT]
 ```
 
@@ -234,7 +242,8 @@ boot_info regions ──▶ mmap_init ──▶ zones (one buddy system each) �
 - **Boot modules:** GRUB puts modules right after the kernel, in memory the firmware map reports as
   available. `mmap_init` places the metadata after the kernel *and* every module (`image_end`), and
   everything below `usable_start` stays reserved, so modules are never handed out as free frames.
-  A module ending above the direct map panics (`phys_to_kern` could not reach it).
+  A module ending above the direct map panics (`phys_to_kern` could not reach it). Today there is
+  one module, the initrd.
 - **Bootstrap:** zones start fully allocated (`refs = 1`); `mmap_release_regions` frees every frame
   to build the free lists.
 - **Boot allocator** (`mm/boot_alloc.c`): zeroed, permanent bump allocations for allocator metadata.
@@ -322,8 +331,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   Copies into a `kmalloc`'d `spawn_args_t`: the path (≤ 64 bytes, `-E2BIG` beyond), then each
   vector (≤ 64 entries, all strings together ≤ 4 KiB; a NULL `envp` is an empty environment),
   byte by byte through `address_space_read` (`user_string_copy`, `user_vector_copy`).
-  `exec_module_find(path)` (first word of the module string; boot modules stand in for files until
-  the VFS) → `exec_load` → `process_create` → `process_files_inherit` (same fd numbers, one file
+  `initrd_find(path, &size)` (`-ENOENT` if missing) → `exec_load` → `process_create` → `process_files_inherit` (same fd numbers, one file
   reference each) → link as a child (the `process_create` handle is the parent's reference) →
   `process_start`. Order matters: the child is complete before it can run.
 - **`wait(pid, status)`** → the reaped child's pid, or `-ECHILD` (no matching child: not a child,
@@ -438,9 +446,9 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private } ──▶ ops-
 ### Programs and the ELF loader (`exec/`, `init.c`, `user/`)
 
 ```text
-user/tests/hello ─build─▶ sysroot/usr/tests/hello.elf ─ISO─▶ /boot/usr/tests/hello.elf
-  ─grub.cfg─▶ module "/usr/tests/hello" ─▶ boot_info.modules[] ─▶ exec_module_find by path
-init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string) ─▶ exec_load
+user/tests/hello ─build─▶ sysroot/usr/tests/hello ─grub/Makefile─▶ initrd.tar (usr/tests/hello)
+  ─ISO /boot/initrd.tar─▶ module "initrd" ─▶ initrd_init ─▶ initrd_find("/usr/tests/hello")
+init_start ─▶ initrd_find("/sbin/init") ─▶ argv = {"/sbin/init", words of the cmdline} ─▶ exec_load
            ─▶ process_create_init (pid 1) + console fds 0-2 + start ─▶ process_wait ─▶ halt
 /sbin/init ─spawn─▶ /usr/tests/run ─spawn─▶ each test ─waitpid─▶ compare with its table
 ```
@@ -450,15 +458,27 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
   program's objects + `-lc -lgcc`, with `USER_CFLAGS` and `max-page-size=4096`. `user/include/` is on
   the include path (shared headers such as `test.h`). `user.ld` puts text (RX), rodata (R) and
   data+bss (RW) in separate `PHDRS` segments, each on its own page at `USER_BASE`.
-- **Install by category:** `bin/x` → `<sysroot>/bin/x.elf`, `sbin/x` → `<sysroot>/sbin/x.elf`,
-  `tests/x` → `<sysroot>/usr/tests/x.elf` (`.elf` until the initramfs). `grub/Makefile` copies every
-  installed program into the ISO under `/boot`, mirroring the sysroot.
-- **`grub.cfg`** (edited by hand: a new program needs a line): `module2 <ISO file> <install path>
-  [arguments]`, at most `BOOT_MODULE_MAX` (32) per entry. Only `/sbin/init`'s line has arguments
-  (its command); every other module just makes a program spawnable by path.
+- **Install by category:** `bin/x` → `<sysroot>/bin/x`, `sbin/x` → `<sysroot>/sbin/x`,
+  `tests/x` → `<sysroot>/usr/tests/x` (the build tree keeps `.elf`; installed programs have none).
+- **Initrd build** (`grub/Makefile`): `bin/`, `sbin/` and `usr/tests/` of the sysroot (not headers
+  or libraries; leftover `*.elf` skipped) are copied to a staging folder and packed with
+  `tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name`. The ISO is rebuilt from
+  scratch: `/boot/mihos.kernel`, `/boot/initrd.tar`, `/boot/grub/grub.cfg`.
+- **`grub.cfg`**: each entry is `multiboot2 /boot/mihos.kernel <init's arguments>` (GRUB passes
+  the words after the kernel path as the command line, without the path) and
+  `module2 /boot/initrd.tar initrd`. A new program needs no line.
 - **Modules** (`boot_info.modules[]`, Multiboot2 tag 3): physical `[start, end)` plus the whole module
-  string as `name` (path and arguments), copied with `strlcpy` (the Multiboot2 structure is not
-  protected after boot). Lookups compare the first word.
+  string as `name`, copied with `strlcpy` (the Multiboot2 structure is not protected after boot).
+- **Initrd** (`fs/initrd.c`): `initrd_init(info)` finds the module named `initrd` (first word of
+  its string), then walks every ustar header once: magic `ustar`, checksum (the 512 bytes summed
+  with the checksum field counted as spaces), octal size (`tar_octal`: optional leading spaces,
+  digits up to a NUL/space), and data inside the module (`size > initrd_size - data` → panic). A
+  corrupt archive panics, so `initrd_find` trusts it: `tar_next` steps header + data rounded to
+  512, stopping at a zero block. `initrd_find(path, &size)` takes absolute paths only (relative
+  → NULL: no current directory), skips non-regular entries (`type` not `'0'`/`'\0'`, so
+  directories are never returned), and compares `prefix + "/" + name` (`tar_name_equals`,
+  `strnlen` since a full 100-byte name has no NUL). Returns a pointer into the archive (read-only,
+  never freed: the module stays reserved) and the size; `size` may be NULL.
 - **`elf_load(space, image, size, &entry, &end)`** (`exec/elf.c`): validates `ELF64`, little-endian,
   version, `ET_EXEC`, `e_machine == ELF_MACHINE` and that the program header table is inside the
   image; for every non-empty `PT_LOAD` (empty ones, e.g. an unused RW segment, are skipped) checks the
@@ -486,13 +506,12 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
   Strings at the top, `sp = ALIGN_DOWN(strings - words * 8, 16)`; the pointer vector is built in a
   `kmalloc`'d buffer (string addresses are known while writing the strings) and written once.
   Everything ≤ `ARGS_MAX` (a quarter of the stack) or `-E2BIG`.
-- **`exec_modules_init(info)` / `exec_module_find(path)`** (`exec/exec.c`): `init_start` hands over
-  `boot_info` (valid for the whole run: `kmain`'s frame); lookups compare the first word of the
-  module string. Replaced by path lookup in the VFS (phase B).
-- **`init_start(info)`** (`init.c`): `exec_modules_init`, finds `/sbin/init` (missing → panic),
-  copies its module string and splits it in place at spaces into `argv` (`args_split`, at most
-  `INIT_ARGS_MAX` 8 words), `module_run`s it (cannot start → panic) and panics if it ever returns
-  (`init exited with status N`): init stops the system only through `SYS_REBOOT`. `module_run(module, argv, &status)` = `exec_load` (`envp = {"PATH=/bin"}`) +
+- **`init_start(info)`** (`init.c`): `initrd_find("/sbin/init")` (missing → panic), copies the
+  kernel command line into a `BOOT_CMDLINE_MAX` buffer, `argv[0] = "/sbin/init"`, then splits the
+  copy in place at spaces into `&argv[1]` (`args_split`, at most `INIT_ARGS_MAX - 1` words; 8
+  entries with the path), `program_run`s it (cannot start → panic) and panics if it ever returns
+  (`init exited with status N`): init stops the system only through `SYS_REBOOT`.
+  `program_run(image, size, argv, &status)` = `exec_load` (`envp = {"PATH=/bin"}`) +
   `process_create_init` + console on fds 0–2 + start at the built stack + wait + release; returns a
   negative errno (cleaning up) when the program cannot start.
 - **`/sbin/init`** (`user/sbin/init`, pid 1): `argv[1]` is the mode, `&argv[2]` the command
@@ -549,7 +568,12 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
     `%.3s` on an unterminated array, unknown conversions and a trailing `%`; the C99 contract with
     `#` canaries: cut mid-text/padding/number, exact fit, one short, size 1, size 0 with NULL,
     `%300d` returning 300.
-- **ELF self-test** (`selftest/elf.c`): `exec_load` of the module must succeed with the header's entry;
+- **Initrd self-test** (`selftest/initrd.c`, before the ELF one): `/sbin/init`, `/bin/sh` and
+  `/usr/tests/hello` are found and start with an ELF header; a NULL size works; `/nope`,
+  `/usr/tests` and `/usr/tests/` (a directory), a relative path, `""`, `hello/`, `hell` (a prefix),
+  `hello.elf` and `/sbin/init/x` are not found and leave the size untouched.
+- **ELF self-test** (`selftest/elf.c`): `exec_load` of `/usr/tests/hello` (from the initrd) must
+  succeed with the header's entry;
   ten broken copies (magic, class, machine, `ET_DYN`, truncated, program headers out of bounds,
   `p_filesz > p_memsz`, segment in the kernel half, segment wrapping past 2^64, entry outside every
   segment) must return `-ENOEXEC` without setting the entry. The valid load passes
@@ -927,8 +951,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **Shell extras (done):** quote-aware tokenizer, `$` expansion, history expansion.
 - **C++ runtime (done):** constructor arrays, `__libc_start_main`, `atexit`/`__cxa_atexit`,
   `operator new`/`delete`, `__cxa_pure_virtual`. **Phase A is complete.**
-- **Next (roadmap phase B):** initramfs (a tar archive as a GRUB module) and a VFS (inodes, path
-  lookup, mounts), so programs are files and lose the `.elf` suffix; then `/dev`, a block driver,
+- **Initramfs (done):** one ustar `initrd.tar` instead of a module per program, `initrd_find` in
+  spawn, `init_start` and the ELF self-test, init's arguments on the kernel command line, programs
+  without `.elf`, an initrd self-test.
+- **Next (roadmap phase B):** a VFS (vnodes/inodes, path lookup, mounts) with the initrd as its
+  first file system (read-only), `open`/`read`/`close` on files and `readdir` (the runner's test
+  list could then come from `/usr/tests`); then `/dev`, a block driver,
   ext2.
 
 ### Shell (`user/bin/sh/`)
@@ -1018,13 +1046,16 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   casts between struct types (`list_container`, slab headers). Check what the MiHOS GCC target
   defaults to and enable both for the kernel.
 - No `-Werror`: an incompatible-pointer warning (`spinlock_t *` vs embedded lock) went unnoticed.
-- Boot modules stay reserved forever (never returned to the allocator after loading).
+- The initrd module stays reserved forever (files are used in place; never returned to the
+  allocator).
 - Modules far above the kernel waste the free RAM between them (one boundary, not per-module holes).
+- `initrd_find` walks the whole archive on every lookup (fine for ~20 files; a VFS keeps a tree).
+  No symlinks, hard links or `..`/`.` resolution; no file modes used (everything is executable).
+- A program removed from `user/` stays in the sysroot, and so in the initrd, until `make clean`;
+  the initrd is only rebuilt when an existing program changes.
 - Fixed 64 KiB user stack (`exec_load`); no stack growth. The guard page below it is only "never
   mapped" (`brk` stops short of it), not a reserved region.
 - `NX` still off, so `PF_X`/`MMU_EXEC` from the loader are informational.
-- `grub.cfg` lists every program by hand (no generation from `user/`), at most `BOOT_MODULE_MAX`
-  (32) modules per entry.
 - The `stdio` test's output order is only checked by eye (no pipes to capture it).
 - Stale programs stay in the sysroot after their directory is removed (`make clean` to drop them).
 - `tty_write` holds IRQs off for the whole write plus a full 4000-byte VGA copy; long user writes
@@ -1073,14 +1104,14 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `wait` has no `WNOHANG` and no process groups (`pid` 0, `< -1` give `-ECHILD`); waking every
   waiter on any child's exit is fine with one thread per process.
 - `spawn` copies user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
-  `ENAMETOOLONG`); programs come from boot modules only; no `posix_spawnp` (`PATH` search).
+  `ENAMETOOLONG`); programs come from the initrd only; no `posix_spawnp` (`PATH` search).
 - Power off works only on Bochs and QEMU (fixed ports); real hardware halts (needs the ACPI FADT).
   A `panic` still halts with `cli; hlt` (Bochs shows a popup), on purpose: the screen stays.
 - Bochs reports the shutdown port as `>>PANIC<<` and exits with code 1 (its convention).
 - The crash loop guard counts kills in a row, not kills per time (no clock in user space).
 - The adoption test's grandchild cannot be waited for: a failure is only its printed `FAIL` line,
   not counted by the runner.
-- `tests/run`'s table and `grub.cfg`'s module list must name the same tests (until the initramfs).
+- `tests/run`'s table lists the tests by hand (no `readdir` yet).
 - `sys_exec` (replacing the running image) is not implemented: comes with `fork` in phase C.
 - `process_start` returns -1 instead of an errno on failure.
 - In the counter test the counter shares a cache line with the loop's code, so every increment is
@@ -1101,7 +1132,7 @@ make print-config
 Inspect a user program's segments (each `LOAD` page-aligned, no overlaps):
 
 ```sh
-x86_64-mihos-readelf -l sysroot/usr/tests/hello.elf
+x86_64-mihos-readelf -l sysroot/usr/tests/hello
 ```
 
 Run Bochs (`port_e9_hack: enabled=1` in `.bochsrc` sends the output to its console; the window
