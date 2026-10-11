@@ -143,26 +143,21 @@ static int expand(parser_t *p, shell_t *sh, const char **s)
         *s += 1; // skip the '$'
         return 0;
     }
-    else if (next == '_' || (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || (next >= '0' && next <= '9'))
+    else if (next != '\0' && strchr(NAME_START, next) != NULL)
     {
-        const char *name = *s + 1; // skip the '$' character
+        size_t length = strspn(*s + 1, NAME_CHARS);
 
-        if (*name != '\0' && strchr(NAME_START, *name) != NULL)
-        {
-            size_t length = strspn(name, NAME_CHARS);
+        char buffer[256];
 
-            char buffer[256];
+        snprintf(buffer, sizeof(buffer), "%.*s", (int)length, *s + 1);
 
-            snprintf(buffer, sizeof(buffer), "%.*s", (int)length, name);
+        const char *value = getenv(buffer);
+        if (value != NULL && word_append_string(p, value) < 0)
+            return -1;
 
-            const char *value = getenv(buffer);
-            if (value != NULL && word_append_string(p, value) < 0)
-                return -1;
+        *s = *s + length;
 
-            *s = name + length - 1;
-
-            return 0;
-        }
+        return 0;
     }
 
     if (word_append(p, '$') < 0)
