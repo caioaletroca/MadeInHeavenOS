@@ -26,9 +26,10 @@ Working x86-64 PC kernel with:
 - **ELF64 loader**: user programs built separately (`user/`), loaded by GRUB as Multiboot2 modules,
   validated and mapped by `elf_load`
 - **`/sbin/init` as pid 1**: the only program the kernel starts (its GRUB module string is its
-  `argv`); it runs one command (today the test runner) and its exit halts the system (temporary)
+  `argv`); `once <command>` (the test entries) runs it and halts the system through `reboot`,
+  `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
   history, `PATH` search; `/bin/echo` as the first command
 - **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`): the only kernel
@@ -52,6 +53,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+ae1ee7b test(user): add the reboot permission test
+cc2bae7 feat(init): add once and respawn modes; init never exits
+509a9a8 feat(libc): add reboot
+2b13247 feat(sys): add SYS_REBOOT, allowed only for init
+6cbe22d docs(architecture): document wait for any child and the quiet tests in handoff
 1d20f15 test(user): cover wait and waitpid(-1) in the spawn test
 d42b444 refactor(test): print only failures and one line per passing test
 965ce0f feat(libc): add wait
@@ -175,7 +181,7 @@ tty_init → platform_boot_info_init → arch_init [TSS first] → input_init �
 → threads_init [reaper] → console_init(&keymap_abnt2) [console thread]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → mm_selftest
 → scheduler_selftest [+ sync tests] → console_selftest → user_selftest → elf_selftest(&boot_info)
-→ init_start(&boot_info) [starts /sbin/init, waits; init exiting = halt] → boot thread idles
+→ init_start(&boot_info) [starts /sbin/init, waits; init exiting = panic; init halts via SYS_REBOOT]
 ```
 
 ## Memory management
@@ -272,7 +278,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
-  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12 (3, 4, 6–9 reserved). Read and write
+  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13 (3, 4, 6–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
   or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`. Generic `sys/syscall.c` →
   `syscall_dispatch`; x86 `syscall.c` unpacks the frame. User pointers are `uintptr_t` in every
@@ -290,6 +296,10 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `pid` -1 is any child. `process_wait_child` returns the child unlinked; `sys_wait` stores the POSIX
   status (`signal`, or `(exit_status & 0xFF) << 8`) if `status != 0` (`-EFAULT` after reaping on a
   bad pointer) and `process_release`s it.
+- **`reboot(command)`**: only pid 1, else `-EPERM` (checked before the command); `REBOOT_HALT`
+  (uapi `<mihos/syscall.h>`) → `system_halt()` (`sys/power.c`: IRQs off, `system halted`,
+  `cpu_halt`; no ACPI power off yet), anything else `-EINVAL`. libc: `<sys/reboot.h>`,
+  `reboot(RB_HALT_SYSTEM)`.
 - **`brk(address)`** always returns the current break, never `-errno` (Linux semantics; libc turns
   "did not move" into `ENOMEM`). It moves only for `heap_start <= address <= limit`, `limit` =
   `USER_STACK_TOP - USER_STACK_SIZE - PAGE_SIZE` (a guard page above the stack); `brk(0)` is the
@@ -440,15 +450,20 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
   module string. Replaced by path lookup in the VFS (phase B).
 - **`init_start(info)`** (`init.c`): `exec_modules_init`, finds `/sbin/init` (missing → panic),
   copies its module string and splits it in place at spaces into `argv` (`args_split`, at most
-  `INIT_ARGS_MAX` 8 words), `module_run`s it (cannot start → panic), then prints
-  `init exited with status N: system halted` and returns (the boot thread idles: a temporary power
-  off). `module_run(module, argv, &status)` = `exec_load` (`envp = {"PATH=/bin"}`) +
+  `INIT_ARGS_MAX` 8 words), `module_run`s it (cannot start → panic) and panics if it ever returns
+  (`init exited with status N`): init stops the system only through `SYS_REBOOT`. `module_run(module, argv, &status)` = `exec_load` (`envp = {"PATH=/bin"}`) +
   `process_create_init` + console on fds 0–2 + start at the built stack + wait + release; returns a
   negative errno (cleaning up) when the program cannot start.
-- **`/sbin/init`** (`user/sbin/init`, pid 1): runs `argv[1..]` as one command (`&argv[1]` is
-  already its NULL-terminated `argv`), passing its `envp`; waits and exits with the command's status
-  (128 + signal when killed); prints why when it cannot start. Later: run a shell, restart it, never
-  exit; adopt orphans and reap them with `wait(-1)`.
+- **`/sbin/init`** (`user/sbin/init`, pid 1): `argv[1]` is the mode, `&argv[2]` the command
+  (already NULL-terminated), started with init's `envp`. Never returns from `main`: everything ends
+  in `halt()` (`fflush`, `reboot(RB_HALT_SYSTEM)`; if refused, prints `errno` and spins).
+  - `once`: start, `wait(-1)` until the command's pid comes back (other pids are reaped orphans),
+    print `init: <command> exited with status N` (or `killed by signal N`), halt.
+  - `respawn`: the same wait loop, then start again: quietly after an exit (`exit`, Ctrl+D: a new
+    shell, like a new login), with a message after a kill; `CRASHES_MAX` (5) kills in a row
+    (reset by a clean exit) → `keeps crashing, giving up` and halt.
+  - Unknown mode or no command → usage line and halt. Failing `start` or `wait` → halt.
+  - Orphans: once the kernel hands them to init (not yet), the `wait(-1)` loops already reap them.
 - **`/usr/tests/run`** (`user/tests/run`): tables `{path, expected status}` for the automatic set and
   `interactive` (its first argument); spawns each test with `argv = {path}` and `environ`, passes
   when `WIFEXITED` and `WEXITSTATUS == expected` (so expected statuses are 0..255), prints
@@ -473,6 +488,8 @@ init_start ─▶ exec_module_find("/sbin/init") ─▶ args_split(module string
     `fgets` calls, `getchar`, `abc` + Ctrl+D twice → `"abc"` then `feof`, sticky EOF, `clearerr`.
   - `args`: `argc == 1`, `argv[0]` its path, `envp = {"PATH=/bin"}`, `environ == envp`, vectors
     and strings on the stack, a 16-aligned frame in `main`.
+  - `reboot`: `reboot` from a non-init process returns `EPERM`, also for an unknown command (a
+    missing check halts the machine mid-run instead).
   - `spawn`: spawns itself with a mode in `argv[1]` (no extra modules): exit 7 / 300 (→ 44) /
     SIGSEGV through the `W*` macros, `argv`/`envp` passed exactly, NULL `envp`, two children waited
     in reverse order, waiting twice → `ECHILD`, 20 rounds, `ENOENT`/`EFAULT`/`E2BIG`/`ENOSYS`/
@@ -833,8 +850,10 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **`wait` for any child (done):** `pid -1`, `child_exits` + `process_tree_lock`, libc `wait`.
 - **Quiet tests (done):** a passing run prints only `self-tests: ok`, one `ok` line per test, the
   stdio ordering lines and the messages of the faults the tests cause on purpose.
-- **Next (roadmap phase A):** init restarting the shell (then init never exits and its exit becomes
-  a panic) and reaping adopted orphans with `wait(-1)`; shell extras (`$?`, quotes, `!!`/`!n`); freestanding C++ runtime (`.init_array` in
+- **Init modes (done):** `SYS_REBOOT` (init only), libc `reboot`, `/sbin/init once|respawn`,
+  `init_start` panics if init exits.
+- **Next (roadmap phase A):** the kernel handing orphans to init (re-parent in `process_exit`, wake
+  init's `child_exits` for an already exited one); shell extras (`$?`, quotes, `!!`/`!n`); freestanding C++ runtime (`.init_array` in
   `crt0`, `operator new`, `__cxa_*`).
 
 ### Shell (`user/bin/sh/`)
@@ -960,9 +979,12 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   waiter on any child's exit is fine with one thread per process.
 - `spawn` copies user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
   `ENAMETOOLONG`); programs come from boot modules only; no `posix_spawnp` (`PATH` search).
-- **init exiting powers the system off** (`init_start` prints the status and returns): temporary,
-  until init runs a shell and never exits. Then `init_start` must panic when init exits.
-- Orphans are dropped, not adopted by init: a real init reaps them with `wait(-1)`.
+- `system_halt` stops with `cli; hlt` (no ACPI power off): Bochs shows a popup when the CPU halts
+  with IRQs off, the same as after a `panic`. An emulator power off (Bochs's shutdown port, QEMU's
+  ACPI port) in the platform layer would end the run cleanly.
+- The crash loop guard counts kills in a row, not kills per time (no clock in user space).
+- Orphans are dropped, not adopted by init: init already reaps any child with `wait(-1)`, the
+  kernel just never hands them over.
 - `tests/run`'s table and `grub.cfg`'s module list must name the same tests (until the initramfs).
 - `sys_exec` (replacing the running image) is not implemented: comes with `fork` in phase C.
 - `process_start` returns -1 instead of an errno on failure.
