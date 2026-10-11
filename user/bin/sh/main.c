@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include "sh.h"
 
 static void print_header(void)
@@ -26,7 +27,18 @@ int main(void)
         if (command_read(&cmd) == READ_EOF)
             break;
 
-        history_add(&sh.history, cmd.command);
+        char expanded[COMMAND_MAX];
+        int ret = history_expand(&sh.history, cmd.command, expanded, sizeof(expanded));
+        if (ret < 0)
+            continue;
+
+        if (ret == 1)
+        {
+            strlcpy(cmd.command, expanded, sizeof(cmd.command));
+            printf("%s\n", cmd.command);
+        }
+
+        history_add(&sh.history, expanded);
 
         if (command_parse(&sh, &cmd) == READ_NOTHING)
             continue;
