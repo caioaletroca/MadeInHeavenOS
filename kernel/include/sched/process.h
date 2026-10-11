@@ -29,8 +29,8 @@ typedef struct process
     unsigned int refs;
     struct address_space *space;
     struct thread *thread;
-    struct process *parent; // NULL for processes the kernel started. Protected by process_tree_lock.
-    list_t children;        // spawned, not yet waited for; one reference each. Protected by process_tree_lock.
+    struct process *parent; // NULL for processes the kernel started; init for orphans. Protected by process_tree_lock.
+    list_t children;        // spawned or adopted, not yet waited for; one reference each. Protected by process_tree_lock.
     list_t sibling;         // link in parent->children. Protected by process_tree_lock.
 
     wait_queue_t waiters;

@@ -15,6 +15,10 @@ static uint32_t next_pid = PROCESS_INIT_PID + 1;
 // first, then a process's lock (never take this while holding p->lock).
 static spinlock_t process_tree_lock = SPINLOCK_INIT;
 
+// /sbin/init once process_create_init made it; adopts orphans. Set before init
+// can run, never cleared: init exiting panics the kernel (init_start).
+static process_t *init_process;
+
 /**
  * Allocates a new process ID in a thread-safe manner.
  */
@@ -68,7 +72,10 @@ process_t *process_create_init(address_space_t *space)
 {
     process_t *p = process_create(space);
     if (p != NULL)
+    {
         p->pid = PROCESS_INIT_PID;
+        init_process = p;
+    }
 
     return p;
 }
@@ -187,30 +194,47 @@ __attribute__((noreturn)) void process_exit(int status)
         wait_queue_wake_all(&current->waiters);
     }
 
+    list_t *pos, *next, orphans;
+    list_init(&orphans);
     scoped_guard(spinlock, &process_tree_lock)
     {
+        // The parent may be asleep in wait for this child (or any child)
         if (current->parent != NULL)
             wait_queue_wake_all(&current->parent->child_exits);
+
+        // Remaining children go to init with their reference; init reaps them with wait(-1).
+        // No adopter before init exists (kernel self-tests) or when init itself exits (the
+        // kernel panics next): those children are dropped instead.
+        process_t *adopter = (init_process != NULL && current != init_process) ? init_process : NULL;
+        bool wake_adopter = false;
+
+        list_for_each_safe(pos, next, &current->children)
+        {
+            process_t *child = list_container(pos, process_t, sibling);
+            list_delete(&child->sibling);
+            if (adopter != NULL)
+            {
+                child->parent = adopter;
+                list_insert_before(&adopter->children, &child->sibling);
+                // A zombie already exited: no later exit will wake init for it
+                if (child->state == PROCESS_EXITED)
+                    wake_adopter = true;
+            }
+            else
+            {
+                child->parent = NULL;
+                list_insert_before(&orphans, &child->sibling);
+            }
+        }
+
+        if (wake_adopter)
+            wait_queue_wake_all(&adopter->child_exits);
     }
 
     // One thread per process: only this thread touches the table now (needs a lock with threads or fork)
     process_close_files(current);
 
-    // Children nobody will wait for: drop our reference; each is freed once it exits too
-    list_t *pos, *next, orphans;
-    list_init(&orphans);
-    scoped_guard(spinlock, &process_tree_lock)
-    {
-        list_for_each_safe(pos, next, &current->children)
-        {
-            process_t *child = list_container(pos, process_t, sibling);
-            list_delete(&child->sibling);
-            list_insert_before(&orphans, &child->sibling);
-            child->parent = NULL;
-        }
-    }
-
-    // Release references to orphaned children outside of the process_tree_lock to avoid deadlocks.
+    // Dropped children: release our reference after the lock; each is freed once it exits too
     list_for_each_safe(pos, next, &orphans)
     {
         process_t *child = list_container(pos, process_t, sibling);
