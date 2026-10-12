@@ -137,8 +137,8 @@ docs/                     # handoff, roadmap
 6. ~~Freestanding C++ runtime~~ (done: constructors and destructors, `atexit`, `operator new`).
    **Phase A complete.**
 7. Phase B: ~~initramfs~~ (done: one ustar `initrd.tar`, programs without `.elf`) + VFS (step (a)
-   done: nodes, path lookup, the initrd mounted as `/`; next `open`/`read`/`lseek`, `getdents`,
-   `stat`, `/dev`).
+   done: nodes, path lookup, the initrd mounted as `/`; step (b) done: `open`/`read`/`lseek`;
+   next `getdents`, `stat`, `/dev`).
 
 ## Reference projects
 

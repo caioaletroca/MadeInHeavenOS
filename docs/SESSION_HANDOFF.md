@@ -30,7 +30,7 @@ Working x86-64 PC kernel with:
   arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
   `/bin/echo` as the first command
@@ -56,6 +56,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+eb29388 test(user): cover open, read, lseek and close on files
+dba75da feat(libc): add open and lseek
+9f7697b feat(fs): open files through the VFS and seek in them
+a1945bd feat(sched): add a mutex guard
+f14129e docs(architecture): document the VFS core and the initrd tree in handoff
 e0f666d test(user): spawn of a directory, a file with '/' and a relative path
 654ab46 feat(fs): mount the initrd as a VFS tree and find programs by path
 f899388 feat(fs): add the VFS core
@@ -326,7 +331,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
-  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14 (3, 4, 7–9 reserved). Read and write
+  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16 (3, 4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
   or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`. Generic `sys/syscall.c` →
   `syscall_dispatch`; x86 `syscall.c` unpacks the frame. User pointers are `uintptr_t` in every
@@ -435,7 +440,7 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
 ### Files (`fs/file.c`)
 
 ```text
-process->files[fd] ──▶ file_t { ops, flags, refs, private } ──▶ ops->read / write / release
+process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } ──▶ ops->read / write / release
 ```
 
 - An fd is an index into the process's table; a `file_t` is an open file (POSIX open file
@@ -443,7 +448,26 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private } ──▶ ops-
   `-errno`; the syscall layer does every user copy, so backends never see user pointers.
 - `file_create(ops, flags, private)` (refs = 1), `file_get`, `file_put` (at 0: optional `release`,
   then `kfree`). Refs are protected by the file's embedded `lock`; `release` runs without locks held,
-  once, after the last reference is gone. No offset yet: nothing seeks until a VFS exists.
+  once, after the last reference is gone. `file_create` also sets `node = NULL`, `offset = 0` and
+  initializes `position_lock`.
+- **Position:** `node` is the `vfs_node_t` a VFS file reads (one reference, NULL for devices like
+  the console), `offset` the next byte. `offset` is protected by `position_lock`, a **mutex** held
+  across a read and its offset update (`vfs_file_read`) and across `lseek`: an open file can be
+  shared (fds inherited by `spawn`), and two readers must never get the same bytes. A mutex, not
+  the spinlock, because a disk read will sleep (Linux's `f_pos_lock`).
+- **VFS files** (`fs/vfs.c`): `vfs_open(path, flags, &file)`: unknown flags → `-EINVAL`, any
+  write access → `-EROFS` (nothing writable yet), then `vfs_lookup`, `file_create(&vfs_file_ops,
+  FILE_READ)`, and the lookup's reference moves into `file->node`. `vfs_file_ops`: `read` =
+  `vfs_read` at `offset`, advancing it; no `write`; `release` puts the node. Directories open
+  (for `readdir` later); reading one gives `-EISDIR`.
+- **`open(path, flags)`** (`sys_open`): the path copied into a `kmalloc`'d `VFS_PATH_MAX` (4096)
+  buffer (`-E2BIG` → `-ENAMETOOLONG`, `-EFAULT`), freed on every path; `vfs_open`;
+  `process_fd_install` (lowest free fd, `-EMFILE` → `file_put`, which frees the file and puts the
+  node). **`lseek(fd, offset, whence)`** (`sys_lseek`): `-EBADF`, `-ESPIPE` without a node; under
+  `position_lock`, base 0 / `offset` / `node->size` (bad whence → `-EINVAL`); a result below 0 is
+  `-EINVAL`, checked before adding (`offset < 0 && -(offset + 1) >= base`); past the end is allowed
+  (reads give 0). `read` and `close` are unchanged: `sys_read` reads one 256-byte chunk per call (a
+  short read).
 - **Console backend** (`driver/console.c`): one `FILE_READ | FILE_WRITE` file created in
   `console_init`, which keeps its own reference forever. `console_file()` returns a new reference;
   user programs get it three times, as fds 0, 1 and 2 (like `getty` opening the tty and `dup`ing it).
@@ -506,7 +530,8 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   `-ENAMETOOLONG`, a file before another component → `-ENOTDIR`, a file with a trailing `/` →
   `-ENOTDIR` (POSIX). Returns a new reference. `vfs_read` checks the type (`-EISDIR`).
   `vfs_read_file(path, &data, &size)`: the whole file in a `kmalloc`'d buffer (loops on `read`;
-  0 before the end → `-EIO`), the outputs set only on success. Mounts beyond the root come with
+  0 before the end → `-EIO`), the outputs set only on success. Open files: see Files. Mounts
+  beyond the root come with
   `/dev`.
 - **`elf_load(space, image, size, &entry, &end)`** (`exec/elf.c`): validates `ELF64`, little-endian,
   version, `ET_EXEC`, `e_machine == ELF_MACHINE` and that the program header table is inside the
@@ -589,10 +614,20 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
     SIGSEGV through the `W*` macros, `argv`/`envp` passed exactly, NULL `envp`, two children waited
     in reverse order, waiting twice → `ECHILD`, 20 rounds, `ENOENT`/`EFAULT`/`E2BIG`/`ENOSYS`/
     `ECHILD`/`EINVAL`, `EACCES` for a directory, `ENOTDIR` for `hello/`, `ENOENT` for a
-    relative path, an orphaned grandchild (adopted by init, not waitable), fd numbers kept across a closed fd
+    relative path, an orphaned grandchild (adopted by init, not waitable), a child's read on an
+    inherited fd moving the parent's offset (10), fd numbers kept across a closed fd
     0. `wait`/`waitpid(-1)`: `ECHILD` with no children, a still-running child (sleep and rescan),
     three children reaped once each with their own status, `waitpid(pid)` then `wait` for the
     other, `ECHILD` for `pid` 0 and -2 with a child alive.
+  - `files`: `open` of `/usr/tests/hello` gets fd 3 and reads the ELF header; reads continue at
+    the offset, return 0 at the end (again), pieces of 7 or 300 bytes add up to `lseek(SEEK_END)`;
+    `lseek` from each origin, `SEEK_CUR` 0 as "where am I", the same byte from the start and from
+    the end, past the end reads 0; `EINVAL` (before 0, `INT64_MIN`, bad whence) leaves the offset;
+    `ESPIPE` on stdin, `EBADF` on a bad fd; two opens have independent offsets; `open` errors
+    `ENOENT` (missing, relative), `ENOTDIR`, `EROFS` (`O_WRONLY`/`O_RDWR`), `EINVAL` (unknown
+    flag), `EFAULT`, `ENAMETOOLONG` (5000 bytes); `write` to a read-only fd → `EBADF`; a directory
+    opens but reads `EISDIR`; a closed fd → `EBADF`; 13 opens fill the 16-entry table, then
+    `EMFILE`, and after closing `open` gets 3 again.
   - `printf`: `vsnprintf` through an `EXPECT(expected, format, ...)` helper that compares output
     and returned length and prints what it got. Every conversion, flag and length (`hh`/`h`
     narrowing, `%ld` above 2^32, `INT64_MIN`, 22-digit octal), `*` width/precision (negative ones),
@@ -675,7 +710,10 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   internals, `internal/malloc.h` the allocator's. Shared internals are `__`-prefixed, one per file,
   declared (and `extern` for data) in the internal header, defined once.
 - `errno` is a plain global (thread-local once user threads exist). `unistd`: `write`, `read`,
-  `close`, `_exit`, `brk`, `sbrk`, one function per file. `exit`: see process start and exit;
+  `close`, `lseek`, `_exit`, `brk`, `sbrk`, one function per file; `open` in `libc/fcntl/`
+  (`<fcntl.h>`, variadic for a later `O_CREAT` mode). `O_*` and `SEEK_*` come from the uapi
+  `<mihos/fcntl.h>` (also included by `<stdio.h>` and `<unistd.h>`); `off_t` is `long` (64-bit).
+  `exit`: see process start and exit;
   `abort` is `_exit(134)` (128 + SIGABRT, no signals yet: no handlers or destructors run).
 - **`brk`/`sbrk`:** `brk` uses `__syscall` (the kernel returns an address, not `-errno`) and sets
   `ENOMEM` when the answer differs from the request. `sbrk` asks the kernel for the break on every
@@ -787,7 +825,9 @@ link.next == MALLOC_MAGIC while allocated; size in UNITs (sizeof(block_t)), head
   of the enclosing scope (C# `using var`), `scoped_guard(name, args...) { ... }` for one block (C#
   `lock`). Released on every exit (end, `return`, `break`, `goto` out), in reverse order. A guard is
   `name##_guard_t` + `name##_guard_init(args)` + `name##_guard_exit(state *)`, defined next to the
-  resource: `guard(irq)` and `guard(spinlock, &lock)`. Pitfalls: inside `scoped_guard`, `break`/
+  resource: `guard(irq)`, `guard(spinlock, &lock)` and `guard(mutex, &m)` (`sched/sync.h`; may
+  sleep: never under a spinlock or in an IRQ handler). A guard state holds a *pointer* to the
+  lock: a copy would be unlocked instead of the real one. Pitfalls: inside `scoped_guard`, `break`/
   `continue` leave the hidden `for`; always use braces (a stray `;` after `scoped_guard(...)` is an
   empty body); no `goto` into a guard's scope.
 - **Rules:** a lock sits next to the data it protects, with a "protected by" comment. Never free an
@@ -993,11 +1033,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   without `.elf`, an initrd self-test.
 - **VFS step (a) (done):** `vfs_node_t` and its ops, path lookup, the initrd as a tree mounted as
   `/`, `vfs_read_file` for spawn, init and the ELF self-test; a VFS self-test.
-- **Next (roadmap phase B, VFS step (b)):** `open(path, flags)` making a `file_t` over a node
-  (`file_t` gains `offset` and `node`, `file_ops` for VFS files read through `vfs_read` at the
-  offset), `read` on files, `lseek`, libc `open`/`lseek`; then (c) `getdents` + `opendir`/
-  `readdir`, an `ls`, the runner listing `/usr/tests`; (d) `stat`/`fstat`; then `/dev` (mounts,
-  the console as `/dev/console`), a block driver, ext2.
+- **VFS step (b) (done):** `open`/`lseek` (`file_t` with `node` and `offset` under a position
+  mutex), the mutex guard, libc `open`/`lseek`, the `files` test and the shared-offset case.
+- **Next (roadmap phase B, VFS step (c)):** `getdents` (a `readdir` node op, the offset of a
+  directory file counting entries) + libc `opendir`/`readdir`/`closedir`, an `ls` in `bin/`, the
+  runner listing `/usr/tests`; then (d) `stat`/`fstat`; then `/dev` (mounts, the console as
+  `/dev/console`), a block driver, ext2.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1095,6 +1136,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   fine at ~100 KiB, replaced by mapping later. `kmalloc` above 1024 B rounds to a power-of-two
   number of pages.
 - The VFS has no mount table yet (only the root); no current directory (absolute paths only).
+- `read` moves at most 256 bytes per syscall (`SYSCALL_CHUNK_SIZE`): correct (a short read) but
+  slow for files; no `fread`/`fopen` in libc yet. `sys_write` counts a whole chunk as written even
+  if the backend reported fewer bytes.
+- `stdio.h` gets `O_*` from `<mihos/fcntl.h>` along with `SEEK_*` (POSIX keeps `O_*` out of
+  `stdio.h`); split `SEEK_*` into their own uapi header if it matters.
 - A program removed from `user/` stays in the sysroot, and so in the initrd, until `make clean`;
   the initrd is only rebuilt when an existing program changes.
 - Fixed 64 KiB user stack (`exec_load`); no stack growth. The guard page below it is only "never
