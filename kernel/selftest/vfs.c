@@ -1,7 +1,10 @@
 #include <selftest/vfs.h>
 #include <fs/vfs.h>
+#include <fs/file.h>
 #include <mm/kmalloc.h>
 #include <mihos/errno.h>
+#include <mihos/fcntl.h>
+#include <mihos/dirent.h>
 #include <string.h>
 #include <panic.h>
 
@@ -135,6 +138,129 @@ static void vfs_test_read(void)
         panic("VFS self-test: vfs_read_file of a missing file did not return -ENOENT\n");
 }
 
+/**
+ * Reads entry `index` of dir, which must be `name` with the given type and inode number.
+ */
+static void vfs_expect_entry(vfs_node_t *dir, uint64_t index, const char *name, vfs_node_type_t type, uint64_t ino)
+{
+    vfs_dirent_t entry;
+    entry.length = (size_t)-1; // poison: readdir must set it
+
+    int ret = vfs_readdir(dir, index, &entry);
+    if (ret != 1)
+        panic("VFS self-test: readdir %u returned %d instead of '%s'\n", (unsigned int)index, ret, name);
+    if (entry.length != strlen(name) || strcmp(entry.name, name) != 0)
+        panic("VFS self-test: readdir %u gave '%s' (length %zu) instead of '%s'\n", (unsigned int)index, entry.name,
+              entry.length, name);
+    if (entry.type != type)
+        panic("VFS self-test: '%s' has the wrong type in readdir\n", name);
+    if (ino != 0 && entry.ino != ino)
+        panic("VFS self-test: '%s' has inode %u in readdir, %u by lookup\n", name, (unsigned int)entry.ino,
+              (unsigned int)ino);
+}
+
+static void vfs_test_readdir(void)
+{
+    vfs_dirent_t entry;
+    vfs_node_t *root = vfs_expect("/", VFS_DIRECTORY);
+    vfs_node_t *usr = vfs_expect("/usr", VFS_DIRECTORY);
+    vfs_node_t *tests = vfs_expect("/usr/tests", VFS_DIRECTORY);
+    vfs_node_t *hello = vfs_expect(HELLO, VFS_FILE);
+
+    // The root: "." and ".." are both itself, then the archive's directories in order
+    vfs_expect_entry(root, 0, ".", VFS_DIRECTORY, root->ino);
+    vfs_expect_entry(root, 1, "..", VFS_DIRECTORY, root->ino);
+    vfs_expect_entry(root, 2, "bin", VFS_DIRECTORY, 0);
+    vfs_expect_entry(root, 3, "sbin", VFS_DIRECTORY, 0);
+    vfs_expect_entry(root, 4, "usr", VFS_DIRECTORY, usr->ino);
+    if (vfs_readdir(root, 5, &entry) != 0 || vfs_readdir(root, 100, &entry) != 0)
+        panic("VFS self-test: readdir past the root's last entry did not return 0\n");
+
+    vfs_expect_entry(usr, 0, ".", VFS_DIRECTORY, usr->ino);
+    vfs_expect_entry(usr, 1, "..", VFS_DIRECTORY, root->ino);
+    vfs_expect_entry(usr, 2, "tests", VFS_DIRECTORY, tests->ino);
+
+    // hello is somewhere in /usr/tests, with the inode number lookup gives
+    int found = 0;
+    for (uint64_t i = 0; vfs_readdir(tests, i, &entry) == 1; i++)
+    {
+        if (strcmp(entry.name, "hello") == 0)
+        {
+            found++;
+            vfs_expect_entry(tests, i, "hello", VFS_FILE, hello->ino);
+        }
+    }
+    if (found != 1)
+        panic("VFS self-test: hello listed %d times in /usr/tests\n", found);
+
+    if (vfs_readdir(hello, 0, &entry) != -ENOTDIR)
+        panic("VFS self-test: readdir of a file did not return -ENOTDIR\n");
+
+    vfs_node_put(hello);
+    vfs_node_put(tests);
+    vfs_node_put(usr);
+    vfs_node_put(root);
+}
+
+// Every record of the root, as vfs_file_getdents packs it
+static const char *const root_names[] = {".", "..", "bin", "sbin", "usr"};
+#define ROOT_RECORDS 80 // 5 records of 16 bytes: 11-byte header + name + '\0', rounded to 8
+
+static void vfs_test_getdents(void)
+{
+    struct file *file;
+    if (vfs_open("/sbin/init", O_RDONLY | O_DIRECTORY, &file) != -ENOTDIR)
+        panic("VFS self-test: O_DIRECTORY on a file did not return -ENOTDIR\n");
+    if (vfs_open("/", O_RDONLY | O_DIRECTORY, &file) != 0)
+        panic("VFS self-test: opening / with O_DIRECTORY failed\n");
+
+    // Zeroed, like sys_getdents does; the byte after `size` is a canary
+    unsigned char buffer[ROOT_RECORDS + 16];
+    uint64_t next;
+    long n;
+
+    scoped_guard(mutex, &file->position_lock)
+    {
+        // The whole root at once
+        memset(buffer, 0, sizeof(buffer));
+        n = vfs_file_getdents(file, buffer, sizeof(buffer), &next);
+        if (n != ROOT_RECORDS || next != 5)
+            panic("VFS self-test: getdents of / returned %ld, next %u\n", n, (unsigned int)next);
+
+        size_t used = 0;
+        for (size_t i = 0; i < 5; i++)
+        {
+            const struct mihos_dirent *record = (const void *)(buffer + used);
+            if (record->d_reclen != 16 || strcmp(record->d_name, root_names[i]) != 0 ||
+                record->d_type != MIHOS_DT_DIR)
+                panic("VFS self-test: getdents record %zu is wrong ('%s', %u bytes)\n", i, record->d_name,
+                      (unsigned int)record->d_reclen);
+            used += record->d_reclen;
+        }
+
+        // At the end: 0, and next stays
+        file->offset = next;
+        if (vfs_file_getdents(file, buffer, sizeof(buffer), &next) != 0 || next != 5)
+            panic("VFS self-test: getdents at the end did not return 0\n");
+
+        // "sbin" fills its 16 bytes exactly: nothing may be written after them
+        file->offset = 3;
+        memset(buffer, 0, sizeof(buffer));
+        buffer[16] = 0xA5;
+        n = vfs_file_getdents(file, buffer, 16, &next);
+        if (n != 16 || next != 4 || buffer[16] != 0xA5)
+            panic("VFS self-test: getdents into an exact fit returned %ld, next %u, canary 0x%x\n", n,
+                  (unsigned int)next, buffer[16]);
+
+        // Not even one record fits
+        file->offset = 0;
+        if (vfs_file_getdents(file, buffer, 15, &next) != -EINVAL)
+            panic("VFS self-test: getdents into 15 bytes did not return -EINVAL\n");
+    }
+
+    file_put(file);
+}
+
 void vfs_selftest(void)
 {
     // Every lookup returns a reference and every step drops one: counts must not move
@@ -145,6 +271,8 @@ void vfs_selftest(void)
 
     vfs_test_lookup();
     vfs_test_read();
+    vfs_test_readdir();
+    vfs_test_getdents();
 
     if (root->refs != root_refs || hello->refs != hello_refs)
         panic("VFS self-test: references leaked (root %u → %u, hello %u → %u)\n", root_refs, root->refs,
