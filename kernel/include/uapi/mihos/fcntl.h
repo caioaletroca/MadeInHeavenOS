@@ -6,6 +6,7 @@
 #define O_WRONLY 1
 #define O_RDWR 2
 #define O_ACCMODE 3
+#define O_DIRECTORY 0x10000
 
 // lseek() whence
 #define SEEK_SET 0 // offset from the start

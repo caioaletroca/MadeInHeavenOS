@@ -19,6 +19,7 @@
 #define SYS_GETPPID 14
 #define SYS_OPEN 15
 #define SYS_LSEEK 16
+#define SYS_GETDENTS 17
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)

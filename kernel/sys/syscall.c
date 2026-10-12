@@ -416,6 +416,35 @@ static long sys_lseek(unsigned long fd, long offset, int whence)
     return (long)new;
 }
 
+static long sys_getdents(unsigned long fd, uintptr_t buffer, size_t size)
+{
+    file_t *file = sys_file(fd);
+    if (file == NULL)
+        return -EBADF;
+    if (file->node == NULL)
+        return -ENOTDIR;
+
+    size = MIN(size, PAGE_SIZE);
+
+    char *records = kzalloc(size ? size : 1);
+    if (records == NULL)
+        return -ENOMEM;
+
+    long ret;
+    scoped_guard(mutex, &file->position_lock)
+    {
+        uint64_t next;
+        ret = vfs_file_getdents(file, records, size, &next);
+        if (ret > 0 && address_space_write(syscall_space(), buffer, records, (size_t)ret) != 0)
+            ret = -EFAULT;
+        if (ret >= 0)
+            file->offset = next;
+    }
+
+    kfree(records);
+    return ret;
+}
+
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {
     (void)arg3;
@@ -448,6 +477,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_open(arg0, (int)arg1);
     case SYS_LSEEK:
         return sys_lseek((unsigned long)arg0, (long)arg1, (int)arg2);
+    case SYS_GETDENTS:
+        return sys_getdents(arg0, (uintptr_t)arg1, (size_t)arg2);
     default:
         return -ENOSYS;
     }

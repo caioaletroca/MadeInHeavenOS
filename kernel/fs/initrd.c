@@ -10,8 +10,9 @@
 #include <util.h>
 
 #define INITRD_MODULE "initrd" // grub.cfg: module2 /boot/initrd.tar initrd
-
 #define TAR_BLOCK 512
+
+static uint64_t initrd_next_ino = 1;
 
 /**
  * tar_header_t represents the header of a tar archive entry.
@@ -58,10 +59,12 @@ typedef struct initrd_node
 
 static int initrd_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
 static long initrd_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
+static int initrd_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
 
 static const vfs_node_ops_t initrd_ops = {
     .lookup = initrd_lookup,
     .read = initrd_read,
+    .readdir = initrd_readdir,
     .release = NULL,
 };
 
@@ -148,6 +151,9 @@ static const tar_header_t *tar_next(size_t *offset, size_t *size, const void **d
  */
 static initrd_node_t *initrd_node_create(vfs_node_type_t type, const char *name, size_t length)
 {
+    if (length > VFS_NAME_MAX)
+        panic("initrd: name '%.*s' is too long\n", (int)length, name);
+
     initrd_node_t *n = kzalloc(sizeof(*n));
     char *copy = kmalloc(length + 1);
     if (n == NULL || copy == NULL)
@@ -158,6 +164,7 @@ static initrd_node_t *initrd_node_create(vfs_node_type_t type, const char *name,
     copy[length] = '\0';
     n->name = copy;
     n->name_length = length;
+    n->node.ino = initrd_next_ino++;
     list_init(&n->children);
     list_init(&n->sibling);
 
@@ -245,6 +252,59 @@ static long initrd_read(vfs_node_t *file, void *buffer, size_t count, uint64_t o
 
     memcpy(buffer, (const char *)INITRD_NODE(file)->data + offset, count);
     return (long)count;
+}
+
+/**
+ * initrd_readdir reads the directory entries of the specified directory node.
+ * It fills the provided vfs_dirent_t structure with the entry at the given index.
+ * Returns 1 if an entry is found, or 0 if the index is out of bounds.
+ */
+static int initrd_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
+{
+    vfs_node_t *node = NULL;
+    const char *name;
+    size_t length;
+
+    if (index == 0)
+    {
+        node = dir;
+        name = ".";
+        length = 1;
+    }
+    else if (index == 1)
+    {
+        node = dir->parent;
+        name = "..";
+        length = 2;
+    }
+    else
+    {
+        uint64_t i = 2;
+        list_t *pos;
+        list_for_each(pos, &INITRD_NODE(dir)->children)
+        {
+            if (i++ == index)
+            {
+                initrd_node_t *child = list_container(pos, initrd_node_t, sibling);
+
+                node = &child->node;
+                name = child->name;
+                length = child->name_length;
+                break;
+            }
+        }
+
+        if (node == NULL)
+            return 0;
+    }
+
+    entry->ino = node->ino;
+    entry->type = node->type;
+    entry->length = length;
+    memcpy(entry->name, name, length);
+    entry->name[length] = '\0';
+
+    return 1;
 }
 
 static void initrd_add_entry(initrd_node_t *root, const tar_header_t *header, size_t size, const void *data)

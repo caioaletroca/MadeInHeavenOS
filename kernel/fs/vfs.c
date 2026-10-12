@@ -1,12 +1,15 @@
 #include <fs/vfs.h>
 #include <fs/file.h>
+#include <stddef.h>
 #include <string.h>
 #include <sched/sync.h>
 #include <sched/spinlock.h>
 #include <mm/kmalloc.h>
 #include <mihos/errno.h>
 #include <mihos/fcntl.h>
+#include <mihos/dirent.h>
 #include <panic.h>
+#include <util.h>
 
 static vfs_node_t *vfs_root;
 
@@ -124,6 +127,14 @@ long vfs_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset)
     return node->ops->read(node, buffer, count, offset);
 }
 
+int vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
+{
+    if (dir->type != VFS_DIRECTORY)
+        return -ENOTDIR;
+
+    return dir->ops->readdir(dir, index, entry);
+}
+
 int vfs_read_file(const char *path, void **data, size_t *size)
 {
     vfs_node_t *node;
@@ -166,6 +177,44 @@ int vfs_read_file(const char *path, void **data, size_t *size)
     return 0;
 }
 
+long vfs_file_getdents(file_t *file, void *buffer, size_t size, uint64_t *next)
+{
+    uint64_t index = file->offset;
+    size_t used = 0;
+    vfs_dirent_t entry;
+
+    for (;;)
+    {
+        int ret = vfs_readdir(file->node, index, &entry);
+        if (ret < 0)
+            return ret;
+        if (ret == 0)
+            break;
+
+        size_t length = ALIGN_UP(offsetof(struct mihos_dirent, d_name) + entry.length + 1, 8);
+        if (length > size - used)
+        {
+            if (used == 0)
+                return -EINVAL; // not even one record fits (Linux does the same)
+
+            // Return what has been read so far
+            break;
+        }
+
+        struct mihos_dirent *record = (struct mihos_dirent *)((char *)buffer + used);
+        record->d_ino = entry.ino;
+        record->d_reclen = (uint16_t)length;
+        record->d_type = entry.type == VFS_DIRECTORY ? MIHOS_DT_DIR : MIHOS_DT_REG;
+        memcpy(record->d_name, entry.name, entry.length + 1);
+
+        used += length;
+        index++;
+    }
+
+    *next = index;
+    return (long)used;
+}
+
 /**
  * Read data from a file.
  *
@@ -204,7 +253,7 @@ static const file_ops_t vfs_file_ops = {
 
 int vfs_open(const char *path, int flags, file_t **out)
 {
-    if (flags & ~O_ACCMODE)
+    if (flags & ~(O_ACCMODE | O_DIRECTORY))
         return -EINVAL;
     if ((flags & O_ACCMODE) != O_RDONLY)
         return -EROFS;
@@ -213,6 +262,12 @@ int vfs_open(const char *path, int flags, file_t **out)
     int ret = vfs_lookup(path, &node);
     if (ret < 0)
         return ret;
+    // O_DIRECTORY: opendir must not succeed on a file
+    if ((flags & O_DIRECTORY) && node->type != VFS_DIRECTORY)
+    {
+        vfs_node_put(node);
+        return -ENOTDIR;
+    }
 
     file_t *file = file_create(&vfs_file_ops, FILE_READ, NULL);
     if (file == NULL)

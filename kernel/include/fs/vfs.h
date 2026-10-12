@@ -28,11 +28,23 @@ typedef struct vfs_node
 {
     vfs_node_type_t type;
     uint64_t size;
+    uint64_t ino;
     const struct vfs_node_ops *ops;
     struct vfs_node *parent;
     unsigned int refs;
     spinlock_t lock;
 } vfs_node_t;
+
+/**
+ * @brief Represents a directory entry in the virtual file system.
+ */
+typedef struct vfs_dirent
+{
+    uint64_t ino;
+    vfs_node_type_t type;
+    size_t length;
+    char name[VFS_NAME_MAX + 1];
+} vfs_dirent_t;
 
 /**
  * What a file system implements. Every function receives its own nodes.
@@ -44,6 +56,9 @@ typedef struct vfs_node_ops
 
     // File: copies up to count bytes from offset; returns the count (0 at the end) or -errno
     long (*read)(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
+
+    // Directory: entry number index into *entry; 1 if there is one, 0 past the last, or -errno
+    int (*readdir)(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
 
     // Called after the last reference is dropped; NULL: the node is never freed
     void (*release)(vfs_node_t *node);
@@ -107,6 +122,30 @@ int vfs_lookup(const char *path, vfs_node_t **node);
  * @return The number of bytes read on success, -errno on failure.
  */
 long vfs_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset);
+
+/**
+ * @brief Read a directory entry at a given index.
+ *
+ * @param dir The directory node to read from.
+ * @param index The index of the directory entry to read.
+ * @param entry Pointer to store the resulting directory entry.
+ * @return 1 if an entry is read, 0 if past the last entry, -errno on failure.
+ */
+int vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
+
+/**
+ * @brief Fill a buffer with directory records (struct mihos_dirent), starting at the file's offset.
+ *
+ * The caller holds file->position_lock and stores *next in file->offset once the
+ * records reached their destination, so a failed copy loses no entries.
+ *
+ * @param file An open directory.
+ * @param buffer Where the records go (zeroed by the caller: padding is copied out too).
+ * @param size The buffer's size.
+ * @param next Receives the index of the first entry not returned.
+ * @return Bytes written, 0 at the end, -EINVAL if the first record does not fit, or -errno.
+ */
+long vfs_file_getdents(struct file *file, void *buffer, size_t size, uint64_t *next);
 
 /**
  * @brief Read the entire contents of a file into memory.
