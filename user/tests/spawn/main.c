@@ -5,6 +5,7 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <test.h>
 
 /*
@@ -122,6 +123,13 @@ static int child_main(int argc, char **argv, char **envp)
 
         printf("FAIL: orphan never adopted by init (getppid %d)\n", getppid());
         return 1;
+    }
+
+    // Reads 10 bytes from an inherited fd (argv[2]): the offset is shared with the parent
+    if (strcmp(mode, "readfd") == 0)
+    {
+        char buffer[10];
+        return read(atoi(argv[2]), buffer, sizeof(buffer)) == sizeof(buffer) ? 0 : 1;
     }
 
     printf("unknown child mode %s\n", mode);
@@ -308,6 +316,21 @@ static void test_pids(void)
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
+static void test_shared_offset(void)
+{
+    // An inherited fd is the same open file: a child's read moves the parent's offset (POSIX)
+    int fd = open("/usr/tests/hello", O_RDONLY);
+    CHECK(fd >= 0);
+
+    char number[4];
+    snprintf(number, sizeof(number), "%d", fd);
+    int status = child_run("readfd", number, NULL);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    CHECK(lseek(fd, 0, SEEK_CUR) == 10);
+
+    close(fd);
+}
+
 static void test_fds(void)
 {
     // Last: the parent gives up its stdin
@@ -331,6 +354,7 @@ int main(int argc, char **argv, char **envp)
     test_errors();
     test_orphan();
     test_pids();
+    test_shared_offset();
     test_fds();
 
     return test_status();
