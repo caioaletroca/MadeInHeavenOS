@@ -1,8 +1,11 @@
 #include <fs/vfs.h>
+#include <fs/file.h>
 #include <string.h>
+#include <sched/sync.h>
 #include <sched/spinlock.h>
 #include <mm/kmalloc.h>
 #include <mihos/errno.h>
+#include <mihos/fcntl.h>
 #include <panic.h>
 
 static vfs_node_t *vfs_root;
@@ -160,5 +163,65 @@ int vfs_read_file(const char *path, void **data, size_t *size)
     *data = buffer;
     *size = done;
 
+    return 0;
+}
+
+/**
+ * Read data from a file.
+ *
+ * @param file The file object to read from.
+ * @param buffer The buffer to store the read data.
+ * @param count The number of bytes to read.
+ * @return The number of bytes read on success, or a negative error code on failure.
+ */
+static long vfs_file_read(file_t *file, char *buffer, size_t count)
+{
+    // Acquire the position lock to ensure exclusive access to the file's offset.
+    guard(mutex, &file->position_lock);
+
+    long n = vfs_read(file->node, buffer, count, file->offset);
+    if (n > 0)
+        file->offset += (uint64_t)n;
+
+    return n;
+}
+
+/**
+ * Release a file object.
+ *
+ * @param file The file object to release.
+ */
+static void vfs_file_release(file_t *file)
+{
+    vfs_node_put(file->node);
+}
+
+static const file_ops_t vfs_file_ops = {
+    .read = vfs_file_read,
+    .write = NULL,
+    .release = vfs_file_release,
+};
+
+int vfs_open(const char *path, int flags, file_t **out)
+{
+    if (flags & ~O_ACCMODE)
+        return -EINVAL;
+    if ((flags & O_ACCMODE) != O_RDONLY)
+        return -EROFS;
+
+    vfs_node_t *node;
+    int ret = vfs_lookup(path, &node);
+    if (ret < 0)
+        return ret;
+
+    file_t *file = file_create(&vfs_file_ops, FILE_READ, NULL);
+    if (file == NULL)
+    {
+        vfs_node_put(node);
+        return -ENOMEM;
+    }
+
+    file->node = node;
+    *out = file;
     return 0;
 }

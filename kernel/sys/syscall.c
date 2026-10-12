@@ -293,6 +293,12 @@ static long sys_wait(long pid, uintptr_t status)
     return ret;
 }
 
+/**
+ * Reboots the system with the specified command.
+ *
+ * @param command The reboot command (e.g., REBOOT_HALT).
+ * @return 0 on success, or a negative error code on failure.
+ */
 static long sys_reboot(long command)
 {
     process_t *current = scheduler_current()->process;
@@ -310,16 +316,104 @@ static long sys_reboot(long command)
     }
 }
 
+/**
+ * Retrieves the process ID of the calling process.
+ *
+ * @return The process ID of the calling process.
+ */
 static long sys_getpid(void)
 {
     process_t *current = scheduler_current()->process;
     return current->pid;
 }
 
+/**
+ * Retrieves the parent process ID of the calling process.
+ *
+ * @return The parent process ID of the calling process.
+ */
 static long sys_getppid(void)
 {
     process_t *current = scheduler_current()->process;
     return process_parent_pid(current);
+}
+
+/**
+ * Opens a file specified by the path and flags.
+ *
+ * @param path The user-space pointer to the file path.
+ * @param flags The flags for opening the file (e.g., O_RDONLY).
+ * @return The file descriptor on success, or a negative error code on failure.
+ */
+static long sys_open(uintptr_t path, int flags)
+{
+    process_t *current = scheduler_current()->process;
+
+    // On the heap: VFS_PATH_MAX (4 KiB) is a quarter of a kernel stack
+    char *buffer = kmalloc(VFS_PATH_MAX);
+    if (buffer == NULL)
+        return -ENOMEM;
+
+    file_t *file = NULL;
+    long ret = user_string_copy(path, buffer, VFS_PATH_MAX);
+    if (ret == -E2BIG)
+        ret = -ENAMETOOLONG;
+    if (ret >= 0)
+        ret = vfs_open(buffer, flags, &file);
+
+    kfree(buffer); // single exit for the buffer: every path above reaches it
+    if (ret < 0)
+        return ret;
+
+    int fd = process_fd_install(current, file);
+    if (fd < 0)
+        file_put(file);
+
+    return fd;
+}
+
+/**
+ * Repositions the read/write file offset of the open file associated with the file descriptor.
+ *
+ * @param fd The file descriptor of the open file.
+ * @param offset The offset to set the file position to.
+ * @param whence The reference point for the offset (SEEK_SET, SEEK_CUR, SEEK_END).
+ * @return The resulting offset location as measured in bytes from the beginning of the file, or a negative error code on failure.
+ */
+static long sys_lseek(unsigned long fd, long offset, int whence)
+{
+    file_t *file = sys_file(fd);
+    if (file == NULL)
+        return -EBADF;
+    if (file->node == NULL)
+        return -ESPIPE;
+
+    // Lock the file's position to ensure thread-safe seeking.
+    guard(mutex, &file->position_lock);
+
+    uint64_t base;
+    switch (whence)
+    {
+    case SEEK_SET:
+        base = 0;
+        break;
+    case SEEK_CUR:
+        base = file->offset;
+        break;
+    case SEEK_END:
+        base = file->node->size;
+        break;
+    default:
+        return -EINVAL;
+    }
+
+    if (offset < 0 && (uint64_t)-(offset + 1) >= base)
+        return -EINVAL;
+
+    uint64_t new = base + offset;
+    file->offset = new;
+
+    return (long)new;
 }
 
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
@@ -350,6 +444,10 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_getpid();
     case SYS_GETPPID:
         return sys_getppid();
+    case SYS_OPEN:
+        return sys_open(arg0, (int)arg1);
+    case SYS_LSEEK:
+        return sys_lseek((unsigned long)arg0, (long)arg1, (int)arg2);
     default:
         return -ENOSYS;
     }

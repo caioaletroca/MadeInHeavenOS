@@ -11,7 +11,10 @@ file_t *file_create(const file_ops_t *ops, unsigned int flags, void *private)
     file->flags = flags;
     file->refs = 1;
     file->private = private;
+    file->node = NULL;
+    file->offset = 0;
     spinlock_init(&file->lock);
+    mutex_init(&file->position_lock);
 
     return file;
 }

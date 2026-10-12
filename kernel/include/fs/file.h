@@ -4,8 +4,10 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <sched/spinlock.h>
+#include <sched/sync.h>
 
 struct file;
+struct vfs_node;
 
 typedef struct file_ops
 {
@@ -26,6 +28,10 @@ typedef struct file
     unsigned int refs; // Protected by the file's lock.
     spinlock_t lock;
     void *private;
+
+    struct vfs_node *node; // the file it reads (one reference), NULL for devices like the console
+    uint64_t offset;       // next byte read; protected by position_lock
+    mutex_t position_lock; // held across a read and its offset update
 } file_t;
 
 /**

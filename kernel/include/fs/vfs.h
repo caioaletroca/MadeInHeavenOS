@@ -6,6 +6,9 @@
 #include <sched/spinlock.h>
 
 #define VFS_NAME_MAX 255
+#define VFS_PATH_MAX 4096
+
+struct file;
 
 /**
  * @brief Defines the types of nodes in the virtual file system.
@@ -114,5 +117,15 @@ long vfs_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset);
  * @return 0 on success, -errno on failure.
  */
 int vfs_read_file(const char *path, void **data, size_t *size);
+
+/**
+ * @brief Open a file by its path.
+ *
+ * @param path The path to the file.
+ * @param flags The flags for opening the file.
+ * @param file Pointer to store the resulting file object.
+ * @return 0 on success, -errno on failure.
+ */
+int vfs_open(const char *path, int flags, struct file **file);
 
 #endif /* _FS_VFS_H_ */
