@@ -9,4 +9,5 @@ malloc \
 spawn \
 wait \
 fcntl \
+dirent \
 cxx

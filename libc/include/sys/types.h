@@ -7,4 +7,6 @@ typedef long ssize_t;
 
 typedef long off_t;
 
+typedef unsigned long ino_t;
+
 #endif
