@@ -24,13 +24,14 @@ Working x86-64 PC kernel with:
   ring 3 kill the process with 128 + signal instead of panicking
 - Open files (`file_t` + `file_ops_t`), console as the first backend behind fds 0–2
 - **VFS**: `vfs_node_t` per file or directory, path lookup (`.`, `..`, repeated `/`), the
-  initrd (one ustar archive GRUB loads as the `initrd` module) mounted as `/` as a tree of nodes
+  initrd (one ustar archive GRUB loads as the `initrd` module) mounted as `/` as a tree of nodes;
+  `open`/`lseek` on files, `getdents` on directories
 - **ELF64 loader**: user programs built separately (`user/`), validated and mapped by `elf_load`
 - **`/sbin/init` as pid 1**: the only program the kernel starts (the kernel command line is its
   arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
   `/bin/echo` as the first command
@@ -39,7 +40,8 @@ Working x86-64 PC kernel with:
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
   layer, `errno`, `write`/`read`/`close`/`_exit`/`brk`/`sbrk`, `exit`/`abort`; buffered stdio over
   fds with `printf`, `fgetc`/`fgets`/`ungetc`; `malloc`/`free`/`calloc`/`realloc` on `sbrk`;
-  `atexit`; a freestanding C++ runtime (global constructors and destructors, `operator new`)
+  `atexit`; `open`/`lseek`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
+  runtime (global constructors and destructors, `operator new`)
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
@@ -56,6 +58,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+4dc2f6d test(user): cover opendir, readdir and getdents
+5c9bb1a feat(libc): add opendir, readdir, rewinddir, closedir and getdents
+11f981e test(fs): cover readdir and getdents in the VFS self-test
+cb2437e feat(fs): list directories with getdents and O_DIRECTORY
+d784a00 docs(architecture): document open, lseek and file positions in handoff
 eb29388 test(user): cover open, read, lseek and close on files
 dba75da feat(libc): add open and lseek
 9f7697b feat(fs): open files through the VFS and seek in them
@@ -331,7 +338,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
-  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16 (3, 4, 7–9 reserved). Read and write
+  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17 (3, 4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
   or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`. Generic `sys/syscall.c` →
   `syscall_dispatch`; x86 `syscall.c` unpacks the frame. User pointers are `uintptr_t` in every
@@ -456,18 +463,29 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   shared (fds inherited by `spawn`), and two readers must never get the same bytes. A mutex, not
   the spinlock, because a disk read will sleep (Linux's `f_pos_lock`).
 - **VFS files** (`fs/vfs.c`): `vfs_open(path, flags, &file)`: unknown flags → `-EINVAL`, any
-  write access → `-EROFS` (nothing writable yet), then `vfs_lookup`, `file_create(&vfs_file_ops,
-  FILE_READ)`, and the lookup's reference moves into `file->node`. `vfs_file_ops`: `read` =
-  `vfs_read` at `offset`, advancing it; no `write`; `release` puts the node. Directories open
-  (for `readdir` later); reading one gives `-EISDIR`.
+  write access → `-EROFS` (nothing writable yet), then `vfs_lookup`, `O_DIRECTORY` on a file →
+  `-ENOTDIR`, `file_create(&vfs_file_ops, FILE_READ)`, and the lookup's reference moves into
+  `file->node`. `vfs_file_ops`: `read` = `vfs_read` at `offset`, advancing it; no `write`;
+  `release` puts the node. Directories open (listed with `getdents`); reading one gives `-EISDIR`.
 - **`open(path, flags)`** (`sys_open`): the path copied into a `kmalloc`'d `VFS_PATH_MAX` (4096)
-  buffer (`-E2BIG` → `-ENAMETOOLONG`, `-EFAULT`), freed on every path; `vfs_open`;
+  buffer (`-E2BIG` → `-ENAMETOOLONG`, `-EFAULT`), freed on every path; `vfs_open` (`O_DIRECTORY`:
+  a file gives `-ENOTDIR`, for `opendir`; without it directories and files both open);
   `process_fd_install` (lowest free fd, `-EMFILE` → `file_put`, which frees the file and puts the
   node). **`lseek(fd, offset, whence)`** (`sys_lseek`): `-EBADF`, `-ESPIPE` without a node; under
   `position_lock`, base 0 / `offset` / `node->size` (bad whence → `-EINVAL`); a result below 0 is
   `-EINVAL`, checked before adding (`offset < 0 && -(offset + 1) >= base`); past the end is allowed
   (reads give 0). `read` and `close` are unchanged: `sys_read` reads one 256-byte chunk per call (a
   short read).
+- **`getdents(fd, buffer, size)`** (`sys_getdents`): `-EBADF`, `-ENOTDIR` without a node (the
+  console) or on a file. A directory's `offset` is an **entry index** (not bytes), so `lseek` to 0
+  rewinds it. `size` is capped at a page (a short result) and the records are built in a
+  **`kzalloc`'d** buffer (the padding is copied out too: no stale kernel bytes). Under
+  `position_lock`: `vfs_file_getdents(file, buffer, size, &next)` (in `vfs.c`, never sees user
+  pointers) packs entries from `offset` on, `address_space_write`, and only then `offset = next`,
+  so `-EFAULT` loses no entries. Record (uapi `<mihos/dirent.h>`, `struct mihos_dirent`):
+  `d_ino` (u64), `d_reclen` (u16), `d_type` (u8: `MIHOS_DT_DIR` 4 / `MIHOS_DT_REG` 8), `d_name`
+  `'\0'`-terminated at offset 11; `d_reclen = ALIGN_UP(11 + length + 1, 8)` so every `d_ino` is
+  8-aligned. Returns bytes, 0 at the end, `-EINVAL` if the first record does not fit (Linux).
 - **Console backend** (`driver/console.c`): one `FILE_READ | FILE_WRITE` file created in
   `console_init`, which keeps its own reference forever. `console_file()` returns a new reference;
   user programs get it three times, as fds 0, 1 and 2 (like `getty` opening the tty and `dup`ing it).
@@ -513,14 +531,21 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   (type `'0'`/`'\0'`) or directory (`'5'`); other types are skipped; a name that is both a file
   and a directory, or a file listed twice, panics. The root is its own parent; `vfs_mount_root`.
   Ops: `lookup` (linear search of `children`, returns a new reference), `read` (copies
-  `min(count, size - offset)` from `data`), no `release` (the tree lives for the whole run).
+  `min(count, size - offset)` from `data`), `readdir` (index 0 `.` = the node, 1 `..` =
+  `parent`, then the children in archive order, walking the list from the start each call), no
+  `release` (the tree lives for the whole run). Inode numbers come from a counter in
+  `initrd_node_create` (root 1); a name longer than `VFS_NAME_MAX` panics.
 - **VFS** (`fs/vfs.c`, `include/fs/vfs.h`):
   ```text
   fd ─▶ file_t (open file: ops, flags; offset later) ─▶ vfs_node_t (the file) ─▶ file system
   ```
-  `vfs_node_t`: `type` (`VFS_FILE`/`VFS_DIRECTORY`), `size`, `ops`, `parent` (for `..`), `refs`
-  under `lock`. `vfs_node_ops_t`: `lookup(dir, name, length, &child)` (name not terminated: a
-  pointer into the path), `read(file, buffer, count, offset)` (bytes, 0 at the end, or -errno),
+  `vfs_node_t`: `type` (`VFS_FILE`/`VFS_DIRECTORY`), `size`, `ino` (inode number), `ops`,
+  `parent` (for `..`), `refs` under `lock`; no name: a name belongs to the directory entry, not
+  the file (hard links later). `vfs_node_ops_t`: `lookup(dir, name, length, &child)` (name not
+  terminated: a pointer into the path), `read(file, buffer, count, offset)` (bytes, 0 at the end,
+  or -errno), `readdir(dir, index, &entry)` (entry number `index` into a `vfs_dirent_t` {`ino`,
+  `type`, `length`, `name[256]`}: 1, 0 past the last, or -errno; each file system emits `.` and
+  `..` itself at 0 and 1, as ext2 stores them on disk; no nodes are created for a listing),
   `release` (after the last `put`; NULL: never freed). `vfs_node_put` decrements under the lock
   and calls `release` after it. `vfs_path_next(&p, &length)`: skips any `/`, returns a component
   as pointer + length, no copy (a non-writing `strtok_r`). `vfs_lookup(path, &node)`: absolute
@@ -528,7 +553,8 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   reference per step (gets the next node, puts the current one, a single `put` on every exit);
   `.` keeps the node, `..` takes `parent`; a component longer than `VFS_NAME_MAX` (255) →
   `-ENAMETOOLONG`, a file before another component → `-ENOTDIR`, a file with a trailing `/` →
-  `-ENOTDIR` (POSIX). Returns a new reference. `vfs_read` checks the type (`-EISDIR`).
+  `-ENOTDIR` (POSIX). Returns a new reference. `vfs_read` checks the type (`-EISDIR`),
+  `vfs_readdir` too (`-ENOTDIR`).
   `vfs_read_file(path, &data, &size)`: the whole file in a `kmalloc`'d buffer (loops on `read`;
   0 before the end → `-EIO`), the outputs set only on success. Open files: see Files. Mounts
   beyond the root come with
@@ -628,6 +654,15 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
     flag), `EFAULT`, `ENAMETOOLONG` (5000 bytes); `write` to a read-only fd → `EBADF`; a directory
     opens but reads `EISDIR`; a closed fd → `EBADF`; 13 opens fill the 16-entry table, then
     `EMFILE`, and after closing `open` gets 3 again.
+  - `dirs`: `/usr/tests` lists `.` then `..`, `hello`/`run`/`dirs` once each, `DT_DIR` for the
+    dots and `DT_REG` for the rest, NULL with `errno` 0 at and past the end; `rewinddir` gives
+    the same listing; inode numbers agree across directories (`.` of `/usr/tests` = `tests` in
+    `/usr`, `..` = `.` of `/usr`, the root's dots equal); `opendir` `ENOTDIR` (a file, `hello/`),
+    `ENOENT` (missing, relative); `open` without `O_DIRECTORY` takes both kinds. Raw `getdents`
+    on `/`: `EINVAL` into 8 bytes, exactly one 16-byte record, the other 64 bytes, 0 twice;
+    `EFAULT` after `lseek` 0 loses nothing (80 bytes next); zero padding; 40-byte buffers resume
+    and add up to `readdir`'s count; `ENOTDIR` on stdin and a file, `EBADF` on closed and
+    unopened fds; fd 3 free again at the end.
   - `printf`: `vsnprintf` through an `EXPECT(expected, format, ...)` helper that compares output
     and returned length and prints what it got. Every conversion, flag and length (`hh`/`h`
     narrowing, `%ld` above 2^32, `INT64_MIN`, 22-digit octal), `*` width/precision (negative ones),
@@ -642,8 +677,13 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   component is `ENOENT`, 256 `ENAMETOOLONG`, a failed lookup never sets the node;
   `vfs_read_file` size equals the node's and starts with an ELF header; `vfs_read` at 0 and 100
   matches it, across the end returns the rest, at or past the end 0; `EISDIR` from `vfs_read` and
-  `vfs_read_file` on a directory; the root's and `hello`'s reference counts are unchanged after
-  all of it (a missing `put` in lookup fails here).
+  `vfs_read_file` on a directory. `readdir`: the root lists exactly `.`, `..`, `bin`, `sbin`,
+  `usr` (dots = the root), `/usr`'s `..` is the root, `hello` once in `/usr/tests` with lookup's
+  inode number, `entry.length` set (poisoned before), past the end 0, a file `-ENOTDIR`.
+  `vfs_file_getdents` on `/` (opened with `O_DIRECTORY`; a file gives `-ENOTDIR`): 80 bytes and
+  `next` 5, then 0; `sbin` into exactly 16 bytes leaves a canary after them; 15 bytes `-EINVAL`.
+  The root's and `hello`'s reference counts are unchanged after all of it (a missing `put` in
+  lookup fails here).
 - **ELF self-test** (`selftest/elf.c`): `exec_load` of `/usr/tests/hello` (read with
   `vfs_read_file`, freed at the end) must succeed with the header's entry;
   ten broken copies (magic, class, machine, `ET_DYN`, truncated, program headers out of bounds,
@@ -741,6 +781,16 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   (kept), `n - 1` characters or `EOF`; NULL for `EOF` before any character or a read error; a cut
   line continues in the next call. `feof`/`clearerr` on the flags. Ctrl+D mid-line hands over the
   typed bytes; a second one on the empty line is the end of file.
+- **Directories** (`<dirent.h>`, `libc/dirent/`, internals in `internal/dirstream.h`): `DIR` is
+  opaque like `FILE`; `struct __dirstream` = `fd`, `pos`/`len` over a `_Alignas(uint64_t)` 2 KiB
+  buffer of `getdents` records, and the one `struct dirent` (`d_ino`, `d_type`, `d_name[256]`)
+  that `readdir` returns (overwritten by the next call, as POSIX allows). `opendir` = `open(path,
+  O_RDONLY | O_DIRECTORY)` + `malloc` (`ENOMEM`, fd closed). `readdir` refills with `getdents`
+  when `pos >= len` (`<= 0` → NULL: on the end `errno` is untouched, so callers set it to 0 to
+  tell the end from an error), steps `pos` by `d_reclen` and copies the record out. `rewinddir`
+  = `lseek` to 0 + empty buffer; `closedir` = `close` + `free`. `getdents(fd, buf, size)` is the
+  raw syscall (not POSIX; Linux's `getdents64`). `DT_DIR`/`DT_REG` are the uapi `MIHOS_DT_*`
+  (BSD/Linux values); `ino_t` is `unsigned long` in `<sys/types.h>`.
 
 ### malloc (`libc/malloc/`)
 
@@ -1035,10 +1085,14 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   `/`, `vfs_read_file` for spawn, init and the ELF self-test; a VFS self-test.
 - **VFS step (b) (done):** `open`/`lseek` (`file_t` with `node` and `offset` under a position
   mutex), the mutex guard, libc `open`/`lseek`, the `files` test and the shared-offset case.
-- **Next (roadmap phase B, VFS step (c)):** `getdents` (a `readdir` node op, the offset of a
-  directory file counting entries) + libc `opendir`/`readdir`/`closedir`, an `ls` in `bin/`, the
-  runner listing `/usr/tests`; then (d) `stat`/`fstat`; then `/dev` (mounts, the console as
-  `/dev/console`), a block driver, ext2.
+- **VFS step (c), first half (done):** inode numbers, the `readdir` node op, `SYS_GETDENTS`
+  (entry-index offsets, records committed after the copy), `O_DIRECTORY`, libc `<dirent.h>`;
+  the VFS self-test and the `dirs` test. Decided: file systems emit `.`/`..`; entries are a
+  DTO (`vfs_dirent_t` → `mihos_dirent` → `struct dirent`), never nodes.
+- **Next (rest of VFS step (c)):** `/bin/ls` (user's: arguments or `/`, dot entries only with
+  `-a`, `/` after directories), then the runner finding its tests with `readdir` (skipping
+  itself and the interactive ones, a table only for non-zero expected statuses). Then (d)
+  `stat`/`fstat`; then `/dev` (mounts, the console as `/dev/console`), a block driver, ext2.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1201,7 +1255,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The crash loop guard counts kills in a row, not kills per time (no clock in user space).
 - The adoption test's grandchild cannot be waited for: a failure is only its printed `FAIL` line,
   not counted by the runner.
-- `tests/run`'s table lists the tests by hand (no `readdir` yet).
+- `tests/run`'s table lists the tests by hand (`readdir` exists now: next step).
+- `initrd_readdir` walks the children list from the start for every index, so a whole listing
+  is O(n²); a file system could use `offset` as an opaque cursor (ext2: a byte position).
+- `getdents` fills at most a page per call; `d_type` is only `DT_DIR`/`DT_REG` (no other node
+  types yet). The `dirs` test hard-codes the root's layout (`bin`, `sbin`, `usr`).
 - `sys_exec` (replacing the running image) is not implemented: comes with `fork` in phase C.
 - `process_start` returns -1 instead of an errno on failure.
 - In the counter test the counter shares a cache line with the loop's code, so every increment is
