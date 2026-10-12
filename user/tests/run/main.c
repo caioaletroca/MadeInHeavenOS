@@ -32,6 +32,7 @@ static const test_t automatic[] = {
     {"/usr/tests/reboot", 0},
     {"/usr/tests/cxx", 42}, // its last global destructor exits with 42
     {"/usr/tests/files", 0},
+    {"/usr/tests/dirs", 0},
     {NULL, 0},
 };
 
