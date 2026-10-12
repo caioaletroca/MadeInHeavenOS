@@ -8,4 +8,5 @@ unistd \
 malloc \
 spawn \
 wait \
+fcntl \
 cxx

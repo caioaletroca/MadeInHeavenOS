@@ -5,11 +5,11 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <sys/cdefs.h>
+#include <mihos/fcntl.h>
 
 // IO buffer size.
 #define BUFSIZ 512
 
-#define SEEK_SET 0
 #define EOF (-1)
 
 // Opaque FILE type

@@ -5,6 +5,7 @@
 #include <sys/types.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <mihos/fcntl.h>
 
 __BEGIN_DECLS
 
@@ -33,6 +34,16 @@ int brk(void *addr);
  * @return The previous end of the data segment on success, or (void *)-1 on error.
  */
 void *sbrk(intptr_t increment);
+
+/**
+ * Reposition the read/write file offset of the open file associated with the file descriptor.
+ *
+ * @param fd The file descriptor of the open file.
+ * @param offset The offset to set the file position to.
+ * @param whence The reference point for the offset (SEEK_SET, SEEK_CUR, SEEK_END).
+ * @return The resulting offset location as measured in bytes from the beginning of the file, or -1 on error.
+ */
+off_t lseek(int fd, off_t offset, int whence);
 
 /**
  * Write data to a file descriptor.

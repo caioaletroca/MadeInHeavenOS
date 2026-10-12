@@ -5,6 +5,7 @@ sbrk.c \
 read.c \
 write.c \
 close.c \
+lseek.c \
 reboot.c \
 getpid.c \
 getppid.c \

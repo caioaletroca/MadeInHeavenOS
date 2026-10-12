@@ -5,4 +5,6 @@ typedef int pid_t;
 
 typedef long ssize_t;
 
+typedef long off_t;
+
 #endif
