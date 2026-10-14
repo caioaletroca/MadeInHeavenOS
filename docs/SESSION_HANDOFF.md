@@ -34,7 +34,7 @@ Working x86-64 PC kernel with:
   `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
-  `/bin/echo` as the first command
+  `/bin/echo` as the first command; `/bin/ls` (`-a`, several paths, `/` after directories)
 - **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`): the only kernel
   headers installed into the sysroot
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
@@ -58,6 +58,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+ef5edda feat(ls): add ls
+637130b feat(libc): define EXIT_SUCCESS and EXIT_FAILURE in stdlib.h
+65b1c4a feat(libc): add strerror
+8346705 docs(architecture): document readdir, getdents and dirent in handoff
 4dc2f6d test(user): cover opendir, readdir and getdents
 5c9bb1a feat(libc): add opendir, readdir, rewinddir, closedir and getdents
 11f981e test(fs): cover readdir and getdents in the VFS self-test
@@ -702,7 +706,9 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   `libc.a`.
   `libk.a` = `mem*`/`str*` (incl. `strlcpy`, `strcmp`, `strncmp`, `strchr`, `strspn`, `strcspn`,
   `strpbrk`, `strtok_r`), `vsnprintf`/`snprintf`, `abs`/`atoi`. User-only: `strtok` (hidden static
-  position), `strdup` (`malloc`), `getenv` (`environ`).
+  position), `strdup` (`malloc`), `getenv` (`environ`), `strerror` (a table indexed by errno with
+  designated initializers, NULL gaps and out-of-range codes → `"Unknown error"`; a new code in
+  `<mihos/errno.h>` needs a line there). `<stdlib.h>` defines `EXIT_SUCCESS`/`EXIT_FAILURE`.
 - **`crt0.o`** (`libc/arch/x86_64/crt0.S`) is built and installed on its own, not inside `libc.a`
   (archive members are only pulled for undefined symbols, and nothing references `_start`):
   `xor %ebp`; `argc = (%rsp)`, `argv = rsp + 8`, `envp = rsp + 16 + argc * 8` into
@@ -1089,8 +1095,8 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   (entry-index offsets, records committed after the copy), `O_DIRECTORY`, libc `<dirent.h>`;
   the VFS self-test and the `dirs` test. Decided: file systems emit `.`/`..`; entries are a
   DTO (`vfs_dirent_t` → `mihos_dirent` → `struct dirent`), never nodes.
-- **Next (rest of VFS step (c)):** `/bin/ls` (user's: arguments or `/`, dot entries only with
-  `-a`, `/` after directories), then the runner finding its tests with `readdir` (skipping
+- **`ls` (done):** `/bin/ls` and libc `strerror`, `EXIT_SUCCESS`/`EXIT_FAILURE`.
+- **Next (rest of VFS step (c)):** the runner finding its tests with `readdir` (skipping
   itself and the interactive ones, a table only for non-zero expected statuses). Then (d)
   `stat`/`fstat`; then `/dev` (mounts, the console as `/dev/console`), a block driver, ext2.
 
