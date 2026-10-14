@@ -4,6 +4,9 @@
 #include <stddef.h>
 #include <sys/cdefs.h>
 
+#define EXIT_SUCCESS 0
+#define EXIT_FAILURE 1
+
 __BEGIN_DECLS
 
 /**
