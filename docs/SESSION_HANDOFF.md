@@ -58,6 +58,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+d9d7384 refactor(test): find the tests with readdir
+8e96296 docs(architecture): document ls and strerror in handoff
 ef5edda feat(ls): add ls
 637130b feat(libc): define EXIT_SUCCESS and EXIT_FAILURE in stdlib.h
 65b1c4a feat(libc): add strerror
@@ -609,8 +611,14 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
     (reset by a clean exit) → `keeps crashing, giving up` and halt.
   - Unknown mode or no command → usage line and halt. Failing `start` or `wait` → halt.
   - Orphans the kernel hands to init come back through the same `wait(-1)` loops and are reaped.
-- **`/usr/tests/run`** (`user/tests/run`): tables `{path, expected status}` for the automatic set and
-  `interactive` (its first argument); spawns each test with `argv = {path}` and `environ`, passes
+- **`/usr/tests/run`** (`user/tests/run`): the automatic set is every regular file in
+  `/usr/tests` (found with `readdir`, sorted by name with an insertion sort) except `.`-names,
+  `run` and the `interactive[]` names, which run only with the `interactive` argument. Expected
+  status 0 unless listed in `special[]` (`hello` 42, `malloc_abort` 134, `cxx` 42); a new test
+  needs no line. Names are `strdup`'d and the directory closed **before** the first spawn (tests
+  inherit fds; `files`/`dirs` expect fd 3 free). An unopenable or empty directory, more than
+  `TESTS_MAX` (64) tests, or a `special[]` name not found is a `FAIL` (so `0 passed, 0 failed`
+  never passes). Spawns each test with `argv = {path}` and `environ`, passes
   when `WIFEXITED` and `WEXITSTATUS == expected` (so expected statuses are 0..255), prints
   `test <path>: ok` / `FAIL (...)` and `tests: N passed, M failed`, exits with the failures.
 - **Test programs** (`user/tests/`, `user/include/test.h`): `CHECK(expr)` prints
@@ -1096,9 +1104,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   the VFS self-test and the `dirs` test. Decided: file systems emit `.`/`..`; entries are a
   DTO (`vfs_dirent_t` → `mihos_dirent` → `struct dirent`), never nodes.
 - **`ls` (done):** `/bin/ls` and libc `strerror`, `EXIT_SUCCESS`/`EXIT_FAILURE`.
-- **Next (rest of VFS step (c)):** the runner finding its tests with `readdir` (skipping
-  itself and the interactive ones, a table only for non-zero expected statuses). Then (d)
-  `stat`/`fstat`; then `/dev` (mounts, the console as `/dev/console`), a block driver, ext2.
+- **Self-listing runner (done):** `/usr/tests/run` finds the tests with `readdir`. **VFS step
+  (c) is complete.**
+- **Next (roadmap phase B, VFS step (d)):** `stat`/`fstat` (a `struct stat` in uapi with
+  `st_ino`, `st_mode` type bits, `st_size`; `ls` could then print files given as arguments);
+  then `/dev` (mounts, the console as `/dev/console`), a block driver, ext2.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1261,7 +1271,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The crash loop guard counts kills in a row, not kills per time (no clock in user space).
 - The adoption test's grandchild cannot be waited for: a failure is only its printed `FAIL` line,
   not counted by the runner.
-- `tests/run`'s table lists the tests by hand (`readdir` exists now: next step).
+- `ls` given a file prints `Not a directory` (real `ls` prints the name; needs `stat`). Its
+  options, several paths and errors are checked by hand, like the shell.
 - `initrd_readdir` walks the children list from the start for every index, so a whole listing
   is O(n²); a file system could use `offset` as an opaque cursor (ext2: a byte position).
 - `getdents` fills at most a page per call; `d_type` is only `DT_DIR`/`DT_REG` (no other node
