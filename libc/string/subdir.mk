@@ -17,4 +17,5 @@ strchr.c
 
 hosted_local_sources := \
 strtok.c \
-strdup.c
+strdup.c \
+strerror.c

@@ -164,6 +164,14 @@ char *strtok(char *str, const char *delim);
  */
 char *strdup(const char *s);
 
+/**
+ * @brief Get a string describing an error code.
+ *
+ * @param error Error code.
+ * @return Pointer to a string describing the error.
+ */
+char *strerror(int error);
+
 __END_DECLS
 
 #endif
