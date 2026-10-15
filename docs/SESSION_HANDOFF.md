@@ -25,17 +25,18 @@ Working x86-64 PC kernel with:
 - Open files (`file_t` + `file_ops_t`), console as the first backend behind fds 0–2
 - **VFS**: `vfs_node_t` per file or directory, path lookup (`.`, `..`, repeated `/`), the
   initrd (one ustar archive GRUB loads as the `initrd` module) mounted as `/` as a tree of nodes;
-  `open`/`lseek` on files, `getdents` on directories
+  `open`/`lseek` on files, `getdents` on directories, `stat`/`fstat`
 - **ELF64 loader**: user programs built separately (`user/`), validated and mapped by `elf_load`
 - **`/sbin/init` as pid 1**: the only program the kernel starts (the kernel command line is its
   arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
   `/bin/echo` as the first command; `/bin/ls` (`-a`, several paths, `/` after directories)
-- **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`): the only kernel
+- **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`, `<mihos/fcntl.h>`,
+  `<mihos/dirent.h>`, `<mihos/stat.h>`): the only kernel
   headers installed into the sysroot
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
   layer, `errno`, `write`/`read`/`close`/`_exit`/`brk`/`sbrk`, `exit`/`abort`; buffered stdio over
@@ -58,6 +59,12 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+2054c10 test(user): cover stat and fstat
+819610f feat(libc): add stat and fstat
+e68b9cf test(fs): cover stat in the VFS self-test
+2eb1660 feat(fs): add stat and fstat
+7db0e29 refactor(sys): copy user paths in one helper
+c1e1b10 docs(architecture): document the self-listing test runner in handoff
 d9d7384 refactor(test): find the tests with readdir
 8e96296 docs(architecture): document ls and strerror in handoff
 ef5edda feat(ls): add ls
@@ -344,7 +351,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
-  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17 (3, 4, 7–9 reserved). Read and write
+  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19 (3, 4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
   or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`. Generic `sys/syscall.c` →
   `syscall_dispatch`; x86 `syscall.c` unpacks the frame. User pointers are `uintptr_t` in every
@@ -492,6 +499,18 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   `d_ino` (u64), `d_reclen` (u16), `d_type` (u8: `MIHOS_DT_DIR` 4 / `MIHOS_DT_REG` 8), `d_name`
   `'\0'`-terminated at offset 11; `d_reclen = ALIGN_UP(11 + length + 1, 8)` so every `d_ino` is
   8-aligned. Returns bytes, 0 at the end, `-EINVAL` if the first record does not fit (Linux).
+- **`stat(path, st)` / `fstat(fd, st)`** (`sys_stat`, `sys_fstat`): `stat` copies the path with
+  `user_path_copy` (shared with `sys_open`: a `kmalloc`'d `VFS_PATH_MAX` buffer, `-E2BIG` →
+  `-ENAMETOOLONG`), `vfs_lookup`s it, `vfs_stat`s into a kernel `struct mihos_stat`, puts the
+  node, then `address_space_write`s it (`-EFAULT`). `fstat`: `-EBADF`, then `vfs_file_stat`.
+  The ABI (uapi `<mihos/stat.h>`): fixed-width fields with an explicit `__pad0`, Linux's x86-64
+  `struct stat` layout; `MIHOS_S_IFMT`/`IFDIR`/`IFCHR`/`IFREG` (octal, Linux values) in the high
+  bits of `st_mode`, permissions in the low 12. **`vfs_stat(node, st)`** zeroes everything, then
+  `st_ino`, `st_mode` = type bits | `node->mode`, `st_nlink` 1 (no hard links; also what tools
+  read as "not counted" for directories), `st_size`, `st_blksize` = `PAGE_SIZE`, `st_blocks` in
+  512-byte units, all three times = `node->mtime` (read-only, no clock); `st_dev`, `st_uid`,
+  `st_gid`, `st_rdev` 0. **`vfs_file_stat(file, st)`**: the node's, or for a node-less file (the
+  console) `S_IFCHR | 0620` with nothing else, until `/dev/console` gives it a node.
 - **Console backend** (`driver/console.c`): one `FILE_READ | FILE_WRITE` file created in
   `console_init`, which keeps its own reference forever. `console_file()` returns a new reference;
   user programs get it three times, as fds 0, 1 and 2 (like `getty` opening the tty and `dup`ing it).
@@ -539,13 +558,18 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   Ops: `lookup` (linear search of `children`, returns a new reference), `read` (copies
   `min(count, size - offset)` from `data`), `readdir` (index 0 `.` = the node, 1 `..` =
   `parent`, then the children in archive order, walking the list from the start each call), no
-  `release` (the tree lives for the whole run). Inode numbers come from a counter in
+  `release` (the tree lives for the whole run). Each entry's `mode` (`& 07777`) and `mtime`
+  (both octal, `tar_octal`; bad → panic) go to the node the entry describes, set after the path
+  walk, so a directory made by "mkdir -p" (`usr/` before `usr/tests/`) gets its own values when
+  its `'5'` entry comes; directories never listed (`/usr`) and the root get `0755`, mtime 0.
+  Inode numbers come from a counter in
   `initrd_node_create` (root 1); a name longer than `VFS_NAME_MAX` panics.
 - **VFS** (`fs/vfs.c`, `include/fs/vfs.h`):
   ```text
   fd ─▶ file_t (open file: ops, flags; offset later) ─▶ vfs_node_t (the file) ─▶ file system
   ```
-  `vfs_node_t`: `type` (`VFS_FILE`/`VFS_DIRECTORY`), `size`, `ino` (inode number), `ops`,
+  `vfs_node_t`: `type` (`VFS_FILE`/`VFS_DIRECTORY`), `size`, `ino` (inode number), `mode`
+  (permission bits only; `vfs_stat` adds the type), `mtime` (seconds since 1970, 0 unknown), `ops`,
   `parent` (for `..`), `refs` under `lock`; no name: a name belongs to the directory entry, not
   the file (hard links later). `vfs_node_ops_t`: `lookup(dir, name, length, &child)` (name not
   terminated: a pointer into the path), `read(file, buffer, count, offset)` (bytes, 0 at the end,
@@ -675,6 +699,14 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
     `EFAULT` after `lseek` 0 loses nothing (80 bytes next); zero padding; 40-byte buffers resume
     and add up to `readdir`'s count; `ENOTDIR` on stdin and a file, `EBADF` on closed and
     unopened fds; fd 3 free again at the end.
+  - `stat`: `hello` is `S_ISREG`, `0755`, one link, blocks = size/512 rounded up, `st_mtime`
+    (the macro) = `st_mtim.tv_sec` ≥ 2023 and equal to the other two times; size = `lseek`
+    end, inode = `readdir`'s `d_ino`, `fstat` of the open file byte-identical to `stat` (both
+    zeroed first: `struct stat` has padding after `st_mode`), two paths one inode. Directories
+    (`/usr/tests`, with a trailing `/`, `/`, the never-listed `/usr`) `S_ISDIR` and `0755`;
+    `fstat` of an open directory; fds 0–2 `S_ISCHR`. `ENOENT` (missing, relative), `ENOTDIR`,
+    `ENAMETOOLONG`, `EFAULT` (path), `EBADF` (99, -1, closed). A bad `struct stat *` is not
+    tested: libc copies into it itself (crashes there, like glibc).
   - `printf`: `vsnprintf` through an `EXPECT(expected, format, ...)` helper that compares output
     and returned length and prints what it got. Every conversion, flag and length (`hh`/`h`
     narrowing, `%ld` above 2^32, `INT64_MIN`, 22-digit octal), `*` width/precision (negative ones),
@@ -694,6 +726,10 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   inode number, `entry.length` set (poisoned before), past the end 0, a file `-ENOTDIR`.
   `vfs_file_getdents` on `/` (opened with `O_DIRECTORY`; a file gives `-ENOTDIR`): 80 bytes and
   `next` 5, then 0; `sbin` into exactly 16 bytes leaves a canary after them; 15 bytes `-EINVAL`.
+  `vfs_stat` (into a `0xA5`-filled struct: every field and `__pad0` written): `hello` and
+  `/usr/tests` are `0755` with an mtime between 2023 and 2100, `/usr` and `/` `0755` with mtime
+  0 (catches a file's values leaking onto its parents); `vfs_file_stat` of an open `hello`
+  equals `vfs_stat` of its node, the console is `S_IFCHR | 0620`.
   The root's and `hello`'s reference counts are unchanged after all of it (a missing `put` in
   lookup fails here).
 - **ELF self-test** (`selftest/elf.c`): `exec_load` of `/usr/tests/hello` (read with
@@ -795,6 +831,13 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   (kept), `n - 1` characters or `EOF`; NULL for `EOF` before any character or a read error; a cut
   line continues in the next call. `feof`/`clearerr` on the flags. Ctrl+D mid-line hands over the
   typed bytes; a second one on the empty line is the end of file.
+- **`stat`/`fstat`** (`<sys/stat.h>`, `libc/stat/`, translator in `internal/stat.h`): POSIX
+  `struct stat` with POSIX types (`dev_t`, `mode_t`, `nlink_t`, `uid_t`, `gid_t`, `blksize_t`,
+  `blkcnt_t`, `time_t` in `<sys/types.h>`, Linux x86-64 sizes) and `struct timespec` times
+  (`<time.h>`), plus `#define st_mtime st_mtim.tv_sec` (and `atime`/`ctime`) for pre-2008 code;
+  `S_IF*` from the uapi, `S_ISDIR`/`S_ISCHR`/`S_ISREG`, `S_IRWXU`… permission bits. Both
+  functions take the kernel's `struct mihos_stat` into a local and copy it field by field
+  (`__stat_from_kernel`), as mlibc's `sys_stat` will.
 - **Directories** (`<dirent.h>`, `libc/dirent/`, internals in `internal/dirstream.h`): `DIR` is
   opaque like `FILE`; `struct __dirstream` = `fd`, `pos`/`len` over a `_Alignas(uint64_t)` 2 KiB
   buffer of `getdents` records, and the one `struct dirent` (`d_ino`, `d_type`, `d_name[256]`)
@@ -1106,9 +1149,15 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **`ls` (done):** `/bin/ls` and libc `strerror`, `EXIT_SUCCESS`/`EXIT_FAILURE`.
 - **Self-listing runner (done):** `/usr/tests/run` finds the tests with `readdir`. **VFS step
   (c) is complete.**
-- **Next (roadmap phase B, VFS step (d)):** `stat`/`fstat` (a `struct stat` in uapi with
-  `st_ino`, `st_mode` type bits, `st_size`; `ls` could then print files given as arguments);
-  then `/dev` (mounts, the console as `/dev/console`), a block driver, ext2.
+- **VFS step (d), `stat`/`fstat` (done):** node `mode`/`mtime` from the tar headers,
+  `struct mihos_stat` (Linux x86-64 layout), `SYS_STAT`/`SYS_FSTAT`, the console as a character
+  device, libc `<sys/stat.h>` translating field by field; the `user_path_copy` refactor; the
+  VFS self-test section and the `stat` test. Decided: the full POSIX field set now (zeros where
+  MiHOS has nothing yet), so mlibc's sysdep is a plain copy.
+- **Next:** `ls` printing a file given as an argument (`stat` first; yours, small), maybe
+  `isatty` on `fstat` (stdout line-buffered only on the console). Then `/dev` (a mount table,
+  the console as `/dev/console` with a node, so `vfs_file_stat`'s special case goes), a block
+  driver, ext2.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1271,7 +1320,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The crash loop guard counts kills in a row, not kills per time (no clock in user space).
 - The adoption test's grandchild cannot be waited for: a failure is only its printed `FAIL` line,
   not counted by the runner.
-- `ls` given a file prints `Not a directory` (real `ls` prints the name; needs `stat`). Its
+- `stat` has no clock behind it: all three times are the archive's `mtime`; no `st_dev` per
+  file system (one mount), no users (`uid`/`gid` 0), `nlink` always 1; the console's `fstat`
+  is a special case in `vfs_file_stat` until `/dev`. No `lstat` (no symlinks) or `fstatat`
+  (no current directory).
+- `ls` given a file prints `Not a directory` (real `ls` prints the name; `stat` exists now). Its
   options, several paths and errors are checked by hand, like the shell.
 - `initrd_readdir` walks the children list from the start for every index, so a whole listing
   is O(n²); a file system could use `offset` as an opaque cursor (ext2: a byte position).

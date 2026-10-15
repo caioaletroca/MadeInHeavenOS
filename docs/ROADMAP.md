@@ -139,7 +139,7 @@ docs/                     # handoff, roadmap
 7. Phase B: ~~initramfs~~ (done: one ustar `initrd.tar`, programs without `.elf`) + VFS (step (a)
    done: nodes, path lookup, the initrd mounted as `/`; step (b) done: `open`/`read`/`lseek`;
    step (c) done: `getdents`, libc `opendir`/`readdir`, `ls`, a test runner that lists its tests;
-   next `stat`, `/dev`).
+   step (d) done: `stat`/`fstat`; next `/dev`).
 
 ## Reference projects
 
