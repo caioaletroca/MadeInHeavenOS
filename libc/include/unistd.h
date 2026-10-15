@@ -88,6 +88,14 @@ pid_t getpid(void);
 pid_t getppid(void);
 
 /**
+ * Check if a file descriptor refers to a terminal.
+ *
+ * @param fd The file descriptor to check.
+ * @return 1 if the file descriptor refers to a terminal, 0 otherwise.
+ */
+int isatty(int fd);
+
+/**
  * Terminate the calling process immediately.
  *
  * @param status The exit status of the process.

@@ -9,4 +9,5 @@ lseek.c \
 reboot.c \
 getpid.c \
 getppid.c \
+isatty.c \
 _exit.c

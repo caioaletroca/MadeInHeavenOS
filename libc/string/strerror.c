@@ -20,6 +20,7 @@ static const char *const messages[] = {
     [EISDIR] = "Is a directory",
     [EINVAL] = "Invalid argument",
     [EMFILE] = "Too many open files",
+    [ENOTTY] = "Not a terminal",
     [ESPIPE] = "Illegal seek",
     [EROFS] = "Read-only file system",
     [ENAMETOOLONG] = "File name too long",

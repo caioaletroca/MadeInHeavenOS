@@ -15,6 +15,7 @@
 #define EISDIR 21  // is a directory
 #define EINVAL 22  // invalid argument: waitpid options
 #define EMFILE 24
+#define ENOTTY 25       // not a terminal: isatty on a file
 #define ESPIPE 29       // illegal seek
 #define EROFS 30        // read-only file system
 #define ENAMETOOLONG 36 // file name too long
