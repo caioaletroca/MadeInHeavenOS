@@ -1,5 +1,6 @@
 #include <dirent.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -17,6 +18,22 @@
  */
 static int list(const char *path, int show_all)
 {
+    // Get file status to check if the path exists and is a directory.
+    struct stat st;
+    if (stat(path, &st) != 0)
+    {
+        fprintf(stderr, "ls: %s: %s\n", path, strerror(errno));
+        return EXIT_FAILURE;
+    }
+
+    // If the path is not a directory, print it as a file and return success.
+    if (!S_ISDIR(st.st_mode))
+    {
+        printf("%s\n", path);
+        return EXIT_SUCCESS;
+    }
+
+    // Open the directory for reading its contents.
     DIR *dir = opendir(path);
     if (dir == NULL)
     {
