@@ -31,7 +31,7 @@ Working x86-64 PC kernel with:
   arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
   `/bin/echo` as the first command; `/bin/ls` (`-a`, several paths, `/` after directories)
@@ -59,6 +59,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+59f8345 test(user): cover isatty and stdout's buffering decision
+dcba28d feat(ls): list files given as arguments
+95b7fee feat(libc): line-buffer stdout only on a terminal
+053b6c3 feat(libc): add isatty
+7445614 docs(architecture): document stat and fstat in handoff
 2054c10 test(user): cover stat and fstat
 819610f feat(libc): add stat and fstat
 e68b9cf test(fs): cover stat in the VFS self-test
@@ -707,6 +712,11 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
     `fstat` of an open directory; fds 0–2 `S_ISCHR`. `ENOENT` (missing, relative), `ENOTDIR`,
     `ENAMETOOLONG`, `EFAULT` (path), `EBADF` (99, -1, closed). A bad `struct stat *` is not
     tested: libc copies into it itself (crashes there, like glibc).
+  - `tty`: `isatty` 1 on fds 0–2 with `errno` untouched, 0 + `ENOTTY` on a file and a
+    directory, 0 + `EBADF` on closed, 99 and -1. Then, before stdout's first write, fd 1 is
+    replaced by a read-only file: `printf("x\n")` returns 2 with no stream error (fully
+    buffered), and `fflush` fails with `EOF`/`EBADF`/`ferror` (line buffering would fail at the
+    `printf`). Afterwards stdout is that file, so that part reports on stderr.
   - `printf`: `vsnprintf` through an `EXPECT(expected, format, ...)` helper that compares output
     and returned length and prints what it got. Every conversion, flag and length (`hh`/`h`
     narrowing, `%ld` above 2^32, `INT64_MIN`, 22-digit octal), `*` width/precision (negative ones),
@@ -800,7 +810,8 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   internals, `internal/malloc.h` the allocator's. Shared internals are `__`-prefixed, one per file,
   declared (and `extern` for data) in the internal header, defined once.
 - `errno` is a plain global (thread-local once user threads exist). `unistd`: `write`, `read`,
-  `close`, `lseek`, `_exit`, `brk`, `sbrk`, one function per file; `open` in `libc/fcntl/`
+  `close`, `lseek`, `_exit`, `brk`, `sbrk`, `isatty` (`fstat` + `S_ISCHR`; 0 with `ENOTTY`, or
+  `EBADF` from `fstat`), one function per file; `open` in `libc/fcntl/`
   (`<fcntl.h>`, variadic for a later `O_CREAT` mode). `O_*` and `SEEK_*` come from the uapi
   `<mihos/fcntl.h>` (also included by `<stdio.h>` and `<unistd.h>`); `off_t` is `long` (64-bit).
   `exit`: see process start and exit;
@@ -812,8 +823,9 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
 - **stdio** (output side done): `FILE` is opaque in `<stdio.h>`; `struct _FILE` has `fd`, `flags`
   (`F_READ/F_WRITE`, `F_EOF/F_ERR` indicators, `F_LINEBUF/F_NOBUF`), `mode` (none/read/write: what
   the one buffer holds), `buffer`/`size`/`pos`/`len`, `ungot`, `next` (list of open streams from
-  `__stdio_head`). Static `BUFSIZ` buffers: `stdin` and `stdout` line-buffered (the console is
-  interactive; no `isatty` yet), `stderr` unbuffered. `__fwritex` is the only code that fills the
+  `__stdio_head`). Static `BUFSIZ` buffers: `stdin` line-buffered, `stdout` line-buffered **only
+  on a terminal** (`F_TTYCHECK`: its first `__fwritex` asks `isatty` once, drops `F_LINEBUF` for
+  a file or pipe, and restores `errno` around the check), `stderr` unbuffered. `__fwritex` is the only code that fills the
   output buffer: pending bytes always leave first; line-buffered streams flush up to the last `'\n'`;
   unbuffered or oversized data is written directly in one go. `__write_all` loops over short writes
   (`<= 0` → `F_ERR`), `__fflush_one` writes pending output and empties the buffer (dropped on error).
@@ -1154,10 +1166,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   device, libc `<sys/stat.h>` translating field by field; the `user_path_copy` refactor; the
   VFS self-test section and the `stat` test. Decided: the full POSIX field set now (zeros where
   MiHOS has nothing yet), so mlibc's sysdep is a plain copy.
-- **Next:** `ls` printing a file given as an argument (`stat` first; yours, small), maybe
-  `isatty` on `fstat` (stdout line-buffered only on the console). Then `/dev` (a mount table,
-  the console as `/dev/console` with a node, so `vfs_file_stat`'s special case goes), a block
-  driver, ext2.
+- **`isatty` and stdout buffering (done):** libc `isatty` (`ENOTTY`), stdout line-buffered only
+  on a terminal (decided at its first write), `ls` listing file arguments; the `tty` test.
+- **Next (roadmap phase B):** `/dev` (a mount table, a device file system, the console as
+  `/dev/console` with a node, so `vfs_file_stat`'s special case goes; `/dev/null`, which makes
+  `isatty` need a real terminal check), then a block driver, ext2.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1287,7 +1300,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   redirections, no field splitting, no continuation lines for an open quote; a `'` inside `"..."`
   flips history expansion's quote tracking. Its features are checked by hand until pipes let a
   test feed it a script.
-- stdio: no `fread`, `fopen`/`fclose`/`setvbuf`, no `isatty` (stdout is always line-buffered),
+- `isatty` is "a character device" (`fstat` + `S_ISCHR`): right while the console is the only
+  one; `/dev/null` will need the terminal `ioctl` (`TCGETS`) real libcs use.
+- stdio: no `fread`, `fopen`/`fclose`/`setvbuf`,
   `__stdio_head` is `const` (must change when `fopen` adds streams), no stream locking (needed with
   user threads); `stdio.h` is still partly a stub (`fopen`, `fread`, `fseek` declared but missing).
   `fgets` copies byte by byte through `fgetc` (could copy `[pos, len)` up to the `'\n'` at once).
@@ -1324,8 +1339,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   file system (one mount), no users (`uid`/`gid` 0), `nlink` always 1; the console's `fstat`
   is a special case in `vfs_file_stat` until `/dev`. No `lstat` (no symlinks) or `fstatat`
   (no current directory).
-- `ls` given a file prints `Not a directory` (real `ls` prints the name; `stat` exists now). Its
-  options, several paths and errors are checked by hand, like the shell.
+- `ls` prints file arguments in argument order, mixed with the directories (real `ls` prints
+  files first, then each directory). Its options, several paths and errors are checked by
+  hand, like the shell.
 - `initrd_readdir` walks the children list from the start for every index, so a whole listing
   is O(n²); a file system could use `offset` as an opaque cursor (ext2: a byte position).
 - `getdents` fills at most a page per call; `d_type` is only `DT_DIR`/`DT_REG` (no other node
