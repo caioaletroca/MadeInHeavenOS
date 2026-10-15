@@ -10,4 +10,5 @@ spawn \
 wait \
 fcntl \
 dirent \
+stat \
 cxx
