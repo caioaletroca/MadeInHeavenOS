@@ -82,6 +82,38 @@ static long user_vector_copy(uintptr_t address, char **vector, spawn_args_t *arg
 }
 
 /**
+ * Copies a user path into a kmalloc'd VFS_PATH_MAX buffer.
+ *
+ * @param path The user-space path to copy.
+ * @param error Pointer to a long where the error code will be stored if the copy fails.
+ * @return The buffer (the caller kfrees it), or NULL with *error set
+ *         (-ENOMEM, -EFAULT, -ENAMETOOLONG).
+ */
+static char *user_path_copy(uintptr_t path, long *error)
+{
+    // On the heap: VFS_PATH_MAX (4 KiB) is a quarter of a kernel stack
+    char *buffer = kmalloc(VFS_PATH_MAX);
+    if (buffer == NULL)
+    {
+        *error = -ENOMEM;
+        return NULL;
+    }
+
+    long ret = user_string_copy(path, buffer, VFS_PATH_MAX);
+    if (ret == -E2BIG)
+        ret = -ENAMETOOLONG;
+
+    if (ret < 0)
+    {
+        kfree(buffer);
+        *error = ret;
+        return NULL;
+    }
+
+    return buffer;
+}
+
+/**
  * sys_file(fd): returns the file structure associated with the given file descriptor for the current process.
  */
 static file_t *sys_file(unsigned long fd)
@@ -349,19 +381,15 @@ static long sys_open(uintptr_t path, int flags)
 {
     process_t *current = scheduler_current()->process;
 
-    // On the heap: VFS_PATH_MAX (4 KiB) is a quarter of a kernel stack
-    char *buffer = kmalloc(VFS_PATH_MAX);
+    long error;
+    char *buffer = user_path_copy(path, &error);
     if (buffer == NULL)
-        return -ENOMEM;
+        return error;
 
     file_t *file = NULL;
-    long ret = user_string_copy(path, buffer, VFS_PATH_MAX);
-    if (ret == -E2BIG)
-        ret = -ENAMETOOLONG;
-    if (ret >= 0)
-        ret = vfs_open(buffer, flags, &file);
+    long ret = vfs_open(buffer, flags, &file);
 
-    kfree(buffer); // single exit for the buffer: every path above reaches it
+    kfree(buffer);
     if (ret < 0)
         return ret;
 
