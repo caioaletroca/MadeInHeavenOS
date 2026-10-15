@@ -5,6 +5,9 @@
 #include <mihos/errno.h>
 #include <mihos/fcntl.h>
 #include <mihos/dirent.h>
+#include <mihos/stat.h>
+#include <driver/console.h>
+#include <util.h>
 #include <string.h>
 #include <panic.h>
 
@@ -261,6 +264,74 @@ static void vfs_test_getdents(void)
     file_put(file);
 }
 
+// A plausible build time: after 2023, before 2100. A garbage mtime fails this
+#define MTIME_MIN 1700000000
+#define MTIME_MAX 4102444800
+
+/**
+ * Stats a path that must exist with the given st_mode; returns its mtime.
+ */
+static int64_t vfs_expect_stat(const char *path, uint32_t mode)
+{
+    vfs_node_t *node = vfs_expect(path, (mode & MIHOS_S_IFMT) == MIHOS_S_IFDIR ? VFS_DIRECTORY : VFS_FILE);
+
+    struct mihos_stat st;
+    memset(&st, 0xA5, sizeof(st)); // every byte must be written, padding included
+    vfs_stat(node, &st);
+
+    if (st.st_mode != mode)
+        panic("VFS self-test: stat of '%s' gave mode 0%o, expected 0%o\n", path, st.st_mode, mode);
+    if (st.st_ino != node->ino || (uint64_t)st.st_size != node->size || st.st_nlink != 1)
+        panic("VFS self-test: stat of '%s' disagrees with its node\n", path);
+    if (st.st_blocks != (int64_t)(ALIGN_UP(node->size, 512) / 512))
+        panic("VFS self-test: stat of '%s' has %u blocks\n", path, (unsigned int)st.st_blocks);
+    if (st.st_dev != 0 || st.st_uid != 0 || st.st_gid != 0 || st.__pad0 != 0 || st.st_rdev != 0 ||
+        st.st_mtim.tv_nsec != 0)
+        panic("VFS self-test: stat of '%s' left fields unset\n", path);
+    if (st.st_atim.tv_sec != st.st_mtim.tv_sec || st.st_ctim.tv_sec != st.st_mtim.tv_sec)
+        panic("VFS self-test: stat of '%s' has differing times\n", path);
+
+    vfs_node_put(node);
+    return st.st_mtim.tv_sec;
+}
+
+static void vfs_test_stat(void)
+{
+    // Files and listed directories carry the tar header's permissions and time
+    int64_t hello = vfs_expect_stat(HELLO, MIHOS_S_IFREG | 0755);
+    int64_t tests = vfs_expect_stat("/usr/tests", MIHOS_S_IFDIR | 0755);
+    if (hello < MTIME_MIN || hello > MTIME_MAX || tests < MTIME_MIN || tests > MTIME_MAX)
+        panic("VFS self-test: implausible mtime (hello %ld, /usr/tests %ld)\n", (long)hello, (long)tests);
+
+    // The archive never lists "usr/" or the root: defaults 0755 and no time. A file's
+    // values must not leak onto the directories its path passes through
+    if (vfs_expect_stat("/usr", MIHOS_S_IFDIR | 0755) != 0)
+        panic("VFS self-test: /usr took the mtime of an entry below it\n");
+    if (vfs_expect_stat("/", MIHOS_S_IFDIR | 0755) != 0)
+        panic("VFS self-test: the root has an mtime\n");
+
+    // An open file reports its node; the console (no node) a character device
+    struct file *file;
+    if (vfs_open(HELLO, O_RDONLY, &file) != 0)
+        panic("VFS self-test: opening %s failed\n", HELLO);
+    struct mihos_stat by_file, by_path;
+    vfs_file_stat(file, &by_file);
+    vfs_node_t *node = vfs_expect(HELLO, VFS_FILE);
+    vfs_stat(node, &by_path);
+    vfs_node_put(node);
+    file_put(file);
+    if (memcmp(&by_file, &by_path, sizeof(by_file)) != 0)
+        panic("VFS self-test: fstat and stat of %s differ\n", HELLO);
+
+    file = console_file();
+    memset(&by_file, 0xA5, sizeof(by_file));
+    vfs_file_stat(file, &by_file);
+    file_put(file);
+    if (by_file.st_mode != (MIHOS_S_IFCHR | 0620) || by_file.st_size != 0 || by_file.st_ino != 0 ||
+        by_file.__pad0 != 0)
+        panic("VFS self-test: the console is not a character device (mode 0%o)\n", by_file.st_mode);
+}
+
 void vfs_selftest(void)
 {
     // Every lookup returns a reference and every step drops one: counts must not move
@@ -273,6 +344,7 @@ void vfs_selftest(void)
     vfs_test_read();
     vfs_test_readdir();
     vfs_test_getdents();
+    vfs_test_stat();
 
     if (root->refs != root_refs || hello->refs != hello_refs)
         panic("VFS self-test: references leaked (root %u → %u, hello %u → %u)\n", root_refs, root->refs,
