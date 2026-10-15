@@ -212,6 +212,7 @@ static initrd_node_t *initrd_child_dir(initrd_node_t *dir, const char *name, siz
     if (child == NULL)
     {
         child = initrd_node_create(VFS_DIRECTORY, name, length);
+        child->node.mode = 0755; // Default mode for directories
         initrd_add(dir, child);
     }
     else if (child->node.type != VFS_DIRECTORY)
@@ -321,7 +322,14 @@ static void initrd_add_entry(initrd_node_t *root, const tar_header_t *header, si
     else
         snprintf(path, sizeof(path), "%.*s", (int)sizeof(header->name), header->name);
 
+    // Parse the mode and modification time from the tar header.
+    size_t mode, mtime;
+    if (tar_octal(header->mode, sizeof(header->mode), &mode) != 0 ||
+        tar_octal(header->mtime, sizeof(header->mtime), &mtime) != 0)
+        panic("initrd: '%s' has a bad mode or mtime\n", path);
+
     initrd_node_t *dir = root;
+    initrd_node_t *last = NULL;
     const char *p = path;
     size_t length;
     const char *name = vfs_path_next(&p, &length);
@@ -333,7 +341,10 @@ static void initrd_add_entry(initrd_node_t *root, const tar_header_t *header, si
         const char *next_name = vfs_path_next(&p, &next_length);
 
         if (next_length > 0 || !is_file)
+        {
             dir = initrd_child_dir(dir, name, length);
+            last = dir;
+        }
         else
         {
             if (initrd_child(dir, name, length) != NULL)
@@ -343,10 +354,17 @@ static void initrd_add_entry(initrd_node_t *root, const tar_header_t *header, si
             file->node.size = size;
             file->data = data;
             initrd_add(dir, file);
+            last = file;
         }
 
         name = next_name;
         length = next_length;
+    }
+
+    if (last != NULL)
+    {
+        last->node.mode = (uint32_t)(mode & 07777);
+        last->node.mtime = (int64_t)mtime;
     }
 }
 
@@ -399,6 +417,7 @@ void initrd_init(const boot_info_t *boot_info)
     // The archive is valid: build the tree and make it "/"
     initrd_node_t *root = initrd_node_create(VFS_DIRECTORY, "", 0);
     root->node.parent = &root->node;
+    root->node.mode = 0755; // Default mode for the root directory
 
     size_t offset = 0;
     size_t size;

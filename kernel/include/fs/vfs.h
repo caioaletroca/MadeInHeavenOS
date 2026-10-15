@@ -9,6 +9,7 @@
 #define VFS_PATH_MAX 4096
 
 struct file;
+struct mihos_stat;
 
 /**
  * @brief Defines the types of nodes in the virtual file system.
@@ -29,6 +30,8 @@ typedef struct vfs_node
     vfs_node_type_t type;
     uint64_t size;
     uint64_t ino;
+    uint32_t mode; // permission bits only (07777); the type is `type`
+    int64_t mtime; // last change, seconds since 1970 (0: unknown)
     const struct vfs_node_ops *ops;
     struct vfs_node *parent;
     unsigned int refs;
@@ -132,6 +135,22 @@ long vfs_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset);
  * @return 1 if an entry is read, 0 if past the last entry, -errno on failure.
  */
 int vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
+
+/**
+ * @brief Get the status of a VFS node.
+ *
+ * @param node The node to get the status of.
+ * @param stat Pointer to store the resulting status.
+ */
+void vfs_stat(vfs_node_t *node, struct mihos_stat *stat);
+
+/**
+ * @brief Get the status of an open file.
+ *
+ * @param file The open file to get the status of.
+ * @param stat Pointer to store the resulting status.
+ */
+void vfs_file_stat(struct file *file, struct mihos_stat *stat);
 
 /**
  * @brief Fill a buffer with directory records (struct mihos_dirent), starting at the file's offset.
