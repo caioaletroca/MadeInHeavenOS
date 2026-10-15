@@ -10,6 +10,7 @@
 #define F_ERR (1u << 3)
 #define F_LINEBUF (1u << 4)
 #define F_NOBUF (1u << 5)
+#define F_TTYCHECK (1u << 6) // line-buffered only if the fd is a terminal: decided at the first write
 
 enum
 {

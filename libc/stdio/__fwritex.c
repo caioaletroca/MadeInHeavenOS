@@ -1,6 +1,7 @@
 #include <FILE.h>
 #include <unistd.h>
 #include <string.h>
+#include <errno.h>
 
 size_t __fwritex(const unsigned char *data, size_t n, FILE *f)
 {
@@ -9,6 +10,17 @@ size_t __fwritex(const unsigned char *data, size_t n, FILE *f)
     {
         f->flags |= F_ERR;
         return 0;
+    }
+
+    if (f->flags & F_TTYCHECK)
+    {
+        int saved = errno;
+
+        f->flags &= ~F_TTYCHECK;
+        if (!isatty(f->fd))
+            f->flags &= ~F_LINEBUF;
+
+        errno = saved;
     }
 
     if (f->mode != MODE_WRITE)
