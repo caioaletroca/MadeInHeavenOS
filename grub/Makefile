@@ -17,6 +17,10 @@ GRUB_CFG := grub.cfg
 PROGRAM_DIRS := bin sbin usr/tests
 PROGRAMS := $(filter-out %.elf,$(foreach dir,$(PROGRAM_DIRS),$(wildcard $(SYSROOT_DIR)/$(dir)/*)))
 
+# Empty directories other file systems are mounted on (fs/devfs.c mounts /dev):
+# a mount point must exist before anything can be mounted on it
+MOUNT_POINTS := dev
+
 INITRD_STAGING := $(BINARY_DIR)/initrd
 INITRD := $(BINARY_DIR)/initrd.tar
 staging_path = $(INITRD_STAGING)$(patsubst $(SYSROOT_DIR)%,%,$1)
@@ -28,13 +32,15 @@ all: iso
 iso: $(ISO)
 
 # ustar: the format the kernel reads. Owner 0 and names sorted, so the archive
-# only changes when a program does.
-$(INITRD): $(PROGRAMS)
+# only changes when a program (or this layout) does. --sort=name orders what is
+# inside each directory, not the operands: those are sorted here.
+$(INITRD): $(PROGRAMS) Makefile
 	rm -rf $(INITRD_STAGING)
 	$(foreach program,$(PROGRAMS),mkdir -p $(dir $(call staging_path,$(program))) && cp $(program) $(call staging_path,$(program));)
+	$(foreach dir,$(MOUNT_POINTS),mkdir -m 0755 -p $(INITRD_STAGING)/$(dir);)
 	mkdir -p $(@D)
 	tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name \
-	    -cf $@ -C $(INITRD_STAGING) $(PROGRAM_DIRS)
+	    -cf $@ -C $(INITRD_STAGING) $(sort $(PROGRAM_DIRS) $(MOUNT_POINTS))
 
 # The ISO holds the kernel, grub.cfg and the initrd: rebuilt from scratch, so
 # files from older layouts (one module per program) never linger
