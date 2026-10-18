@@ -99,6 +99,19 @@ static void test_console(void)
     }
 }
 
+static void test_devices(void)
+{
+    // Every file system has its own st_dev: the initrd's files share one, /dev (devfs) has another
+    struct stat root, init, dev, up;
+    CHECK(stat("/", &root) == 0 && stat("/sbin/init", &init) == 0 && stat("/dev", &dev) == 0);
+    CHECK(root.st_dev != 0 && root.st_dev == init.st_dev);
+    CHECK(dev.st_dev != 0 && dev.st_dev != root.st_dev);
+    CHECK(S_ISDIR(dev.st_mode) && (dev.st_mode & 0777) == 0755);
+
+    // ".." at devfs's root leads back to the initrd's root
+    CHECK(stat("/dev/..", &up) == 0 && up.st_dev == root.st_dev && up.st_ino == root.st_ino);
+}
+
 static void test_errors(void)
 {
     struct stat st;
@@ -137,6 +150,7 @@ int main(void)
     test_file();
     test_directories();
     test_console();
+    test_devices();
     test_errors();
     return test_status();
 }

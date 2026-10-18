@@ -170,13 +170,15 @@ static void vfs_test_readdir(void)
     vfs_node_t *tests = vfs_expect("/usr/tests", VFS_DIRECTORY);
     vfs_node_t *hello = vfs_expect(HELLO, VFS_FILE);
 
-    // The root: "." and ".." are both itself, then the archive's directories in order
+    // The root: "." and ".." are both itself, then the archive's directories in order.
+    // "dev" is the initrd's own directory (readdir does not follow mounts): no inode to compare
     vfs_expect_entry(root, 0, ".", VFS_DIRECTORY, root->ino);
     vfs_expect_entry(root, 1, "..", VFS_DIRECTORY, root->ino);
     vfs_expect_entry(root, 2, "bin", VFS_DIRECTORY, 0);
-    vfs_expect_entry(root, 3, "sbin", VFS_DIRECTORY, 0);
-    vfs_expect_entry(root, 4, "usr", VFS_DIRECTORY, usr->ino);
-    if (vfs_readdir(root, 5, &entry) != 0 || vfs_readdir(root, 100, &entry) != 0)
+    vfs_expect_entry(root, 3, "dev", VFS_DIRECTORY, 0);
+    vfs_expect_entry(root, 4, "sbin", VFS_DIRECTORY, 0);
+    vfs_expect_entry(root, 5, "usr", VFS_DIRECTORY, usr->ino);
+    if (vfs_readdir(root, 6, &entry) != 0 || vfs_readdir(root, 100, &entry) != 0)
         panic("VFS self-test: readdir past the root's last entry did not return 0\n");
 
     vfs_expect_entry(usr, 0, ".", VFS_DIRECTORY, usr->ino);
@@ -206,8 +208,10 @@ static void vfs_test_readdir(void)
 }
 
 // Every record of the root, as vfs_file_getdents packs it
-static const char *const root_names[] = {".", "..", "bin", "sbin", "usr"};
-#define ROOT_RECORDS 80 // 5 records of 16 bytes: 11-byte header + name + '\0', rounded to 8
+static const char *const root_names[] = {".", "..", "bin", "dev", "sbin", "usr"};
+#define ROOT_COUNT 6
+#define ROOT_RECORDS 96 // 6 records of 16 bytes: 11-byte header + name + '\0', rounded to 8
+#define SBIN_INDEX 4
 
 static void vfs_test_getdents(void)
 {
@@ -227,11 +231,11 @@ static void vfs_test_getdents(void)
         // The whole root at once
         memset(buffer, 0, sizeof(buffer));
         n = vfs_file_getdents(file, buffer, sizeof(buffer), &next);
-        if (n != ROOT_RECORDS || next != 5)
+        if (n != ROOT_RECORDS || next != ROOT_COUNT)
             panic("VFS self-test: getdents of / returned %ld, next %u\n", n, (unsigned int)next);
 
         size_t used = 0;
-        for (size_t i = 0; i < 5; i++)
+        for (size_t i = 0; i < ROOT_COUNT; i++)
         {
             const struct mihos_dirent *record = (const void *)(buffer + used);
             if (record->d_reclen != 16 || strcmp(record->d_name, root_names[i]) != 0 ||
@@ -243,15 +247,15 @@ static void vfs_test_getdents(void)
 
         // At the end: 0, and next stays
         file->offset = next;
-        if (vfs_file_getdents(file, buffer, sizeof(buffer), &next) != 0 || next != 5)
+        if (vfs_file_getdents(file, buffer, sizeof(buffer), &next) != 0 || next != ROOT_COUNT)
             panic("VFS self-test: getdents at the end did not return 0\n");
 
         // "sbin" fills its 16 bytes exactly: nothing may be written after them
-        file->offset = 3;
+        file->offset = SBIN_INDEX;
         memset(buffer, 0, sizeof(buffer));
         buffer[16] = 0xA5;
         n = vfs_file_getdents(file, buffer, 16, &next);
-        if (n != 16 || next != 4 || buffer[16] != 0xA5)
+        if (n != 16 || next != SBIN_INDEX + 1 || buffer[16] != 0xA5)
             panic("VFS self-test: getdents into an exact fit returned %ld, next %u, canary 0x%x\n", n,
                   (unsigned int)next, buffer[16]);
 
@@ -285,8 +289,10 @@ static int64_t vfs_expect_stat(const char *path, uint32_t mode)
         panic("VFS self-test: stat of '%s' disagrees with its node\n", path);
     if (st.st_blocks != (int64_t)(ALIGN_UP(node->size, 512) / 512))
         panic("VFS self-test: stat of '%s' has %u blocks\n", path, (unsigned int)st.st_blocks);
-    if (st.st_dev != 0 || st.st_uid != 0 || st.st_gid != 0 || st.__pad0 != 0 || st.st_rdev != 0 ||
-        st.st_mtim.tv_nsec != 0)
+    if (st.st_dev == 0 || st.st_dev != node->dev)
+        panic("VFS self-test: stat of '%s' has st_dev %u, its file system is %u\n", path, (unsigned int)st.st_dev,
+              (unsigned int)node->dev);
+    if (st.st_uid != 0 || st.st_gid != 0 || st.__pad0 != 0 || st.st_rdev != 0 || st.st_mtim.tv_nsec != 0)
         panic("VFS self-test: stat of '%s' left fields unset\n", path);
     if (st.st_atim.tv_sec != st.st_mtim.tv_sec || st.st_ctim.tv_sec != st.st_mtim.tv_sec)
         panic("VFS self-test: stat of '%s' has differing times\n", path);
@@ -332,6 +338,54 @@ static void vfs_test_stat(void)
         panic("VFS self-test: the console is not a character device (mode 0%o)\n", by_file.st_mode);
 }
 
+static void vfs_test_mount(void)
+{
+    vfs_node_t *root = vfs_expect("/", VFS_DIRECTORY);
+    vfs_node_t *dev = vfs_expect("/dev", VFS_DIRECTORY);
+    unsigned int dev_refs = dev->refs;
+
+    // Lookup crossed into devfs: its own root, another file system
+    if (dev->covers == NULL || dev->mounted != NULL || dev->dev == root->dev || dev->ino != 1)
+        panic("VFS self-test: /dev is not devfs's root\n");
+    if (vfs_expect_stat("/dev", MIHOS_S_IFDIR | 0755) != 0)
+        panic("VFS self-test: devfs's root has an mtime\n");
+
+    // Down through the mount and back up out of it
+    vfs_expect_same("/dev", "/dev/.", VFS_DIRECTORY);
+    vfs_expect_same("/dev", "//dev//", VFS_DIRECTORY);
+    vfs_expect_same("/dev", "/usr/../dev", VFS_DIRECTORY);
+    vfs_expect_same("/", "/dev/..", VFS_DIRECTORY);
+    vfs_expect_same("/", "/dev/../dev/..", VFS_DIRECTORY);
+    vfs_expect_same(HELLO, "/dev/../usr/tests/hello", VFS_FILE);
+    vfs_expect_error("/dev/nope", -ENOENT);
+    vfs_expect_error("/dev/../nope", -ENOENT);
+
+    // An empty devfs lists only its dots ("..": its own root; lookup is what steps out)
+    vfs_dirent_t entry;
+    vfs_expect_entry(dev, 0, ".", VFS_DIRECTORY, dev->ino);
+    vfs_expect_entry(dev, 1, "..", VFS_DIRECTORY, dev->ino);
+    if (vfs_readdir(dev, 2, &entry) != 0)
+        panic("VFS self-test: an empty /dev lists more than its dots\n");
+
+    // Refused mounts change nothing
+    if (vfs_mount("/sbin/init", dev) != -ENOTDIR)
+        panic("VFS self-test: mounting on a file did not return -ENOTDIR\n");
+    if (vfs_mount("/", dev) != -EBUSY)
+        panic("VFS self-test: mounting on / did not return -EBUSY\n");
+    if (vfs_mount("/dev", dev) != -EBUSY)
+        panic("VFS self-test: mounting on /dev twice did not return -EBUSY\n");
+    if (vfs_mount("/nope", dev) != -ENOENT)
+        panic("VFS self-test: mounting on a missing path did not return -ENOENT\n");
+    if (root->mounted != NULL || dev->mounted != NULL)
+        panic("VFS self-test: a refused mount was recorded\n");
+
+    if (dev->refs != dev_refs)
+        panic("VFS self-test: devfs's root references leaked (%u → %u)\n", dev_refs, dev->refs);
+
+    vfs_node_put(dev);
+    vfs_node_put(root);
+}
+
 void vfs_selftest(void)
 {
     // Every lookup returns a reference and every step drops one: counts must not move
@@ -345,6 +399,7 @@ void vfs_selftest(void)
     vfs_test_readdir();
     vfs_test_getdents();
     vfs_test_stat();
+    vfs_test_mount();
 
     if (root->refs != root_refs || hello->refs != hello_refs)
         panic("VFS self-test: references leaked (root %u → %u, hello %u → %u)\n", root_refs, root->refs,

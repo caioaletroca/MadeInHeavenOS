@@ -14,7 +14,8 @@
  */
 
 #define TESTS "/usr/tests"
-#define ROOT_RECORDS 80 // ".", "..", "bin", "sbin", "usr": 16 bytes each
+#define ROOT_COUNT 6
+#define ROOT_RECORDS 96 // ".", "..", "bin", "dev", "sbin", "usr": 16 bytes each
 
 // One directory's listing, as readdir returns it
 typedef struct listing
@@ -155,7 +156,7 @@ static int records_match(const void *buffer, long n, const char *const expected[
 
 static void test_getdents(void)
 {
-    static const char *const root[] = {".", "..", "bin", "sbin", "usr"};
+    static const char *const root[] = {".", "..", "bin", "dev", "sbin", "usr"};
     uint64_t buffer[64]; // 512 bytes, 8-aligned like the records
 
     int fd = open("/", O_RDONLY | O_DIRECTORY);
@@ -170,7 +171,7 @@ static void test_getdents(void)
     CHECK(records_match(buffer, 16, root, 1) == 1);
     long n = getdents(fd, buffer, sizeof(buffer));
     CHECK(n == ROOT_RECORDS - 16);
-    CHECK(records_match(buffer, n, root + 1, 4) == 4);
+    CHECK(records_match(buffer, n, root + 1, ROOT_COUNT - 1) == ROOT_COUNT - 1);
     CHECK(getdents(fd, buffer, sizeof(buffer)) == 0);
     CHECK(getdents(fd, buffer, sizeof(buffer)) == 0);
 
@@ -180,7 +181,7 @@ static void test_getdents(void)
     CHECK(getdents(fd, (void *)8, sizeof(buffer)) == -1 && errno == EFAULT);
     n = getdents(fd, buffer, sizeof(buffer));
     CHECK(n == ROOT_RECORDS);
-    CHECK(records_match(buffer, n, root, 5) == 5);
+    CHECK(records_match(buffer, n, root, ROOT_COUNT) == ROOT_COUNT);
 
     // The padding after each name is zero (no kernel memory leaks out)
     const unsigned char *bytes = (const unsigned char *)buffer;
@@ -231,11 +232,35 @@ static void test_getdents(void)
     CHECK(getdents(99, buffer, sizeof(buffer)) == -1 && errno == EBADF);
 }
 
+// /dev is another file system mounted on the initrd's dev/: listing it lists devfs
+static void test_mounted(void)
+{
+    DIR *dir = opendir("/dev");
+    CHECK(dir != NULL);
+    if (dir == NULL)
+        return;
+
+    int dots = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL)
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            dots++;
+    CHECK(dots == 2);
+    closedir(dir);
+
+    // Lookups step out of the mount through ".."
+    dir = opendir("/dev/../usr/tests");
+    CHECK(dir != NULL);
+    if (dir != NULL)
+        closedir(dir);
+}
+
 int main(void)
 {
     test_readdir();
     test_opendir_errors();
     test_getdents();
+    test_mounted();
 
     // Every stream and fd was closed: the next open gets fd 3 again
     int fd = open("/", O_RDONLY);
