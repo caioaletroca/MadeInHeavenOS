@@ -26,13 +26,13 @@ Working x86-64 PC kernel with:
 - **VFS**: `vfs_node_t` per file or directory, path lookup (`.`, `..`, repeated `/`), the
   initrd (one ustar archive GRUB loads as the `initrd` module) mounted as `/` as a tree of nodes;
   `open`/`lseek` on files, `getdents` on directories, `stat`/`fstat`; mounts, with devfs
-  (still empty) mounted at `/dev`
+  mounted at `/dev` with `/dev/null` and `/dev/zero`
 - **ELF64 loader**: user programs built separately (`user/`), validated and mapped by `elf_load`
 - **`/sbin/init` as pid 1**: the only program the kernel starts (the kernel command line is its
   arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
   `/bin/echo` as the first command; `/bin/ls` (`-a`, several paths, `/` after directories)
@@ -60,6 +60,13 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+6f880fe test: cover character devices
+e969784 feat(libc): add DT_CHR and sys/sysmacros.h
+bff3748 feat(driver): add /dev/null and /dev/zero
+7cc9d4e feat(fs): register devices in devfs
+a190f82 feat(fs): add character device nodes
+360cc70 refactor(fs): put a file's node in file_put
+46f8010 docs(architecture): document mounts and devfs in handoff
 ec25f8b test: cover mounts and devfs
 6e91058 feat(fs): add devfs, mounted at /dev
 e56c63c build(grub): add an empty dev/ to the initrd as a mount point
@@ -259,7 +266,7 @@ from the same directory.
 ```text
 tty_init → platform_boot_info_init → arch_init [TSS first] → input_init → platform_init (PIC, PS/2, keyboard IRQ)
 → mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init] → initrd_init(&boot_info)
-→ devfs_init [mounted on /dev]
+→ devfs_init [mounted on /dev] → mem_devices_init [/dev/null, /dev/zero]
 → scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [console thread]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → mm_selftest
@@ -479,7 +486,8 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   description) that several fds can share. `file_ops_t` takes **kernel** buffers and returns bytes or
   `-errno`; the syscall layer does every user copy, so backends never see user pointers.
 - `file_create(ops, flags, private)` (refs = 1), `file_get`, `file_put` (at 0: optional `release`,
-  then `kfree`). Refs are protected by the file's embedded `lock`; `release` runs without locks held,
+  then the node put if `node` is set, then `kfree`: the file owns that reference whatever its
+  ops are, since a device's driver knows nothing about nodes). Refs are protected by the file's embedded `lock`; `release` runs without locks held,
   once, after the last reference is gone. `file_create` also sets `node = NULL`, `offset = 0` and
   initializes `position_lock`.
 - **Position:** `node` is the `vfs_node_t` a VFS file reads (one reference, NULL for devices like
@@ -487,16 +495,22 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   across a read and its offset update (`vfs_file_read`) and across `lseek`: an open file can be
   shared (fds inherited by `spawn`), and two readers must never get the same bytes. A mutex, not
   the spinlock, because a disk read will sleep (Linux's `f_pos_lock`).
-- **VFS files** (`fs/vfs.c`): `vfs_open(path, flags, &file)`: unknown flags → `-EINVAL`, any
-  write access → `-EROFS` (nothing writable yet), then `vfs_lookup`, `O_DIRECTORY` on a file →
-  `-ENOTDIR`, `file_create(&vfs_file_ops, FILE_READ)`, and the lookup's reference moves into
-  `file->node`. `vfs_file_ops`: `read` = `vfs_read` at `offset`, advancing it; no `write`;
-  `release` puts the node. Directories open (listed with `getdents`); reading one gives `-EISDIR`.
+- **VFS files** (`fs/vfs.c`): `vfs_open(path, flags, &file)`: unknown flags → `-EINVAL`, then
+  `vfs_lookup` (so a missing path is `-ENOENT` before any access check), `O_DIRECTORY` on a
+  non-directory → `-ENOTDIR`. **A device** (`VFS_CHARDEV`): `file_create(node->device_ops,
+  access)`, the access mode a value in `flags & O_ACCMODE` (`O_RDONLY` 0 → `FILE_READ`,
+  `O_WRONLY` → `FILE_WRITE`, `O_RDWR` → both, 3 → `-EINVAL`; `O_RDONLY` is 0, so it cannot be
+  tested as a bit). **Anything else**: write access → `-EROFS` (nothing writable yet), then
+  `file_create(&vfs_file_ops, FILE_READ)`. Either way the lookup's reference moves into
+  `file->node`. `vfs_file_ops`: `read` = `vfs_read` at `offset`, advancing it; no `write`; no
+  `release` (`file_put` puts the node). Directories open (listed with `getdents`); reading one
+  gives `-EISDIR`.
 - **`open(path, flags)`** (`sys_open`): the path copied into a `kmalloc`'d `VFS_PATH_MAX` (4096)
   buffer (`-E2BIG` → `-ENAMETOOLONG`, `-EFAULT`), freed on every path; `vfs_open` (`O_DIRECTORY`:
   a file gives `-ENOTDIR`, for `opendir`; without it directories and files both open);
   `process_fd_install` (lowest free fd, `-EMFILE` → `file_put`, which frees the file and puts the
-  node). **`lseek(fd, offset, whence)`** (`sys_lseek`): `-EBADF`, `-ESPIPE` without a node; under
+  node). **`lseek(fd, offset, whence)`** (`sys_lseek`): `-EBADF`, `-ESPIPE` without a node or on
+  a character device (Linux lets `/dev/null` "seek"; one rule is simpler); under
   `position_lock`, base 0 / `offset` / `node->size` (bad whence → `-EINVAL`); a result below 0 is
   `-EINVAL`, checked before adding (`offset < 0 && -(offset + 1) >= base`); past the end is allowed
   (reads give 0). `read` and `close` are unchanged: `sys_read` reads one 256-byte chunk per call (a
@@ -623,6 +637,23 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   takes the second dev id, makes a static root (`VFS_DIRECTORY`, ino 1, `0755`, its own
   parent, never released) and `vfs_mount`s it on `/dev` (panics if that fails). `lookup` →
   `-ENOENT` and `readdir` → `.`/`..` only, until devices register (step (b)).
+  **Devices:** `devfs_register(name, mode, rdev, &file_ops)` (boot time, no lock): `NULL`,
+  empty, over `VFS_NAME_MAX` or containing `/` → `-EINVAL`, already there → `-EEXIST`; a
+  `kzalloc`'d `devfs_node_t` (embeds the `vfs_node_t`, plus a `kmalloc`'d name and a `sibling`
+  link) of type `VFS_CHARDEV` with devfs's `dev`, the next inode (from 2), `mode & 07777`,
+  `rdev`, `device_ops` = the driver's ops, parent the root, appended to `devfs_devices`. Device
+  nodes have an all-NULL ops table (the VFS never looks up, reads or lists through a device;
+  never freed). `lookup` and the duplicate check share `devfs_find`; `readdir` lists the dots
+  (directories), then the devices from index 2 in registration order.
+- **Character devices** (`VFS_CHARDEV`): `vfs_node_t.rdev` (`MIHOS_MKDEV(major, minor)`: major
+  in the high 32 bits, uapi `<mihos/stat.h>`) and `device_ops` (Linux's `i_fop`). `vfs_stat`:
+  `S_IFCHR` + `st_rdev`, size 0; `getdents`: `MIHOS_DT_CHR` (2). Two helpers map the node type,
+  `vfs_mode_type` (`st_mode` bits) and `vfs_dirent_type` (`d_type`): the two number the types
+  differently. `read`/`write` need nothing new: they dispatch through `file->ops`.
+- **Memory devices** (`driver/mem.c`, Linux's major 1): `mem_devices_init()` after
+  `devfs_init` registers `null` (1,3: reads 0, swallows writes) and `zero` (1,5: reads zeros,
+  swallows writes), both `0666`; failing panics. The drivers see kernel buffers only
+  (`sys_read`/`sys_write` copy in 256-byte chunks).
 - **`elf_load(space, image, size, &entry, &end)`** (`exec/elf.c`): validates `ELF64`, little-endian,
   version, `ET_EXEC`, `e_machine == ELF_MACHINE` and that the program header table is inside the
   image; for every non-empty `PT_LOAD` (empty ones, e.g. an unused RW segment, are skipped) checks the
@@ -741,6 +772,14 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
     `fstat` of an open directory; fds 0–2 `S_ISCHR`. `ENOENT` (missing, relative), `ENOTDIR`,
     `ENAMETOOLONG`, `EFAULT` (path), `EBADF` (99, -1, closed). A bad `struct stat *` is not
     tested: libc copies into it itself (crashes there, like glibc).
+  - `devices`: `/dev/null` (`O_WRONLY`) takes writes of 5, 1000 (more than a chunk) and 0
+    bytes, reads `EBADF`; `O_RDONLY` reads 0 twice without touching the buffer, writes `EBADF`.
+    `/dev/zero` (`O_RDWR`): 500 bytes read in a loop are zeros, byte 500 untouched, writes
+    swallowed. `stat`: `S_ISCHR`, `0666`, `major`/`minor`/`makedev` 1:3 and 1:5, devfs's
+    `st_dev`, size 0, `fstat` byte-identical. `/dev` lists the dots (`DT_DIR`) and `null`/`zero`
+    (`DT_CHR`, `d_ino` = `st_ino`). `ESPIPE` (`lseek`), `ENOTDIR` (`getdents`, `opendir`,
+    `O_DIRECTORY`, `/dev/null/`, `/dev/null/x`), `ENOENT` (`/dev/nope`), `EROFS` outside `/dev`;
+    fd 3 free at the end. `isatty` left out until the terminal check (step (d)).
   - `tty`: `isatty` 1 on fds 0–2 with `errno` untouched, 0 + `ENOTTY` on a file and a
     directory, 0 + `EBADF` on closed, 99 and -1. Then, before stdout's first write, fd 1 is
     replaced by a read-only file: `printf("x\n")` returns 2 with no stream error (fully
@@ -887,8 +926,9 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   when `pos >= len` (`<= 0` → NULL: on the end `errno` is untouched, so callers set it to 0 to
   tell the end from an error), steps `pos` by `d_reclen` and copies the record out. `rewinddir`
   = `lseek` to 0 + empty buffer; `closedir` = `close` + `free`. `getdents(fd, buf, size)` is the
-  raw syscall (not POSIX; Linux's `getdents64`). `DT_DIR`/`DT_REG` are the uapi `MIHOS_DT_*`
-  (BSD/Linux values); `ino_t` is `unsigned long` in `<sys/types.h>`.
+  raw syscall (not POSIX; Linux's `getdents64`). `DT_DIR`/`DT_REG`/`DT_CHR` are the uapi
+  `MIHOS_DT_*` (BSD/Linux values); `ino_t` is `unsigned long` in `<sys/types.h>`.
+  `<sys/sysmacros.h>`: `makedev`/`major`/`minor` over the uapi `MIHOS_MKDEV`/`MAJOR`/`MINOR`.
 
 ### malloc (`libc/malloc/`)
 
@@ -1200,12 +1240,13 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **`/dev` step (a), mounts (done):** `mounted`/`covers` on nodes, `vfs_mount`, lookup
   crossing both ways, per-file-system `st_dev` (`vfs_dev_alloc`), an empty `dev/` in the
   initrd, devfs as an empty root mounted there; self-test and user test checks.
-- **Next, `/dev` step (b):** devfs registration (`devfs_register(name, mode, rdev, &file_ops)`,
-  a list of device nodes for `lookup`/`readdir`), `vfs_open` giving a device node's file its
-  driver's `file_ops` instead of `vfs_file_ops`, `st_rdev`, `/dev/null` and `/dev/zero`.
-  Then (c) the console as `/dev/console` (init's fds opened through it, `vfs_file_stat`'s
-  special case removed) and (d) a minimal `SYS_IOCTL` so `isatty` asks the terminal; then a
-  block driver, ext2.
+- **`/dev` step (b), devices (done):** `VFS_CHARDEV` nodes with `rdev` and the driver's
+  `device_ops`, device opens with access modes, `st_rdev`/`DT_CHR`, `devfs_register`,
+  `/dev/null` and `/dev/zero`, libc `<sys/sysmacros.h>`; the node put moved into `file_put`.
+- **Next, `/dev` step (c):** the console as `/dev/console` (5,1): `console_init` registers it,
+  `program_run` opens it for init's fds 0–2 through `vfs_open` instead of `console_file()`,
+  `vfs_file_stat`'s node-less special case goes. Then (d) a minimal `SYS_IOCTL` so `isatty`
+  asks the terminal (`/dev/null` is a character device but no tty); then a block driver, ext2.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1302,6 +1343,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `vfs_read_file` copies every program once more (archive → `kmalloc` buffer → address space);
   fine at ~100 KiB, replaced by mapping later. `kmalloc` above 1024 B rounds to a power-of-two
   number of pages.
+- devfs: devices register at boot only (no lock, no unregister, nodes never freed); one flat
+  directory; `devfs_readdir` walks the list from the start per index (O(n²) listing).
+  Character devices refuse `lseek` (`ESPIPE`) where Linux lets `/dev/null` succeed. `isatty`
+  calls `/dev/null` a terminal until the `ioctl` check.
 - Mounts are two node pointers, set at boot: no `umount`, no lock (a mount after user space
   starts would race lookups), no mount over `/`. No current directory (absolute paths only).
 - `read` moves at most 256 bytes per syscall (`SYSCALL_CHUNK_SIZE`): correct (a short read) but
