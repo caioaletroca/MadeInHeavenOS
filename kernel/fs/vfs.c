@@ -317,20 +317,10 @@ static long vfs_file_read(file_t *file, char *buffer, size_t count)
     return n;
 }
 
-/**
- * Release a file object.
- *
- * @param file The file object to release.
- */
-static void vfs_file_release(file_t *file)
-{
-    vfs_node_put(file->node);
-}
-
 static const file_ops_t vfs_file_ops = {
     .read = vfs_file_read,
     .write = NULL,
-    .release = vfs_file_release,
+    .release = NULL,
 };
 
 int vfs_open(const char *path, int flags, file_t **out)

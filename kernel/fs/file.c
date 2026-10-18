@@ -1,4 +1,5 @@
 #include <fs/file.h>
+#include <fs/vfs.h>
 #include <mm/kmalloc.h>
 
 file_t *file_create(const file_ops_t *ops, unsigned int flags, void *private)
@@ -47,6 +48,10 @@ void file_put(file_t *file)
     // Release the file using its release operation if it exists.
     if (file->ops->release != NULL)
         file->ops->release(file);
+
+    // The file holds one reference on its node, whatever its ops are (a device's driver never sees it)
+    if (file->node != NULL)
+        vfs_node_put(file->node);
 
     kfree(file);
 }
