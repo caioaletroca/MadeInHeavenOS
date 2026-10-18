@@ -12,6 +12,7 @@
 #include <sched/thread.h>
 #include <sched/scheduler.h>
 #include <fs/initrd.h>
+#include <fs/devfs.h>
 #include <boot_info.h>
 #include <init.h>
 
@@ -48,6 +49,7 @@ void kmain(uintptr_t boot_handoff)
     mm_init(&boot_info);
 
     initrd_init(&boot_info);
+    devfs_init();
 
     scheduler_init(&boot_thread);
     threads_init();
