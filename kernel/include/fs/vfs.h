@@ -17,9 +17,11 @@ struct mihos_stat;
 typedef enum
 {
     VFS_FILE,
-    VFS_DIRECTORY
+    VFS_DIRECTORY,
+    VFS_CHARDEV,
 } vfs_node_type_t;
 
+struct file_ops;
 struct vfs_node_ops;
 
 /**
@@ -29,12 +31,14 @@ typedef struct vfs_node
 {
     vfs_node_type_t type;
     uint64_t size;
-    uint64_t ino;
-    uint32_t mode;            // permission bits only (07777); the type is `type`
-    int64_t mtime;            // last change, seconds since 1970 (0: unknown)
-    uint64_t dev;             // file system id (vfs_dev_alloc), st_dev
-    struct vfs_node *mounted; // mount point: the root of the file system mounted here, or NULL
-    struct vfs_node *covers;  // mounted root: the directory it is mounted on, or NULL
+    uint64_t ino;                      // inode number, unique within the file system
+    uint32_t mode;                     // permission bits only (07777); the type is `type`
+    int64_t mtime;                     // last change, seconds since 1970 (0: unknown)
+    uint64_t dev;                      // file system id (vfs_dev_alloc), st_dev
+    struct vfs_node *mounted;          // mount point: the root of the file system mounted here, or NULL
+    struct vfs_node *covers;           // mounted root: the directory it is mounted on, or NULL
+    uint64_t rdev;                     // device nodes: MIHOS_MKDEV(major, minor), st_rdev
+    const struct file_ops *device_ops; // device nodes: the driver's ops, given to every open file
     const struct vfs_node_ops *ops;
     struct vfs_node *parent;
     unsigned int refs;

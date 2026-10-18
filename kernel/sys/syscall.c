@@ -414,7 +414,7 @@ static long sys_lseek(unsigned long fd, long offset, int whence)
     file_t *file = sys_file(fd);
     if (file == NULL)
         return -EBADF;
-    if (file->node == NULL)
+    if (file->node == NULL || file->node->type == VFS_CHARDEV)
         return -ESPIPE;
 
     // Lock the file's position to ensure thread-safe seeking.

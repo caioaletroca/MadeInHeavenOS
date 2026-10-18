@@ -3,8 +3,9 @@
 
 #include <stdint.h>
 
-#define MIHOS_DT_REG 8
+#define MIHOS_DT_CHR 2
 #define MIHOS_DT_DIR 4
+#define MIHOS_DT_REG 8
 
 struct mihos_dirent
 {

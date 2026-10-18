@@ -9,6 +9,11 @@
 #define MIHOS_S_IFCHR 0020000 // character device (the console)
 #define MIHOS_S_IFREG 0100000 // regular file
 
+// st_rdev: which device a device file is (major: the driver, minor: the instance)
+#define MIHOS_MKDEV(major, minor) (((uint64_t)(major) << 32) | (uint32_t)(minor))
+#define MIHOS_MAJOR(dev) ((uint32_t)((dev) >> 32))
+#define MIHOS_MINOR(dev) ((uint32_t)(dev))
+
 struct mihos_timespec
 {
     int64_t tv_sec;  // seconds
