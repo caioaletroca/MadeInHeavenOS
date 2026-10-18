@@ -8,6 +8,7 @@
 #include <driver/tty.h>
 #include <driver/timer.h>
 #include <driver/console.h>
+#include <driver/mem.h>
 #include <platform/platform.h>
 #include <sched/thread.h>
 #include <sched/scheduler.h>
@@ -50,6 +51,7 @@ void kmain(uintptr_t boot_handoff)
 
     initrd_init(&boot_info);
     devfs_init();
+    mem_devices_init();
 
     scheduler_init(&boot_thread);
     threads_init();

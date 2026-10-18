@@ -4,5 +4,6 @@ tty.c \
 timer.c \
 input.c \
 keymap.c \
-console.c
+console.c \
+mem.c
 
