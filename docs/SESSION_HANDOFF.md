@@ -25,7 +25,8 @@ Working x86-64 PC kernel with:
 - Open files (`file_t` + `file_ops_t`), console as the first backend behind fds 0–2
 - **VFS**: `vfs_node_t` per file or directory, path lookup (`.`, `..`, repeated `/`), the
   initrd (one ustar archive GRUB loads as the `initrd` module) mounted as `/` as a tree of nodes;
-  `open`/`lseek` on files, `getdents` on directories, `stat`/`fstat`
+  `open`/`lseek` on files, `getdents` on directories, `stat`/`fstat`; mounts, with devfs
+  (still empty) mounted at `/dev`
 - **ELF64 loader**: user programs built separately (`user/`), validated and mapped by `elf_load`
 - **`/sbin/init` as pid 1**: the only program the kernel starts (the kernel command line is its
   arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
@@ -59,6 +60,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+ec25f8b test: cover mounts and devfs
+6e91058 feat(fs): add devfs, mounted at /dev
+e56c63c build(grub): add an empty dev/ to the initrd as a mount point
+7e440ce feat(fs): mount file systems on directories
+c8e3fc9 docs(architecture): document isatty and stdout's buffering in handoff
 59f8345 test(user): cover isatty and stdout's buffering decision
 dcba28d feat(ls): list files given as arguments
 95b7fee feat(libc): line-buffer stdout only on a terminal
@@ -253,6 +259,7 @@ from the same directory.
 ```text
 tty_init → platform_boot_info_init → arch_init [TSS first] → input_init → platform_init (PIC, PS/2, keyboard IRQ)
 → mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init] → initrd_init(&boot_info)
+→ devfs_init [mounted on /dev]
 → scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [console thread]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → mm_selftest
@@ -540,7 +547,11 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   `tests/x` → `<sysroot>/usr/tests/x` (the build tree keeps `.elf`; installed programs have none).
 - **Initrd build** (`grub/Makefile`): `bin/`, `sbin/` and `usr/tests/` of the sysroot (not headers
   or libraries; leftover `*.elf` skipped) are copied to a staging folder and packed with
-  `tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name`. The ISO is rebuilt from
+  `tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name`, together with the empty
+  `MOUNT_POINTS` directories (`dev/`, mode 0755). The top-level operands go through
+  `$(sort ...)`: `--sort=name` only orders what is inside each one, and the initrd lists
+  entries in archive order (the tests expect `bin dev sbin usr`). The Makefile is a
+  prerequisite of the archive, so a layout change repacks it. The ISO is rebuilt from
   scratch: `/boot/mihos.kernel`, `/boot/initrd.tar`, `/boot/grub/grub.cfg`.
 - **`grub.cfg`**: each entry is `multiboot2 /boot/mihos.kernel <init's arguments>` (GRUB passes
   the words after the kernel path as the command line, without the path) and
@@ -574,7 +585,9 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   fd ─▶ file_t (open file: ops, flags; offset later) ─▶ vfs_node_t (the file) ─▶ file system
   ```
   `vfs_node_t`: `type` (`VFS_FILE`/`VFS_DIRECTORY`), `size`, `ino` (inode number), `mode`
-  (permission bits only; `vfs_stat` adds the type), `mtime` (seconds since 1970, 0 unknown), `ops`,
+  (permission bits only; `vfs_stat` adds the type), `mtime` (seconds since 1970, 0 unknown),
+  `dev` (the file system's id from `vfs_dev_alloc`, never 0; `st_dev`), `mounted` (on a mount
+  point: the root mounted there), `covers` (on a mounted root: the directory it hides), `ops`,
   `parent` (for `..`), `refs` under `lock`; no name: a name belongs to the directory entry, not
   the file (hard links later). `vfs_node_ops_t`: `lookup(dir, name, length, &child)` (name not
   terminated: a pointer into the path), `read(file, buffer, count, offset)` (bytes, 0 at the end,
@@ -591,9 +604,25 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   `-ENOTDIR` (POSIX). Returns a new reference. `vfs_read` checks the type (`-EISDIR`),
   `vfs_readdir` too (`-ENOTDIR`).
   `vfs_read_file(path, &data, &size)`: the whole file in a `kmalloc`'d buffer (loops on `read`;
-  0 before the end → `-EIO`), the outputs set only on success. Open files: see Files. Mounts
-  beyond the root come with
-  `/dev`.
+  0 before the end → `-EIO`), the outputs set only on success. Open files: see Files.
+  **Mounts:** `vfs_mount(path, root)` looks the directory up (`-ENOENT`/`-ENOTDIR` pass
+  through; a file → `-ENOTDIR`; `/` or an already mounted directory → `-EBUSY`: lookup has
+  crossed into the existing root, so "mounted" shows as landing on a node with `covers`), then
+  `point->mounted = root`, `root->covers = point`, and keeps a reference on both forever (no
+  unmount; mounts happen at boot, so no lock). `vfs_lookup` crosses **down** after every step
+  (`while (node->mounted)`: get the root, put the point; stacked mounts work), and `..` first
+  climbs **out** (`while (up->covers) up = up->covers`, no references needed: pinned by the
+  mounts), then takes `parent`. Readdir does not follow mounts: `/` lists the initrd's `dev`
+  (its inode), and devfs's `..` is its own root, as on Linux.
+  ```text
+  initrd /            devfs (st_dev 2)
+  ├── bin/ sbin/ usr/
+  └── dev/ ─mounted─▶ (root, ino 1) ─covers─▶ dev/
+  ```
+- **devfs** (`fs/devfs.c`, `include/fs/devfs.h`): `devfs_init()` right after `initrd_init`
+  takes the second dev id, makes a static root (`VFS_DIRECTORY`, ino 1, `0755`, its own
+  parent, never released) and `vfs_mount`s it on `/dev` (panics if that fails). `lookup` →
+  `-ENOENT` and `readdir` → `.`/`..` only, until devices register (step (b)).
 - **`elf_load(space, image, size, &entry, &end)`** (`exec/elf.c`): validates `ELF64`, little-endian,
   version, `ET_EXEC`, `e_machine == ELF_MACHINE` and that the program header table is inside the
   image; for every non-empty `PT_LOAD` (empty ones, e.g. an unused RW segment, are skipped) checks the
@@ -1168,9 +1197,15 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   MiHOS has nothing yet), so mlibc's sysdep is a plain copy.
 - **`isatty` and stdout buffering (done):** libc `isatty` (`ENOTTY`), stdout line-buffered only
   on a terminal (decided at its first write), `ls` listing file arguments; the `tty` test.
-- **Next (roadmap phase B):** `/dev` (a mount table, a device file system, the console as
-  `/dev/console` with a node, so `vfs_file_stat`'s special case goes; `/dev/null`, which makes
-  `isatty` need a real terminal check), then a block driver, ext2.
+- **`/dev` step (a), mounts (done):** `mounted`/`covers` on nodes, `vfs_mount`, lookup
+  crossing both ways, per-file-system `st_dev` (`vfs_dev_alloc`), an empty `dev/` in the
+  initrd, devfs as an empty root mounted there; self-test and user test checks.
+- **Next, `/dev` step (b):** devfs registration (`devfs_register(name, mode, rdev, &file_ops)`,
+  a list of device nodes for `lookup`/`readdir`), `vfs_open` giving a device node's file its
+  driver's `file_ops` instead of `vfs_file_ops`, `st_rdev`, `/dev/null` and `/dev/zero`.
+  Then (c) the console as `/dev/console` (init's fds opened through it, `vfs_file_stat`'s
+  special case removed) and (d) a minimal `SYS_IOCTL` so `isatty` asks the terminal; then a
+  block driver, ext2.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1267,7 +1302,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `vfs_read_file` copies every program once more (archive → `kmalloc` buffer → address space);
   fine at ~100 KiB, replaced by mapping later. `kmalloc` above 1024 B rounds to a power-of-two
   number of pages.
-- The VFS has no mount table yet (only the root); no current directory (absolute paths only).
+- Mounts are two node pointers, set at boot: no `umount`, no lock (a mount after user space
+  starts would race lookups), no mount over `/`. No current directory (absolute paths only).
 - `read` moves at most 256 bytes per syscall (`SYSCALL_CHUNK_SIZE`): correct (a short read) but
   slow for files; no `fread`/`fopen` in libc yet. `sys_write` counts a whole chunk as written even
   if the backend reported fewer bytes.
