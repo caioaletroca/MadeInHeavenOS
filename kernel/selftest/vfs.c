@@ -7,6 +7,7 @@
 #include <mihos/dirent.h>
 #include <mihos/stat.h>
 #include <driver/console.h>
+#include <fs/devfs.h>
 #include <util.h>
 #include <string.h>
 #include <panic.h>
@@ -360,12 +361,19 @@ static void vfs_test_mount(void)
     vfs_expect_error("/dev/nope", -ENOENT);
     vfs_expect_error("/dev/../nope", -ENOENT);
 
-    // An empty devfs lists only its dots ("..": its own root; lookup is what steps out)
+    // devfs lists its dots ("..": its own root; lookup is what steps out), then the
+    // devices in registration order
     vfs_dirent_t entry;
+    vfs_node_t *null = vfs_expect("/dev/null", VFS_CHARDEV);
+    vfs_node_t *zero = vfs_expect("/dev/zero", VFS_CHARDEV);
     vfs_expect_entry(dev, 0, ".", VFS_DIRECTORY, dev->ino);
     vfs_expect_entry(dev, 1, "..", VFS_DIRECTORY, dev->ino);
-    if (vfs_readdir(dev, 2, &entry) != 0)
-        panic("VFS self-test: an empty /dev lists more than its dots\n");
+    vfs_expect_entry(dev, 2, "null", VFS_CHARDEV, null->ino);
+    vfs_expect_entry(dev, 3, "zero", VFS_CHARDEV, zero->ino);
+    if (vfs_readdir(dev, 4, &entry) != 0 || vfs_readdir(dev, 100, &entry) != 0)
+        panic("VFS self-test: /dev lists more than its dots, null and zero\n");
+    vfs_node_put(zero);
+    vfs_node_put(null);
 
     // Refused mounts change nothing
     if (vfs_mount("/sbin/init", dev) != -ENOTDIR)
@@ -386,6 +394,94 @@ static void vfs_test_mount(void)
     vfs_node_put(root);
 }
 
+/**
+ * Opens a device with an access mode; the file must get exactly `access`.
+ */
+static struct file *vfs_expect_device_open(const char *path, int flags, unsigned int access)
+{
+    struct file *file;
+    int ret = vfs_open(path, flags, &file);
+    if (ret != 0)
+        panic("VFS self-test: opening %s (flags %d) failed: %d\n", path, flags, ret);
+    if (file->flags != access || file->node == NULL || file->node->type != VFS_CHARDEV ||
+        file->ops != file->node->device_ops)
+        panic("VFS self-test: %s (flags %d) opened with the wrong flags or ops\n", path, flags);
+    return file;
+}
+
+static void vfs_test_devices(void)
+{
+    vfs_node_t *null = vfs_expect("/dev/null", VFS_CHARDEV);
+    vfs_node_t *zero = vfs_expect("/dev/zero", VFS_CHARDEV);
+    unsigned int null_refs = null->refs;
+    unsigned int zero_refs = zero->refs;
+
+    // stat: a character device on devfs, with its device number and no size
+    struct mihos_stat st;
+    vfs_stat(null, &st);
+    if (st.st_mode != (MIHOS_S_IFCHR | 0666) || st.st_rdev != MIHOS_MKDEV(1, 3) || st.st_size != 0 ||
+        st.st_dev != null->dev || st.st_dev == 0)
+        panic("VFS self-test: stat of /dev/null is wrong (mode 0%o)\n", st.st_mode);
+    vfs_stat(zero, &st);
+    if (st.st_mode != (MIHOS_S_IFCHR | 0666) || MIHOS_MAJOR(st.st_rdev) != 1 || MIHOS_MINOR(st.st_rdev) != 5)
+        panic("VFS self-test: stat of /dev/zero is wrong (mode 0%o)\n", st.st_mode);
+
+    // Each access mode becomes the file's flags; the ops are the driver's
+    char buffer[32];
+    struct file *file = vfs_expect_device_open("/dev/null", O_RDONLY, FILE_READ);
+    if (file->ops->read(file, buffer, sizeof(buffer)) != 0 || file->ops->read(file, buffer, sizeof(buffer)) != 0)
+        panic("VFS self-test: reading /dev/null did not give 0\n");
+    file_put(file);
+
+    file = vfs_expect_device_open("/dev/null", O_WRONLY, FILE_WRITE);
+    if (file->ops->write(file, "discarded", 9) != 9)
+        panic("VFS self-test: writing /dev/null did not take everything\n");
+    file_put(file);
+
+    file = vfs_expect_device_open("/dev/zero", O_RDWR, FILE_READ | FILE_WRITE);
+    memset(buffer, 0xA5, sizeof(buffer));
+    if (file->ops->read(file, buffer, sizeof(buffer)) != (long)sizeof(buffer))
+        panic("VFS self-test: reading /dev/zero gave a short count\n");
+    for (size_t i = 0; i < sizeof(buffer); i++)
+        if (buffer[i] != 0)
+            panic("VFS self-test: /dev/zero gave a non-zero byte at %zu\n", i);
+    if (file->ops->write(file, buffer, 5) != 5)
+        panic("VFS self-test: writing /dev/zero did not take everything\n");
+    file_put(file);
+
+    // A device is no directory; the access mode 3 means nothing
+    if (vfs_open("/dev/null", O_RDONLY | O_DIRECTORY, &file) != -ENOTDIR)
+        panic("VFS self-test: O_DIRECTORY on /dev/null did not return -ENOTDIR\n");
+    if (vfs_open("/dev/null", O_ACCMODE, &file) != -EINVAL)
+        panic("VFS self-test: access mode 3 on /dev/null did not return -EINVAL\n");
+    vfs_dirent_t entry;
+    if (vfs_readdir(null, 0, &entry) != -ENOTDIR)
+        panic("VFS self-test: readdir of /dev/null did not return -ENOTDIR\n");
+    vfs_expect_error("/dev/null/x", -ENOTDIR);
+    vfs_expect_error("/dev/null/", -ENOTDIR);
+
+    // Initrd files stay read-only; a missing path is ENOENT before any access check
+    if (vfs_open(HELLO, O_WRONLY, &file) != -EROFS || vfs_open("/nope", O_WRONLY, &file) != -ENOENT)
+        panic("VFS self-test: write access outside /dev gave the wrong error\n");
+
+    // Registration refuses duplicates and bad names, and changes nothing then
+    if (devfs_register("null", 0666, MIHOS_MKDEV(1, 3), null->device_ops) != -EEXIST)
+        panic("VFS self-test: registering null twice did not return -EEXIST\n");
+    if (devfs_register("", 0666, 0, null->device_ops) != -EINVAL ||
+        devfs_register("a/b", 0666, 0, null->device_ops) != -EINVAL ||
+        devfs_register(NULL, 0666, 0, null->device_ops) != -EINVAL)
+        panic("VFS self-test: a bad device name was not refused\n");
+    vfs_expect_error("/dev/a", -ENOENT);
+
+    // Every open and close above took and dropped exactly one reference
+    if (null->refs != null_refs || zero->refs != zero_refs)
+        panic("VFS self-test: device references leaked (null %u → %u, zero %u → %u)\n", null_refs, null->refs,
+              zero_refs, zero->refs);
+
+    vfs_node_put(zero);
+    vfs_node_put(null);
+}
+
 void vfs_selftest(void)
 {
     // Every lookup returns a reference and every step drops one: counts must not move
@@ -400,6 +496,7 @@ void vfs_selftest(void)
     vfs_test_getdents();
     vfs_test_stat();
     vfs_test_mount();
+    vfs_test_devices();
 
     if (root->refs != root_refs || hello->refs != hello_refs)
         panic("VFS self-test: references leaked (root %u → %u, hello %u → %u)\n", root_refs, root->refs,
