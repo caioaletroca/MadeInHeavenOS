@@ -12,6 +12,7 @@
 #define EACCES 13 // permission denied
 #define EFAULT 14
 #define EBUSY 16   // device or resource busy
+#define EEXIST 17  // already exists: a device name registered twice
 #define ENOTDIR 20 // not a directory
 #define EISDIR 21  // is a directory
 #define EINVAL 22  // invalid argument: waitpid options

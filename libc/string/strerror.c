@@ -17,6 +17,7 @@ static const char *const messages[] = {
     [EACCES] = "Permission denied",
     [EFAULT] = "Bad address",
     [EBUSY] = "Device or resource busy",
+    [EEXIST] = "File exists",
     [ENOTDIR] = "Not a directory",
     [EISDIR] = "Is a directory",
     [EINVAL] = "Invalid argument",
