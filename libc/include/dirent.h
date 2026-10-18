@@ -11,6 +11,7 @@
 #define DT_UNKNOWN 0
 #define DT_DIR MIHOS_DT_DIR
 #define DT_REG MIHOS_DT_REG
+#define DT_CHR MIHOS_DT_CHR
 
 // Opaque directory stream, like FILE: only libc knows what is inside
 typedef struct __dirstream DIR;
