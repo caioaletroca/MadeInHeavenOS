@@ -37,6 +37,9 @@ void vfs_node_init(vfs_node_t *node, vfs_node_type_t type, const vfs_node_ops_t 
     node->ops = ops;
     node->mode = 0;
     node->mtime = 0;
+    node->dev = 0;
+    node->mounted = NULL;
+    node->covers = NULL;
     node->parent = NULL;
     node->refs = 1;
     spinlock_init(&node->lock);
@@ -71,6 +74,37 @@ void vfs_mount_root(vfs_node_t *root)
     vfs_node_get(root);
 }
 
+uint64_t vfs_dev_alloc(void)
+{
+    static uint64_t next_dev = 1;
+    return next_dev++;
+}
+
+int vfs_mount(const char *path, vfs_node_t *root)
+{
+    vfs_node_t *point;
+    int ret = vfs_lookup(path, &point);
+    if (ret < 0)
+        return ret;
+
+    if (point->type != VFS_DIRECTORY)
+        ret = -ENOTDIR;
+
+    else if (point == vfs_root || point->covers != NULL)
+        ret = -EBUSY;
+
+    if (ret < 0)
+    {
+        vfs_node_put(point);
+        return ret;
+    }
+
+    point->mounted = root;
+    root->covers = point;
+    vfs_node_get(root);
+    return 0;
+}
+
 int vfs_lookup(const char *path, vfs_node_t **out)
 {
     if (path[0] != '/')
@@ -98,7 +132,11 @@ int vfs_lookup(const char *path, vfs_node_t **out)
             continue;
         else if (length == 2 && name[0] == '.' && name[1] == '.')
         {
-            next = node->parent;
+            vfs_node_t *up = node;
+            while (up->covers != NULL)
+                up = up->covers;
+
+            next = up->parent;
             vfs_node_get(next);
         }
         else
@@ -110,6 +148,15 @@ int vfs_lookup(const char *path, vfs_node_t **out)
             return ret;
 
         node = next;
+
+        // A mount point: continue in the root mounted there (several mounts may stack)
+        while (node->mounted != NULL)
+        {
+            vfs_node_t *root = node->mounted;
+            vfs_node_get(root);
+            vfs_node_put(node);
+            node = root;
+        }
     }
 
     // "/usr/tests/hello/": a trailing '/' promises a directory (POSIX)
@@ -149,6 +196,7 @@ void vfs_stat(vfs_node_t *node, struct mihos_stat *stat)
     stat->st_size = node->size;
     stat->st_blksize = PAGE_SIZE;
     stat->st_blocks = ALIGN_UP(node->size, 512) / 512;
+    stat->st_dev = node->dev;
     stat->st_atim.tv_sec = node->mtime;
     stat->st_mtim.tv_sec = node->mtime;
     stat->st_ctim.tv_sec = node->mtime;

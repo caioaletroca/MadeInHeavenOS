@@ -11,6 +11,7 @@
 #define ENOMEM 12
 #define EACCES 13 // permission denied
 #define EFAULT 14
+#define EBUSY 16   // device or resource busy
 #define ENOTDIR 20 // not a directory
 #define EISDIR 21  // is a directory
 #define EINVAL 22  // invalid argument: waitpid options

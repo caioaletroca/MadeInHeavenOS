@@ -13,6 +13,7 @@
 #define TAR_BLOCK 512
 
 static uint64_t initrd_next_ino = 1;
+static uint64_t initrd_dev;
 
 /**
  * tar_header_t represents the header of a tar archive entry.
@@ -165,6 +166,7 @@ static initrd_node_t *initrd_node_create(vfs_node_type_t type, const char *name,
     n->name = copy;
     n->name_length = length;
     n->node.ino = initrd_next_ino++;
+    n->node.dev = initrd_dev;
     list_init(&n->children);
     list_init(&n->sibling);
 
@@ -413,6 +415,9 @@ void initrd_init(const boot_info_t *boot_info)
 
         file_offset = data + ALIGN_UP(file_size, TAR_BLOCK);
     }
+
+    // Allocate a device number for the initrd
+    initrd_dev = vfs_dev_alloc();
 
     // The archive is valid: build the tree and make it "/"
     initrd_node_t *root = initrd_node_create(VFS_DIRECTORY, "", 0);

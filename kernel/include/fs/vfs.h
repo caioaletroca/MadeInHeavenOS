@@ -30,8 +30,11 @@ typedef struct vfs_node
     vfs_node_type_t type;
     uint64_t size;
     uint64_t ino;
-    uint32_t mode; // permission bits only (07777); the type is `type`
-    int64_t mtime; // last change, seconds since 1970 (0: unknown)
+    uint32_t mode;            // permission bits only (07777); the type is `type`
+    int64_t mtime;            // last change, seconds since 1970 (0: unknown)
+    uint64_t dev;             // file system id (vfs_dev_alloc), st_dev
+    struct vfs_node *mounted; // mount point: the root of the file system mounted here, or NULL
+    struct vfs_node *covers;  // mounted root: the directory it is mounted on, or NULL
     const struct vfs_node_ops *ops;
     struct vfs_node *parent;
     unsigned int refs;
@@ -105,6 +108,22 @@ const char *vfs_path_next(const char **path, size_t *length);
  * @param root The root node to mount.
  */
 void vfs_mount_root(vfs_node_t *root);
+
+/**
+ * @brief Allocate a new device ID for a file system.
+ *
+ * @return A unique device ID, never 0, boot time only (no lock)
+ */
+uint64_t vfs_dev_alloc(void);
+
+/**
+ * @brief Mount a file system at the specified path.
+ *
+ * @param path The path where the file system should be mounted.
+ * @param root The root node of the file system to mount.
+ * @return 0 on success, -errno on failure.
+ */
+int vfs_mount(const char *path, vfs_node_t *root);
 
 /**
  * @brief Look up a node by its path.
