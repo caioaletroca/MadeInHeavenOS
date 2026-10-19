@@ -39,9 +39,11 @@ size_t console_read(char *buf, size_t n);
 size_t console_write(const char *buf, size_t n);
 
 /**
- * Get the file representation of the console.
+ * Get the console's open file: /dev/console, opened read-write once by
+ * console_init. Every caller shares that one file, like fds made with dup
+ * (init gets it as fds 0, 1 and 2).
  *
- * @return A pointer to the console's file structure.
+ * @return A new reference to the file (file_put it when done).
  */
 file_t *console_file(void);
 

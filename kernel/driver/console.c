@@ -1,11 +1,18 @@
 #include <driver/console.h>
 #include <driver/input.h>
 #include <driver/tty.h>
+#include <fs/vfs.h>
+#include <fs/devfs.h>
 #include <sched/thread.h>
 #include <sched/wait.h>
 #include <sched/spinlock.h>
+#include <mihos/stat.h>
+#include <mihos/fcntl.h>
 #include <stdbool.h>
 #include <panic.h>
+
+#define CONSOLE_MAJOR 5
+#define CONSOLE_MINOR 1
 
 #define CONSOLE_BUFFER_SIZE 1024
 _Static_assert((CONSOLE_BUFFER_SIZE & (CONSOLE_BUFFER_SIZE - 1)) == 0, "CONSOLE_BUFFER_SIZE must be a power of two");
@@ -277,13 +284,17 @@ static long console_file_write(file_t *file, const char *buf, size_t n)
 static const file_ops_t console_file_ops = {
     .read = console_file_read,
     .write = console_file_write,
+    .release = NULL,
 };
 
 void console_init(const keymap_t *map)
 {
-    file_t *c = file_create(&console_file_ops, FILE_READ | FILE_WRITE, NULL);
-    if (c == NULL)
-        panic("console: failed to create the console file\n");
+    if (devfs_register("console", 0600, MIHOS_MKDEV(CONSOLE_MAJOR, CONSOLE_MINOR), &console_file_ops) != 0)
+        panic("console: failed to register the console device\n");
+
+    file_t *c;
+    if (vfs_open("/dev/console", O_RDWR, &c) != 0)
+        panic("console: failed to open the console file\n");
 
     console = c;
     keymap = map;
