@@ -37,7 +37,23 @@ static void test_isatty(void)
     CHECK(isatty(dir) == 0 && errno == ENOTTY);
     close(dir);
 
-    // Not open: EBADF from fstat, not ENOTTY
+    // Character devices that are no terminals: they do not answer the terminal request
+    int null = open("/dev/null", O_RDWR);
+    errno = 0;
+    CHECK(isatty(null) == 0 && errno == ENOTTY);
+    close(null);
+    int zero = open("/dev/zero", O_RDONLY);
+    errno = 0;
+    CHECK(isatty(zero) == 0 && errno == ENOTTY);
+    close(zero);
+
+    // The console opened by name is one
+    int console = open("/dev/console", O_RDWR);
+    errno = 0;
+    CHECK(isatty(console) == 1 && errno == 0);
+    close(console);
+
+    // Not open: EBADF, not ENOTTY
     close(fd);
     errno = 0;
     CHECK(isatty(fd) == 0 && errno == EBADF);

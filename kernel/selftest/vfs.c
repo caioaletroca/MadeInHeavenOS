@@ -6,6 +6,7 @@
 #include <mihos/fcntl.h>
 #include <mihos/dirent.h>
 #include <mihos/stat.h>
+#include <mihos/ioctl.h>
 #include <driver/console.h>
 #include <fs/devfs.h>
 #include <util.h>
@@ -340,6 +341,20 @@ static void vfs_test_stat(void)
     if (file->node != console || file->ops != console->device_ops ||
         file->flags != (FILE_READ | FILE_WRITE))
         panic("VFS self-test: console_file() is not /dev/console opened read-write\n");
+
+    // The request encodes what sys_ioctl copies: TIOCGWINSZ reads 8 bytes out
+    if (MIHOS_IOC_DIR(MIHOS_TIOCGWINSZ) != MIHOS_IOC_READ ||
+        MIHOS_IOC_SIZE(MIHOS_TIOCGWINSZ) != sizeof(struct mihos_winsize))
+        panic("VFS self-test: TIOCGWINSZ does not encode a read of a winsize\n");
+
+    // The console answers the window size (into a kernel buffer) and refuses the rest
+    struct mihos_winsize ws;
+    memset(&ws, 0, sizeof(ws));
+    if (file->ops->ioctl == NULL || file->ops->ioctl(file, MIHOS_TIOCGWINSZ, &ws) != 0 || ws.ws_row != 25 ||
+        ws.ws_col != 80 || ws.ws_xpixel != 0 || ws.ws_ypixel != 0)
+        panic("VFS self-test: the console's TIOCGWINSZ gave %ux%u\n", ws.ws_row, ws.ws_col);
+    if (file->ops->ioctl(file, MIHOS_IOR('T', 0xFF, int), &ws) != -ENOTTY)
+        panic("VFS self-test: the console accepted an unknown request\n");
     file_put(file);
     vfs_node_put(console);
 }
@@ -454,6 +469,10 @@ static void vfs_test_devices(void)
     if (file->ops->write(file, buffer, 5) != 5)
         panic("VFS self-test: writing /dev/zero did not take everything\n");
     file_put(file);
+
+    // Not terminals: no ioctl at all, so sys_ioctl answers ENOTTY
+    if (null->device_ops->ioctl != NULL || zero->device_ops->ioctl != NULL)
+        panic("VFS self-test: /dev/null or /dev/zero has an ioctl\n");
 
     // A device is no directory; the access mode 3 means nothing
     if (vfs_open("/dev/null", O_RDONLY | O_DIRECTORY, &file) != -ENOTDIR)

@@ -10,9 +10,8 @@
 /*
  * Character devices in /dev: /dev/null and /dev/zero through open, read,
  * write and close, what stat and readdir say about them, and what they
- * refuse; /dev/console opened by name. isatty is only checked on the console:
- * until the terminal check (an ioctl) exists, it calls every character device
- * a terminal.
+ * refuse; /dev/console opened by name. isatty on the other devices is in the
+ * tty test.
  */
 
 static void test_null(void)
