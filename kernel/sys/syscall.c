@@ -9,11 +9,13 @@
 #include <exec/exec.h>
 #include <fs/vfs.h>
 #include <mihos/stat.h>
+#include <mihos/ioctl.h>
 #include <power.h>
 #include <util.h>
 
 // Bytes moved per copy; bounds the kernel stack buffer
 #define SYSCALL_CHUNK_SIZE 256
+#define IOCTL_ARG_MAX 256
 
 #define SPAWN_ARGS_MAX 64 // argc and envp entries
 #define SPAWN_STRINGS_MAX (4 * 1024)
@@ -525,6 +527,43 @@ static long sys_fstat(unsigned long fd, uintptr_t statbuf)
     return 0;
 }
 
+static long sys_ioctl(unsigned long fd, unsigned long request, uintptr_t arg)
+{
+    file_t *file = sys_file(fd);
+    if (file == NULL)
+        return -EBADF;
+
+    if (file->ops->ioctl == NULL)
+        return -ENOTTY;
+
+    // Determine the size of the ioctl argument based on the request code.
+    size_t size = MIHOS_IOC_SIZE(request);
+    if (size > IOCTL_ARG_MAX)
+        return -EINVAL;
+
+    char buffer[IOCTL_ARG_MAX];
+    memset(buffer, 0, IOCTL_ARG_MAX);
+
+    // If the ioctl command expects data to be written from user space, read it into the buffer.
+    if ((MIHOS_IOC_DIR(request) & MIHOS_IOC_WRITE) && size > 0)
+    {
+        if (address_space_read(syscall_space(), arg, buffer, size) != 0)
+            return -EFAULT;
+    }
+
+    // Call the ioctl handler with the prepared buffer.
+    long ret = file->ops->ioctl(file, request, (void *)buffer);
+
+    // If the ioctl command expects data to be read into user space, write it from the buffer.
+    if (ret >= 0 && (MIHOS_IOC_DIR(request) & MIHOS_IOC_READ) && size > 0)
+    {
+        if (address_space_write(syscall_space(), arg, buffer, size) != 0)
+            return -EFAULT;
+    }
+
+    return ret;
+}
+
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {
     (void)arg3;
@@ -563,6 +602,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_stat((uintptr_t)arg0, (uintptr_t)arg1);
     case SYS_FSTAT:
         return sys_fstat((unsigned long)arg0, (uintptr_t)arg1);
+    case SYS_IOCTL:
+        return sys_ioctl((unsigned long)arg0, (unsigned long)arg1, (uintptr_t)arg2);
     default:
         return -ENOSYS;
     }

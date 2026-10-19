@@ -22,6 +22,7 @@
 #define SYS_GETDENTS 17
 #define SYS_STAT 18
 #define SYS_FSTAT 19
+#define SYS_IOCTL 20
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)

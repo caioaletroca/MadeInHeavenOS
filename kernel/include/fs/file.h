@@ -13,6 +13,7 @@ typedef struct file_ops
 {
     long (*read)(struct file *file, char *buf, size_t count);
     long (*write)(struct file *file, const char *buf, size_t count);
+    long (*ioctl)(struct file *file, unsigned long request, void *arg);
 
     // Release is called without locks held, once, after the last reference is dropped.
     void (*release)(struct file *file);
