@@ -168,14 +168,6 @@ int vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
 void vfs_stat(vfs_node_t *node, struct mihos_stat *stat);
 
 /**
- * @brief Get the status of an open file.
- *
- * @param file The open file to get the status of.
- * @param stat Pointer to store the resulting status.
- */
-void vfs_file_stat(struct file *file, struct mihos_stat *stat);
-
-/**
  * @brief Fill a buffer with directory records (struct mihos_dirent), starting at the file's offset.
  *
  * The caller holds file->position_lock and stores *next in file->offset once the

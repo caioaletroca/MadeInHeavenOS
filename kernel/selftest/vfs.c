@@ -317,26 +317,31 @@ static void vfs_test_stat(void)
     if (vfs_expect_stat("/", MIHOS_S_IFDIR | 0755) != 0)
         panic("VFS self-test: the root has an mtime\n");
 
-    // An open file reports its node; the console (no node) a character device
+    // An open file is its lookup's node: what fstat reports is that node's stat
     struct file *file;
     if (vfs_open(HELLO, O_RDONLY, &file) != 0)
         panic("VFS self-test: opening %s failed\n", HELLO);
-    struct mihos_stat by_file, by_path;
-    vfs_file_stat(file, &by_file);
     vfs_node_t *node = vfs_expect(HELLO, VFS_FILE);
-    vfs_stat(node, &by_path);
+    if (file->node != node)
+        panic("VFS self-test: an open %s is not its lookup's node\n", HELLO);
     vfs_node_put(node);
     file_put(file);
-    if (memcmp(&by_file, &by_path, sizeof(by_file)) != 0)
-        panic("VFS self-test: fstat and stat of %s differ\n", HELLO);
+
+    // The console's open file is /dev/console: a devfs node, 5:1, readable and writable by root
+    vfs_node_t *console = vfs_expect("/dev/console", VFS_CHARDEV);
+    struct mihos_stat st;
+    memset(&st, 0xA5, sizeof(st));
+    vfs_stat(console, &st);
+    if (st.st_mode != (MIHOS_S_IFCHR | 0600) || st.st_rdev != MIHOS_MKDEV(5, 1) || st.st_size != 0 ||
+        st.st_dev != console->dev || st.__pad0 != 0)
+        panic("VFS self-test: /dev/console is wrong (mode 0%o)\n", st.st_mode);
 
     file = console_file();
-    memset(&by_file, 0xA5, sizeof(by_file));
-    vfs_file_stat(file, &by_file);
+    if (file->node != console || file->ops != console->device_ops ||
+        file->flags != (FILE_READ | FILE_WRITE))
+        panic("VFS self-test: console_file() is not /dev/console opened read-write\n");
     file_put(file);
-    if (by_file.st_mode != (MIHOS_S_IFCHR | 0620) || by_file.st_size != 0 || by_file.st_ino != 0 ||
-        by_file.__pad0 != 0)
-        panic("VFS self-test: the console is not a character device (mode 0%o)\n", by_file.st_mode);
+    vfs_node_put(console);
 }
 
 static void vfs_test_mount(void)
@@ -370,8 +375,9 @@ static void vfs_test_mount(void)
     vfs_expect_entry(dev, 1, "..", VFS_DIRECTORY, dev->ino);
     vfs_expect_entry(dev, 2, "null", VFS_CHARDEV, null->ino);
     vfs_expect_entry(dev, 3, "zero", VFS_CHARDEV, zero->ino);
-    if (vfs_readdir(dev, 4, &entry) != 0 || vfs_readdir(dev, 100, &entry) != 0)
-        panic("VFS self-test: /dev lists more than its dots, null and zero\n");
+    vfs_expect_entry(dev, 4, "console", VFS_CHARDEV, 0); // registered by console_init, after mem
+    if (vfs_readdir(dev, 5, &entry) != 0 || vfs_readdir(dev, 100, &entry) != 0)
+        panic("VFS self-test: /dev lists more than its dots, null, zero and console\n");
     vfs_node_put(zero);
     vfs_node_put(null);
 

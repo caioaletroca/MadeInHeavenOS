@@ -518,7 +518,7 @@ static long sys_fstat(unsigned long fd, uintptr_t statbuf)
         return -EBADF;
 
     struct mihos_stat st;
-    vfs_file_stat(file, &st);
+    vfs_stat(file->node, &st);
     if (address_space_write(syscall_space(), statbuf, &st, sizeof(st)) != 0)
         return -EFAULT;
 

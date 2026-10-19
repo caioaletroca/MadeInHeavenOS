@@ -231,21 +231,6 @@ void vfs_stat(vfs_node_t *node, struct mihos_stat *stat)
     stat->st_ctim.tv_sec = node->mtime;
 }
 
-void vfs_file_stat(struct file *file, struct mihos_stat *stat)
-{
-    // No node: a device like the console. Goes away when the console becomes /dev/console
-    if (file->node != NULL)
-    {
-        vfs_stat(file->node, stat);
-        return;
-    }
-
-    memset(stat, 0, sizeof(*stat));
-    stat->st_mode = MIHOS_S_IFCHR | 0620;
-    stat->st_nlink = 1;
-    stat->st_blksize = PAGE_SIZE;
-}
-
 int vfs_read_file(const char *path, void **data, size_t *size)
 {
     vfs_node_t *node;
