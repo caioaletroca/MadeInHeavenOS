@@ -26,13 +26,13 @@ Working x86-64 PC kernel with:
 - **VFS**: `vfs_node_t` per file or directory, path lookup (`.`, `..`, repeated `/`), the
   initrd (one ustar archive GRUB loads as the `initrd` module) mounted as `/` as a tree of nodes;
   `open`/`lseek` on files, `getdents` on directories, `stat`/`fstat`; mounts, with devfs
-  mounted at `/dev` with `/dev/null`, `/dev/zero` and `/dev/console`
+  mounted at `/dev` with `/dev/null`, `/dev/zero` and `/dev/console`; `ioctl` (`TIOCGWINSZ`)
 - **ELF64 loader**: user programs built separately (`user/`), validated and mapped by `elf_load`
 - **`/sbin/init` as pid 1**: the only program the kernel starts (the kernel command line is its
   arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
   `/bin/echo` as the first command; `/bin/ls` (`-a`, several paths, `/` after directories)
@@ -60,6 +60,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+0e16d70 test: cover ioctl and the terminal check in isatty
+4237875 feat(libc): add ioctl and ask the terminal in isatty
+abd2fc3 feat(driver): answer TIOCGWINSZ on the console
+2911485 feat(sys): add ioctl
+80d890b docs(architecture): document /dev/console in handoff
 ebca23e test(user): cover /dev/console
 6646fd1 refactor(fs): drop fstat's node-less special case
 37bcb4c feat(driver): open the console through /dev/console
@@ -374,7 +379,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
-  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19 (3, 4, 7–9 reserved). Read and write
+  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20 (3, 4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
   or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`. Generic `sys/syscall.c` →
   `syscall_dispatch`; x86 `syscall.c` unpacks the frame. User pointers are `uintptr_t` in every
@@ -546,6 +551,17 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   `/dev/console` read-write for itself and keeps that reference forever. `console_file()`
   returns a new reference to that one file; init gets it three times, as fds 0, 1 and 2 (one
   open file shared, as if `dup`ed: Linux opens `/dev/console` once for init and dups it).
+  Its `ioctl` answers `TIOCGWINSZ` (`SCREEN_HEIGHT` × `SCREEN_WIDTH`, no pixels) and gives
+  `-ENOTTY` for anything else, like Linux's tty layer.
+- **`ioctl(fd, request, arg)`** (`sys_ioctl`): `-EBADF`; no `ioctl` op in the file's ops →
+  `-ENOTTY` (initrd files, directories, `/dev/null`, `/dev/zero`). A request encodes its
+  argument (uapi `<mihos/ioctl.h>`, Linux's asm-generic `_IOC` layout: bits 31–30 direction,
+  `MIHOS_IOC_WRITE` 1 user → kernel, `MIHOS_IOC_READ` 2 kernel → user; 29–16 size; 15–8 a type
+  letter; 7–0 a number; `MIHOS_IOR`/`MIHOS_IOW` build them), so the syscall layer does every
+  copy: a zeroed `IOCTL_ARG_MAX` (256) stack buffer (bigger → `-EINVAL`), copied in for WRITE,
+  the op called with that kernel buffer, copied out for READ only when it returned `>= 0`
+  (`-EFAULT`). Requests: `MIHOS_TIOCGWINSZ` = `MIHOS_IOR('T', 0x13, struct mihos_winsize)`
+  (`ws_row`, `ws_col`, `ws_xpixel`, `ws_ypixel`, `uint16_t` each).
 
 ### Programs and the ELF loader (`exec/`, `init.c`, `user/`)
 
@@ -789,7 +805,12 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
     fd 3 free at the end. `/dev` lists `console` as `DT_CHR`; `/dev/console` opened by name
     takes a 0-byte write, is a tty and is fd 0's node. `isatty` is checked only there until the
     terminal check (step (d)).
-  - `tty`: `isatty` 1 on fds 0–2 with `errno` untouched, 0 + `ENOTTY` on a file and a
+  - `ioctl`: `TIOCGWINSZ` on fd 0 into a `0xA5`-filled struct gives 25×80 with the pixels
+    zeroed and `errno` unchanged, the same through `/dev/console` by name; `ENOTTY` for an
+    unknown request and on an initrd file, a directory, `/dev/null`, `/dev/zero`; `EFAULT`
+    (bad pointer), `EINVAL` (a request claiming 1000 bytes), `EBADF` (99, -1).
+  - `tty`: `isatty` 0 + `ENOTTY` on `/dev/null` and `/dev/zero`, 1 on `/dev/console`; and
+    `isatty` 1 on fds 0–2 with `errno` untouched, 0 + `ENOTTY` on a file and a
     directory, 0 + `EBADF` on closed, 99 and -1. Then, before stdout's first write, fd 1 is
     replaced by a read-only file: `printf("x\n")` returns 2 with no stream error (fully
     buffered), and `fflush` fails with `EOF`/`EBADF`/`ferror` (line buffering would fail at the
@@ -888,8 +909,8 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   internals, `internal/malloc.h` the allocator's. Shared internals are `__`-prefixed, one per file,
   declared (and `extern` for data) in the internal header, defined once.
 - `errno` is a plain global (thread-local once user threads exist). `unistd`: `write`, `read`,
-  `close`, `lseek`, `_exit`, `brk`, `sbrk`, `isatty` (`fstat` + `S_ISCHR`; 0 with `ENOTTY`, or
-  `EBADF` from `fstat`), one function per file; `open` in `libc/fcntl/`
+  `close`, `lseek`, `_exit`, `brk`, `sbrk`, `isatty` (musl's: `ioctl(fd, TIOCGWINSZ)` succeeds;
+  `ENOTTY`/`EBADF` come from the kernel), one function per file; `open` in `libc/fcntl/`
   (`<fcntl.h>`, variadic for a later `O_CREAT` mode). `O_*` and `SEEK_*` come from the uapi
   `<mihos/fcntl.h>` (also included by `<stdio.h>` and `<unistd.h>`); `off_t` is `long` (64-bit).
   `exit`: see process start and exit;
@@ -1255,9 +1276,13 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   `/dev/null` and `/dev/zero`, libc `<sys/sysmacros.h>`; the node put moved into `file_put`.
 - **`/dev` step (c), the console (done):** `/dev/console` (5:1, `0600`), registered and opened
   by `console_init`, so init's fds 0–2 have a node; `vfs_file_stat` and its special case gone.
-- **Next, `/dev` step (d):** a minimal `SYS_IOCTL` (an optional `ioctl` in `file_ops`, one
-  terminal request answered by the console) so `isatty` asks the device instead of trusting
-  `S_ISCHR` (`/dev/null` is a character device but no tty). Then a block driver, ext2.
+- **`/dev` step (d), `ioctl` (done):** `SYS_IOCTL` with size-encoded requests, the `ioctl` op,
+  the console's `TIOCGWINSZ`, libc `<sys/ioctl.h>`, `isatty` as musl's (`/dev/null` is no tty
+  any more); the `ioctl` test. **`/dev` is complete.**
+- **Next (roadmap phase B):** a block device driver (virtio-blk on QEMU is the simplest; AHCI
+  for Bochs and real machines), `VFS_BLOCKDEV` nodes in devfs (`/dev/vda`), a block cache, then
+  ext2 read-only, mounted from the disk with the mount table. Before that, the debt "syscalls
+  run with IRQs off" matters: disk reads block.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1356,8 +1381,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   number of pages.
 - devfs: devices register at boot only (no lock, no unregister, nodes never freed); one flat
   directory; `devfs_readdir` walks the list from the start per index (O(n²) listing).
-  Character devices refuse `lseek` (`ESPIPE`) where Linux lets `/dev/null` succeed. `isatty`
-  calls `/dev/null` a terminal until the `ioctl` check.
+  Character devices refuse `lseek` (`ESPIPE`) where Linux lets `/dev/null` succeed.
+- `ioctl`: one request (`TIOCGWINSZ`); integer arguments (requests whose third argument is no
+  pointer, e.g. `FIONBIO`) would need the syscall layer to skip the copy (`MIHOS_IOC_NONE`
+  passes the buffer, unused). Our request numbers differ from Linux's (`0x5413`), fine since
+  only libc sees them. The console's size is the VGA text size, fixed.
 - Mounts are two node pointers, set at boot: no `umount`, no lock (a mount after user space
   starts would race lookups), no mount over `/`. No current directory (absolute paths only).
 - `read` moves at most 256 bytes per syscall (`SYSCALL_CHUNK_SIZE`): correct (a short read) but
@@ -1392,8 +1420,6 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   redirections, no field splitting, no continuation lines for an open quote; a `'` inside `"..."`
   flips history expansion's quote tracking. Its features are checked by hand until pipes let a
   test feed it a script.
-- `isatty` is "a character device" (`fstat` + `S_ISCHR`): right while the console is the only
-  one; `/dev/null` will need the terminal `ioctl` (`TCGETS`) real libcs use.
 - stdio: no `fread`, `fopen`/`fclose`/`setvbuf`,
   `__stdio_head` is `const` (must change when `fopen` adds streams), no stream locking (needed with
   user threads); `stdio.h` is still partly a stub (`fopen`, `fread`, `fseek` declared but missing).

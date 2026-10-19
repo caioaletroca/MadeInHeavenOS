@@ -139,8 +139,8 @@ docs/                     # handoff, roadmap
 7. Phase B: ~~initramfs~~ (done: one ustar `initrd.tar`, programs without `.elf`) + VFS (step (a)
    done: nodes, path lookup, the initrd mounted as `/`; step (b) done: `open`/`read`/`lseek`;
    step (c) done: `getdents`, libc `opendir`/`readdir`, `ls`, a test runner that lists its tests;
-   step (d) done: `stat`/`fstat`; `/dev` in progress: mounts, devfs, `/dev/null`, `/dev/zero` and
-   `/dev/console` done, `ioctl` next).
+   step (d) done: `stat`/`fstat`; `/dev` done: mounts, devfs, `/dev/null`, `/dev/zero`,
+   `/dev/console`, `ioctl`; next a block driver, then ext2).
 
 ## Reference projects
 
