@@ -1,4 +1,5 @@
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -89,13 +90,18 @@ static void test_directories(void)
 
 static void test_console(void)
 {
-    // fds 0-2 are the console: a character device without a path
-    struct stat st;
+    // fds 0-2 are /dev/console: a character device (5:1) on devfs
+    struct stat console, st;
+    CHECK(stat("/dev/console", &console) == 0);
+    CHECK(S_ISCHR(console.st_mode) && (console.st_mode & 0777) == 0600);
+    CHECK(console.st_rdev == makedev(5, 1));
+
     for (int fd = 0; fd <= 2; fd++)
     {
         CHECK(fstat(fd, &st) == 0);
         CHECK(S_ISCHR(st.st_mode) && !S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode));
         CHECK(st.st_size == 0);
+        CHECK(st.st_ino == console.st_ino && st.st_dev == console.st_dev && st.st_rdev == console.st_rdev);
     }
 }
 

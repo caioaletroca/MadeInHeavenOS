@@ -10,8 +10,9 @@
 /*
  * Character devices in /dev: /dev/null and /dev/zero through open, read,
  * write and close, what stat and readdir say about them, and what they
- * refuse. isatty is left out: until the terminal check (an ioctl) exists,
- * it calls every character device a terminal.
+ * refuse; /dev/console opened by name. isatty is only checked on the console:
+ * until the terminal check (an ioctl) exists, it calls every character device
+ * a terminal.
  */
 
 static void test_null(void)
@@ -108,7 +109,7 @@ static void test_readdir(void)
     if (dir == NULL)
         return;
 
-    int seen_null = 0, seen_zero = 0, dots = 0, types_ok = 1;
+    int seen_null = 0, seen_zero = 0, seen_console = 0, dots = 0, types_ok = 1;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL)
     {
@@ -126,11 +127,26 @@ static void test_readdir(void)
             CHECK(entry->d_ino == null.st_ino);
         }
         seen_zero += strcmp(entry->d_name, "zero") == 0;
+        seen_console += strcmp(entry->d_name, "console") == 0;
     }
     closedir(dir);
 
-    CHECK(dots == 2 && seen_null == 1 && seen_zero == 1);
+    CHECK(dots == 2 && seen_null == 1 && seen_zero == 1 && seen_console == 1);
     CHECK(types_ok);
+}
+
+// /dev/console opens like any device; fds 0-2 are that device
+static void test_console(void)
+{
+    int fd = open("/dev/console", O_RDWR);
+    CHECK(fd >= 0);
+    CHECK(write(fd, "", 0) == 0); // nothing on the screen
+    CHECK(isatty(fd) == 1);
+
+    struct stat opened, fd0;
+    CHECK(fstat(fd, &opened) == 0 && fstat(0, &fd0) == 0);
+    CHECK(opened.st_ino == fd0.st_ino && opened.st_rdev == fd0.st_rdev);
+    CHECK(close(fd) == 0);
 }
 
 static void test_refusals(void)
@@ -168,6 +184,7 @@ int main(void)
     test_zero();
     test_stat();
     test_readdir();
+    test_console();
     test_refusals();
 
     // Every fd was closed: the next open gets fd 3 again
