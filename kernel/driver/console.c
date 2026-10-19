@@ -1,6 +1,7 @@
 #include <driver/console.h>
 #include <driver/input.h>
 #include <driver/tty.h>
+#include <driver/screen.h>
 #include <fs/vfs.h>
 #include <fs/devfs.h>
 #include <sched/thread.h>
@@ -8,6 +9,8 @@
 #include <sched/spinlock.h>
 #include <mihos/stat.h>
 #include <mihos/fcntl.h>
+#include <mihos/ioctl.h>
+#include <mihos/errno.h>
 #include <stdbool.h>
 #include <panic.h>
 
@@ -269,21 +272,67 @@ static void console_thread(void *arg)
         console_key(input_get_event());
 }
 
+/**
+ * Read function for the console device file.
+ *
+ * @param file The file representing the console device.
+ * @param buf The buffer to store the read data.
+ * @param n The number of bytes to read.
+ * @return The number of bytes read, or a negative error code on failure.
+ */
 static long console_file_read(file_t *file, char *buf, size_t n)
 {
     (void)file;
     return (long)console_read(buf, n);
 }
 
+/**
+ * Write function for the console device file.
+ *
+ * @param file The file representing the console device.
+ * @param buf The buffer containing the data to write.
+ * @param n The number of bytes to write.
+ * @return The number of bytes written, or a negative error code on failure.
+ */
 static long console_file_write(file_t *file, const char *buf, size_t n)
 {
     (void)file;
     return (long)console_write(buf, n);
 }
 
+/**
+ * Handles ioctl requests for the console device.
+ *
+ * @param file The file representing the console device.
+ * @param request The ioctl request code.
+ * @param arg The argument for the ioctl request.
+ * @return 0 on success, or a negative error code on failure.
+ */
+static long console_file_ioctl(file_t *file, unsigned long request, void *arg)
+{
+    (void)file;
+
+    switch (request)
+    {
+    case MIHOS_TIOCGWINSZ:
+    {
+        struct mihos_winsize *ws = (struct mihos_winsize *)arg;
+        if (ws != NULL)
+        {
+            ws->ws_row = SCREEN_HEIGHT;
+            ws->ws_col = SCREEN_WIDTH;
+        }
+        return 0;
+    }
+    default:
+        return -ENOTTY;
+    }
+}
+
 static const file_ops_t console_file_ops = {
     .read = console_file_read,
     .write = console_file_write,
+    .ioctl = console_file_ioctl,
     .release = NULL,
 };
 
