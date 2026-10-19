@@ -22,11 +22,11 @@ Working x86-64 PC kernel with:
 - User heap after the ELF image (`brk`), 64 KiB user stack with a guard page below it
 - Processes (`process_t`) owning their address space and fd table, waitable, refcounted; faults in
   ring 3 kill the process with 128 + signal instead of panicking
-- Open files (`file_t` + `file_ops_t`), console as the first backend behind fds 0–2
+- Open files (`file_t` + `file_ops_t`), `/dev/console` behind fds 0–2
 - **VFS**: `vfs_node_t` per file or directory, path lookup (`.`, `..`, repeated `/`), the
   initrd (one ustar archive GRUB loads as the `initrd` module) mounted as `/` as a tree of nodes;
   `open`/`lseek` on files, `getdents` on directories, `stat`/`fstat`; mounts, with devfs
-  mounted at `/dev` with `/dev/null` and `/dev/zero`
+  mounted at `/dev` with `/dev/null`, `/dev/zero` and `/dev/console`
 - **ELF64 loader**: user programs built separately (`user/`), validated and mapped by `elf_load`
 - **`/sbin/init` as pid 1**: the only program the kernel starts (the kernel command line is its
   arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
@@ -60,6 +60,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+ebca23e test(user): cover /dev/console
+6646fd1 refactor(fs): drop fstat's node-less special case
+37bcb4c feat(driver): open the console through /dev/console
+67c3e1c docs(architecture): document character devices, null and zero in handoff
 6f880fe test: cover character devices
 e969784 feat(libc): add DT_CHR and sys/sysmacros.h
 bff3748 feat(driver): add /dev/null and /dev/zero
@@ -268,7 +272,7 @@ tty_init → platform_boot_info_init → arch_init [TSS first] → input_init �
 → mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init] → initrd_init(&boot_info)
 → devfs_init [mounted on /dev] → mem_devices_init [/dev/null, /dev/zero]
 → scheduler_init [idle thread]
-→ threads_init [reaper] → console_init(&keymap_abnt2) [console thread]
+→ threads_init [reaper] → console_init(&keymap_abnt2) [/dev/console, console thread]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → mm_selftest
 → scheduler_selftest [+ sync tests] → console_selftest → user_selftest → vfs_selftest
 → elf_selftest
@@ -528,18 +532,20 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
 - **`stat(path, st)` / `fstat(fd, st)`** (`sys_stat`, `sys_fstat`): `stat` copies the path with
   `user_path_copy` (shared with `sys_open`: a `kmalloc`'d `VFS_PATH_MAX` buffer, `-E2BIG` →
   `-ENAMETOOLONG`), `vfs_lookup`s it, `vfs_stat`s into a kernel `struct mihos_stat`, puts the
-  node, then `address_space_write`s it (`-EFAULT`). `fstat`: `-EBADF`, then `vfs_file_stat`.
+  node, then `address_space_write`s it (`-EFAULT`). `fstat`: `-EBADF`, then `vfs_stat` of
+  `file->node` (every open file has one; node-less files such as pipes will need a decision).
   The ABI (uapi `<mihos/stat.h>`): fixed-width fields with an explicit `__pad0`, Linux's x86-64
   `struct stat` layout; `MIHOS_S_IFMT`/`IFDIR`/`IFCHR`/`IFREG` (octal, Linux values) in the high
   bits of `st_mode`, permissions in the low 12. **`vfs_stat(node, st)`** zeroes everything, then
   `st_ino`, `st_mode` = type bits | `node->mode`, `st_nlink` 1 (no hard links; also what tools
   read as "not counted" for directories), `st_size`, `st_blksize` = `PAGE_SIZE`, `st_blocks` in
-  512-byte units, all three times = `node->mtime` (read-only, no clock); `st_dev`, `st_uid`,
-  `st_gid`, `st_rdev` 0. **`vfs_file_stat(file, st)`**: the node's, or for a node-less file (the
-  console) `S_IFCHR | 0620` with nothing else, until `/dev/console` gives it a node.
-- **Console backend** (`driver/console.c`): one `FILE_READ | FILE_WRITE` file created in
-  `console_init`, which keeps its own reference forever. `console_file()` returns a new reference;
-  user programs get it three times, as fds 0, 1 and 2 (like `getty` opening the tty and `dup`ing it).
+  512-byte units, all three times = `node->mtime` (read-only, no clock), `st_dev` = `node->dev`,
+  `st_rdev` = `node->rdev`; `st_uid`, `st_gid` 0.
+- **Console backend** (`driver/console.c`): `console_init` registers `console` in devfs (5:1,
+  `0600`, Linux's numbers and mode) with the console's `file_ops`, then `vfs_open`s
+  `/dev/console` read-write for itself and keeps that reference forever. `console_file()`
+  returns a new reference to that one file; init gets it three times, as fds 0, 1 and 2 (one
+  open file shared, as if `dup`ed: Linux opens `/dev/console` once for init and dups it).
 
 ### Programs and the ELF loader (`exec/`, `init.c`, `user/`)
 
@@ -769,7 +775,8 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
     end, inode = `readdir`'s `d_ino`, `fstat` of the open file byte-identical to `stat` (both
     zeroed first: `struct stat` has padding after `st_mode`), two paths one inode. Directories
     (`/usr/tests`, with a trailing `/`, `/`, the never-listed `/usr`) `S_ISDIR` and `0755`;
-    `fstat` of an open directory; fds 0–2 `S_ISCHR`. `ENOENT` (missing, relative), `ENOTDIR`,
+    `fstat` of an open directory; fds 0–2 `S_ISCHR` with `/dev/console`'s inode, `st_dev` and
+    `st_rdev` (5:1, `0600`). `ENOENT` (missing, relative), `ENOTDIR`,
     `ENAMETOOLONG`, `EFAULT` (path), `EBADF` (99, -1, closed). A bad `struct stat *` is not
     tested: libc copies into it itself (crashes there, like glibc).
   - `devices`: `/dev/null` (`O_WRONLY`) takes writes of 5, 1000 (more than a chunk) and 0
@@ -779,7 +786,9 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
     `st_dev`, size 0, `fstat` byte-identical. `/dev` lists the dots (`DT_DIR`) and `null`/`zero`
     (`DT_CHR`, `d_ino` = `st_ino`). `ESPIPE` (`lseek`), `ENOTDIR` (`getdents`, `opendir`,
     `O_DIRECTORY`, `/dev/null/`, `/dev/null/x`), `ENOENT` (`/dev/nope`), `EROFS` outside `/dev`;
-    fd 3 free at the end. `isatty` left out until the terminal check (step (d)).
+    fd 3 free at the end. `/dev` lists `console` as `DT_CHR`; `/dev/console` opened by name
+    takes a 0-byte write, is a tty and is fd 0's node. `isatty` is checked only there until the
+    terminal check (step (d)).
   - `tty`: `isatty` 1 on fds 0–2 with `errno` untouched, 0 + `ENOTTY` on a file and a
     directory, 0 + `EBADF` on closed, 99 and -1. Then, before stdout's first write, fd 1 is
     replaced by a read-only file: `printf("x\n")` returns 2 with no stream error (fully
@@ -806,8 +815,9 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   `next` 5, then 0; `sbin` into exactly 16 bytes leaves a canary after them; 15 bytes `-EINVAL`.
   `vfs_stat` (into a `0xA5`-filled struct: every field and `__pad0` written): `hello` and
   `/usr/tests` are `0755` with an mtime between 2023 and 2100, `/usr` and `/` `0755` with mtime
-  0 (catches a file's values leaking onto its parents); `vfs_file_stat` of an open `hello`
-  equals `vfs_stat` of its node, the console is `S_IFCHR | 0620`.
+  0 (catches a file's values leaking onto its parents); an open `hello`'s `file->node` is its
+  lookup's node; `/dev/console` is `S_IFCHR | 0600`, 5:1, on devfs, and `console_file()` is that
+  node opened read-write with the console's ops.
   The root's and `hello`'s reference counts are unchanged after all of it (a missing `put` in
   lookup fails here).
 - **ELF self-test** (`selftest/elf.c`): `exec_load` of `/usr/tests/hello` (read with
@@ -1243,10 +1253,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **`/dev` step (b), devices (done):** `VFS_CHARDEV` nodes with `rdev` and the driver's
   `device_ops`, device opens with access modes, `st_rdev`/`DT_CHR`, `devfs_register`,
   `/dev/null` and `/dev/zero`, libc `<sys/sysmacros.h>`; the node put moved into `file_put`.
-- **Next, `/dev` step (c):** the console as `/dev/console` (5,1): `console_init` registers it,
-  `program_run` opens it for init's fds 0–2 through `vfs_open` instead of `console_file()`,
-  `vfs_file_stat`'s node-less special case goes. Then (d) a minimal `SYS_IOCTL` so `isatty`
-  asks the terminal (`/dev/null` is a character device but no tty); then a block driver, ext2.
+- **`/dev` step (c), the console (done):** `/dev/console` (5:1, `0600`), registered and opened
+  by `console_init`, so init's fds 0–2 have a node; `vfs_file_stat` and its special case gone.
+- **Next, `/dev` step (d):** a minimal `SYS_IOCTL` (an optional `ioctl` in `file_ops`, one
+  terminal request answered by the console) so `isatty` asks the device instead of trusting
+  `S_ISCHR` (`/dev/null` is a character device but no tty). Then a block driver, ext2.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1416,10 +1427,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The crash loop guard counts kills in a row, not kills per time (no clock in user space).
 - The adoption test's grandchild cannot be waited for: a failure is only its printed `FAIL` line,
   not counted by the runner.
-- `stat` has no clock behind it: all three times are the archive's `mtime`; no `st_dev` per
-  file system (one mount), no users (`uid`/`gid` 0), `nlink` always 1; the console's `fstat`
-  is a special case in `vfs_file_stat` until `/dev`. No `lstat` (no symlinks) or `fstatat`
-  (no current directory).
+- `stat` has no clock behind it: all three times are the archive's `mtime`; no users
+  (`uid`/`gid` 0), `nlink` always 1. No `lstat` (no symlinks) or `fstatat` (no current
+  directory).
 - `ls` prints file arguments in argument order, mixed with the directories (real `ls` prints
   files first, then each directory). Its options, several paths and errors are checked by
   hand, like the shell.
