@@ -1,18 +1,8 @@
 #include <unistd.h>
-#include <sys/stat.h>
-#include <errno.h>
+#include <sys/ioctl.h>
 
 int isatty(int fd)
 {
-    struct stat st;
-    if (fstat(fd, &st) != 0)
-        return 0;
-
-    if (!S_ISCHR(st.st_mode))
-    {
-        errno = ENOTTY;
-        return 0;
-    }
-
-    return 1;
+    struct winsize ws;
+    return ioctl(fd, TIOCGWINSZ, &ws) == 0;
 }

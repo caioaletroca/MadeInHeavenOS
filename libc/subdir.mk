@@ -11,4 +11,5 @@ wait \
 fcntl \
 dirent \
 stat \
+ioctl \
 cxx
