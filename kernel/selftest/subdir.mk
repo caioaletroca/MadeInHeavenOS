@@ -1,4 +1,5 @@
 local_sources := \
+block.c \
 console.c \
 elf.c \
 guard.c \

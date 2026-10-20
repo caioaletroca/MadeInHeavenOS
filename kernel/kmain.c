@@ -17,6 +17,7 @@
 #include <boot_info.h>
 #include <init.h>
 
+#include "selftest/block.h"
 #include "selftest/console.h"
 #include "selftest/elf.h"
 #include "selftest/guard.h"
@@ -67,6 +68,7 @@ void kmain(uintptr_t boot_handoff)
     console_selftest();
     user_selftest();
     vfs_selftest();
+    block_selftest();
     elf_selftest();
     kprintf("self-tests: ok\n"); // each one panics on failure
 
