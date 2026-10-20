@@ -47,7 +47,9 @@ Working x86-64 PC kernel with:
 - **Disks:** a block layer (`block_read` with range checks) and an ATA PIO driver (polling,
   28-bit LBA) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators;
   each disk as a block device in `/dev` (`/dev/hda`, `S_IFBLK`, read-only, seekable, read at
-  byte offsets through `block_read_bytes`)
+  byte offsets through `block_read_bytes`); a **block cache** (`bcache_get`/`bcache_put`: 64
+  leased 4 KiB buffers, hash lookup, LRU eviction) under every disk read
+- Intrusive `list.h` and an hlist `hashtable.h` (multiplicative `hash_64`) shared by kernel and libc
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
@@ -58,12 +60,19 @@ Working x86-64 PC kernel with:
 - Console: US and ABNT2 keymaps with dead keys, line discipline, blocking `console_read()`
 - UTF-8 tty drawing CP437 glyphs on VGA text mode with a hardware cursor; `kprintf` is atomic per call
 - Kernel split into generic code, arch contracts and platform contracts, enforced by the build
-- Guard, MM, preemption, sync, console, user-mode and ELF self-tests and the user test programs
+- Guard, hash table, MM, preemption, sync, console, user-mode, VFS, block and ELF self-tests and the user test programs
   passing in Bochs (stdin_interactive by hand); keyboard verified in Bochs and QEMU
 
 Latest commits:
 
 ```text
+e9d610b test: cover the hash table and the block cache
+ec8c250 refactor(driver): read block devices through the cache
+878b25a feat(driver): add the block cache
+d279f2f fix(sched): declare mutex_lock before the mutex guard uses it
+d9afb83 feat(libc): add list_move_after
+0ba5040 feat(libc): replace the hash table with hlist and a multiplicative hash
+d452e51 docs(architecture): document block device nodes in handoff
 3bce5df test: cover block devices
 beb1f9d feat(libc): add S_IFBLK, S_ISBLK and DT_BLK
 0ce32df feat(driver): register block devices in devfs
@@ -293,8 +302,8 @@ tty_init → platform_boot_info_init → arch_init [TSS first] → input_init �
 → devfs_init [mounted on /dev] → mem_devices_init [/dev/null, /dev/zero]
 → scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [/dev/console, console thread]
-→ block_devfs_init [/dev/hda…: the disks platform_init found]
-→ timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → mm_selftest
+→ block_devfs_init [/dev/hda…: the disks platform_init found] → bcache_init [64 buffers]
+→ timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → hashtable_selftest → mm_selftest
 → scheduler_selftest [+ sync tests] → console_selftest → user_selftest → vfs_selftest
 → elf_selftest
 → init_start(&boot_info) [starts /sbin/init, waits; init exiting = panic; init halts via SYS_REBOOT]
@@ -879,13 +888,14 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   `argv = {"elf", "selftest"}`, `envp = {"A=1"}` and checks the initial stack from the kernel side
   (16-aligned, `argc`, the NULLs, `AT_NULL`, the strings behind `argv[1]` and `envp[0]`).
 
-### Block devices (`driver/block.c`, `platform/pc/ata.c`)
+### Block devices (`driver/block.c`, `driver/bcache.c`, `platform/pc/ata.c`)
 
 ```text
 read(fd) ─▶ vfs_file_ops ─▶ vfs_read(node, offset) ─▶ devfs_block_read ─▶ block_read_bytes(dev, buf, count, offset)
-                                       whole sectors straight in, a partial one through a bounce sector ─┘
-caller (self-test; ext2 later) ─▶ block_read(dev, sector, count, buf) ─range check─▶ dev->ops->read
-                                                                  ATA PIO: ports, polling, inw ×256 per sector
+                                                     per 4 KiB block: bcache_get ─ memcpy slice ─ bcache_put ─┘
+ext2 (step 4) ─▶ bcache_get ─ read buf->data in place ─ bcache_put
+bcache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check─▶ dev->ops->read
+                                                       ATA PIO: ports, polling, inw ×256 per sector
 ```
 
 - **Block layer** (`include/driver/block.h`): `block_device_t` = `name[16]` (`hda`…),
@@ -894,14 +904,36 @@ caller (self-test; ext2 later) ─▶ block_read(dev, sector, count, buf) ─ran
   `block_register` (static table of `BLOCK_DEVICES_MAX` 8; duplicate → `-EEXIST`, full →
   `-ENOMEM`; boot time, no lock; the device lives forever), `block_find(name)`, `block_read`:
   `count` 0 → 0, `sector >= sector_count || count > sector_count - sector` → `-EINVAL` (cannot
-  wrap), then the driver. The range check lives only here.
+  wrap), then the driver. The range check lives only here. **Only the cache calls
+  `block_read`** (and the block self-test, to compare): a read around it would miss cached
+  data and, once there are writes, see stale data.
 - **Byte reads** (`block_read_bytes(dev, buffer, count, offset)`): `offset` at or past the end →
-  0, `count` cut to `size - offset` (a subtraction, so nothing wraps); then per step: aligned
-  with at least a whole sector left → that many sectors (capped at `UINT32_MAX`) straight into
-  the buffer; otherwise one sector into a 512-byte stack bounce buffer and `min(512 - within,
-  remaining)` bytes copied out (covers an unaligned head and a short tail). A `block_read`
-  error is returned as is, never a short count (it would hide the error). Returns the bytes
-  read. The block cache (step 3) replaces the bounce buffer.
+  0, `count` cut to `size - offset` (a subtraction, so nothing wraps); then per step: `index =
+  position / 4096`, `within = position % 4096`, `chunk = MIN(count - done, 4096 - within)`,
+  `bcache_get`, `memcpy` of the slice, `bcache_put` right away (copy-out: the caller has its
+  own bytes). A `bcache_get` error is returned as is, never a short count (it would hide the
+  error). Returns the bytes read.
+- **Block cache** (`include/driver/bcache.h`, `driver/bcache.c`): `BCACHE_BUFFERS` 64 buffers of
+  `BCACHE_BLOCK_SIZE` = `PAGE_SIZE` (8 sectors; 1/2/4 KiB ext2 blocks are slices of one),
+  256 KiB, allocated by `bcache_init` (`kmalloc`, page aligned; failure panics).
+  `bcache_buf_t` = key `dev` + `index`, `refs`, `lru` (`list_t`), `hash` (`hlist_node_t`),
+  `fill` (mutex), `valid`, `data`. **Leases:** `bcache_get(dev, index, &buf)` → a referenced,
+  filled buffer, or `-EINVAL` (index past `ceil(sector_count / 8)`), `-ENOBUFS` (every buffer
+  leased), the disk's error; `bcache_put(buf)` (a put at 0 references panics). A buffer with
+  references is never reused, so a holder may read `data` until its put. **Claim**
+  (`bcache_claim`, under `bcache_lock`, a spinlock never held during I/O): look the key up in
+  `bcache_hash` (16 buckets, `hash_64((uintptr_t)dev ^ index, 4)`, keys compared in the
+  bucket walk) → `refs++`, a hit; else walk the LRU from the back (least recent) for the first
+  `refs == 0` buffer, `hlist_del` it from its old bucket, set the key, `valid = false` (safe
+  without `fill`: at 0 references nobody is inside it), `refs = 1`, add it to the new bucket, a
+  miss; none free → `-ENOBUFS` (no sleeping: a leak shows as an error, not a hang). **Fill**
+  (after the lock, under `buf->fill`): if `!valid`, read `min(8, sector_count - index * 8)`
+  sectors (the disk's partial last block zero-filled past the end), `valid = ret == 0`; a
+  failed read puts the buffer and returns the error (the next get retries). A second reader of
+  the same block hits, waits on `fill`, finds it valid: one disk read for both. **Put:** under
+  the lock, `refs--`; at 0 `list_move_after(&bcache_lru, ...)` (the front: most recent).
+  `bcache_status(&hits, &misses)`: claims that found the key and claims that took a buffer (a
+  retry after a failed read counts as a hit). Nothing is ever dirty yet (no writes).
 - **Block devices in `/dev`:** the disks are found in `platform_init`, before `kmalloc` and
   devfs exist, so `block_devfs_init()` (in `kmain`, after `console_init`: `/dev` lists `null`,
   `zero`, `console`, then the disks) walks the table and calls `devfs_register_block(name,
@@ -945,14 +977,28 @@ caller (self-test; ext2 later) ─▶ block_read(dev, sector, count, buf) ─ran
   exponent 0 at 24, label at 120); a 2-sector read and a 300-sector read (two commands) equal
   single reads, also at sectors 255/256/257; 0 sectors does nothing; the last sector reads;
   past the end, from the last sector for 2, `UINT64_MAX` and `UINT32_MAX` → `-EINVAL`; a
-  second `block_register` → `-EEXIST`. Then `/dev/<disk>`: `VFS_BLOCKDEV` with the driver's
+  second `block_register` → `-EEXIST`. Then the cache (`block_test_cache`, on blocks nothing
+  else reads): two gets of block 1 share one buffer (`refs` 2; one miss, then one hit), its
+  data equals its 8 sectors, after both puts it is still cached; with block 2 held, 64 new
+  blocks (600…663) evict exactly the oldest free one: the held buffer keeps its key and data,
+  663 hits, 600 misses again; 64 leases (700…763) make a new block `-ENOBUFS` (`out` untouched)
+  while a cached one still hits, every `refs` 0 afterwards; block 1024 and `UINT64_MAX`
+  `-EINVAL`, the last block fine. Then `/dev/<disk>`: `VFS_BLOCKDEV` with the driver's
   `rdev` (an IDE major) and the disk's size; `vfs_stat` `S_IFBLK | 0660`, size and blocks 0;
   opens with `FILE_READ` and the same node, `-EROFS` for `O_RDWR`/`O_WRONLY`; seven `vfs_read`s
   equal a 300-sector `block_read` with a canary after each (a whole sector, 2 bytes inside one,
   across sectors 1–2, head + 2 sectors + tail, 270 sectors from 512, everything from byte 3,
   around the 256-sector command boundary); the magic at byte 1080; 100 bytes at 10 before the
   end give the last 10 (canary kept); at the end, past it, at `UINT64_MAX` and for 0 bytes 0;
-  the node's references unchanged.
+  64 KiB at block 200 read twice: 16 misses, then 16 hits and none; the node's references
+  unchanged.
+- **Hash table self-test** (`selftest/hashtable.c`, right after the guard one): one bucket by
+  hand (every `next`/`pprev` after adds at the front and deletes of the middle, first and only
+  node; `hlist_hashed`; an emptied bucket takes a node again); 100 keys in 4 buckets found
+  exactly once by comparing keys, missing keys not found, the odd keys left after deleting the
+  even ones, every bucket empty at the end; `hash_64` below `2^bits` for 1–16 bits, the plain
+  product at 64, 1024 consecutive keys 48–80 per bucket of 16; `list_move_after` from the back
+  and the middle (both link directions), and of the first item (no change).
 
 ### Userland libc (`libc/`)
 
@@ -1054,6 +1100,16 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   `S_IF*` from the uapi, `S_ISDIR`/`S_ISCHR`/`S_ISREG`, `S_IRWXU`… permission bits. Both
   functions take the kernel's `struct mihos_stat` into a local and copy it field by field
   (`__stat_from_kernel`), as mlibc's `sys_stat` will.
+- **Intrusive containers** (`<sys/list.h>`, `<sys/hashtable.h>`; header-only, used by the kernel
+  through libk and by malloc): mechanism only, never allocation or policy, so each user (the
+  scheduler, devfs, the block cache…) builds its own structure from them, as Linux does.
+  `list.h`: circular doubly linked `list_t`, `list_container`, `list_move_after` (an LRU's
+  "most recent"). `hashtable.h`: Linux's hlist, `hlist_head_t` buckets (one pointer) of
+  `hlist_node_t` (`next`, `pprev` = the pointer pointing at the node, so `hlist_del` needs no
+  head and no first-node special case), `hlist_add_head`, `hlist_del` (resets the node),
+  `hlist_hashed`, `hlist_for_each`, `hlist_container`; `HASH_BUCKETS(bits)` buckets, zeroed =
+  empty; `hash_64(value, bits)` = `(value * GOLDEN_RATIO_64) >> (64 - bits)` (unsigned, in range
+  by construction). The table stores no keys: callers compare their own in the bucket walk.
 - **Directories** (`<dirent.h>`, `libc/dirent/`, internals in `internal/dirstream.h`): `DIR` is
   opaque like `FILE`; `struct __dirstream` = `fd`, `pos`/`len` over a `_Alignas(uint64_t)` 2 KiB
   buffer of `getdents` records, and the one `struct dirent` (`d_ino`, `d_type`, `d_name[256]`)
@@ -1398,10 +1454,19 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   bdev inode); byte-to-sector logic lives in the block layer, devfs only forwards; disks are
   published after devfs exists, not at discovery; devices report `st_size` 0 (Linux), the size
   comes from `lseek(SEEK_END)`; read-only (`-EROFS`) until the driver writes.
-- **Next, disk step 3:** a block cache under `block_read_bytes` (fixed-size blocks keyed by
-  device + block number, a hash or list lookup, LRU eviction, a mutex; reads fill a whole block
-  so the 256-byte `sys_read` chunks stop re-reading the same sector). Then (4) ext2 read-only
-  mounted at `/mnt`, (5) IRQ-driven reads, partitions, writing, the root on the disk.
+- **Disk step 3, the block cache (done):** the hash table rewritten as Linux's hlist with a
+  multiplicative `hash_64` (the old one was unused and broken), `list_move_after`, the
+  `mutex_lock` declaration fix in `sync.h`, `bcache_get`/`bcache_put` over 64 leased 4 KiB
+  buffers, `ENOBUFS`, `block_read_bytes` through the cache; the hash table and cache
+  self-tests. Decided: no generic cache, but generic pieces (list, hlist) and each cache written
+  for its keys and fill, as Linux does; cache blocks are 4 KiB whatever the file system's block
+  size; xv6's two locks (a spinlock for the list and keys, a per-buffer mutex across the disk
+  read); every buffer leased → `-ENOBUFS`, not sleeping; everything reads through the cache.
+- **Next, disk step 4:** ext2 read-only, mounted at `/mnt`: the superblock (magic, block size,
+  counts) and block group descriptors through `bcache_get`, inodes from the inode table, a
+  directory's entries for `lookup`/`readdir`, a file's data through its 12 direct and the
+  indirect blocks; ext2 nodes in the VFS (`release` frees them, unlike the initrd's). Then
+  (5) IRQ-driven reads, partitions, writing, the root on the disk.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1502,9 +1567,12 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   LBA (128 GiB), no DMA, no writes, no cache; IDENTIFY's model string unused; names by IDE
   position (`hda`…`hdd`), so the same disk is `hdb` on Bochs. The block table has no lock and
   no unregister. No PCI enumeration yet (AHCI and virtio need it).
-- Block device reads have no cache: every `sys_read` of 256 bytes reads its whole sector again
-  through the bounce buffer, so reading a disk sequentially costs two sector reads per sector.
-  The minors reserved for partitions (`hda1` = 3:1) are unused: no partition table is parsed.
+- Block cache: a fixed 64 buffers (no growing or shrinking under memory pressure); `-ENOBUFS`
+  when all are leased (a caller holding many blocks at once, e.g. a deep indirect walk, must put
+  as it goes); the LRU walk is linear and skips leased buffers; no read-ahead; `refs` and the
+  counters under one global spinlock (fine on one CPU). Read-only: no dirty flag or write-back
+  yet. A failed read is retried by the next get but counted as a hit.
+- The minors reserved for partitions (`hda1` = 3:1) are unused: no partition table is parsed.
   `block_read_bytes` returns an error even after reading part of the range (nothing partial).
 - devfs: devices register at boot only (no lock, no unregister, nodes never freed); one flat
   directory; `devfs_readdir` walks the list from the start per index (O(n²) listing).
