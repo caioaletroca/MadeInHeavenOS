@@ -76,6 +76,19 @@ static inline void list_delete(list_t *node)
 }
 
 /**
+ * Move a node to a new position after the specified position in the list.
+ *
+ * @param position  List pointer to a item in the list,
+ * the node will be moved after this item
+ * @param node  The node to be moved
+ */
+static inline void list_move_after(list_t *position, list_t *node)
+{
+    list_delete(node);
+    list_insert_after(position, node);
+}
+
+/**
  * Check if the list is empty
  *
  * @param list  List pointer
