@@ -44,7 +44,11 @@ int block_register(block_device_t *dev);
 block_device_t *block_find(const char *name);
 
 /**
- * @brief Read data from a block device.
+ * @brief Read sectors from a block device, straight from the driver.
+ *
+ * Only the block cache calls this (and the block self-test, to compare): a
+ * read around the cache would miss what is cached, and once there are writes,
+ * see stale data. Everything else reads through block_read_bytes or bcache_get.
  *
  * @param dev The block device to read from.
  * @param sector The starting sector to read from.
@@ -57,8 +61,8 @@ int block_read(block_device_t *dev, uint64_t sector, uint32_t count, void *buffe
 /**
  * @brief Read bytes from a block device, at any offset and of any length.
  *
- * Reads whole sectors underneath; a partial first or last sector goes through a
- * one-sector buffer. The cache will take that buffer's place.
+ * Reads through the block cache: one bcache_get per 4 KiB block the range
+ * touches, the slice copied out, the buffer put back at once.
  *
  * @param dev The block device to read from.
  * @param buffer A kernel buffer of at least count bytes.

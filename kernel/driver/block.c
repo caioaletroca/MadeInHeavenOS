@@ -1,4 +1,5 @@
 #include <driver/block.h>
+#include <driver/bcache.h>
 #include <fs/devfs.h>
 #include <mihos/errno.h>
 #include <stdint.h>
@@ -57,35 +58,22 @@ long block_read_bytes(block_device_t *dev, void *buffer, size_t count, uint64_t 
 
     count = MIN(count, size - offset);
 
-    uint8_t *buf = (uint8_t *)buffer;
+    uint8_t *out = (uint8_t *)buffer;
     size_t done = 0;
     while (done < count)
     {
         uint64_t position = offset + done;
-        uint64_t sector = position / BLOCK_SECTOR_SIZE;
-        uint64_t within = position % BLOCK_SECTOR_SIZE;
-        uint64_t remaining = count - done;
+        uint64_t index = position / BCACHE_BLOCK_SIZE;
+        size_t within = position % BCACHE_BLOCK_SIZE;
+        size_t chunk = MIN(count - done, BCACHE_BLOCK_SIZE - within);
 
-        // Aligned with at least one whole sector left: straight into the caller's buffer
-        if (within == 0 && remaining >= BLOCK_SECTOR_SIZE)
-        {
-            uint32_t n = MIN(remaining / BLOCK_SECTOR_SIZE, UINT32_MAX);
-
-            int ret = block_read(dev, sector, n, buf + done);
-            if (ret < 0)
-                return ret;
-            done += (size_t)n * BLOCK_SECTOR_SIZE;
-            continue;
-        }
-
-        // Handle unaligned reads by using a bounce buffer
-        uint8_t bounce[BLOCK_SECTOR_SIZE];
-        int ret = block_read(dev, sector, 1, bounce);
+        bcache_buf_t *buf;
+        int ret = bcache_get(dev, index, &buf);
         if (ret < 0)
             return ret;
 
-        uint64_t chunk = MIN(remaining, BLOCK_SECTOR_SIZE - within);
-        memcpy(buf + done, bounce + within, chunk);
+        memcpy(out + done, buf->data + within, chunk);
+        bcache_put(buf);
         done += chunk;
     }
 
