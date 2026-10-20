@@ -1,0 +1,2 @@
+This directory is packed into disk.img, the ext2 test disk the emulators
+attach next to the boot CD. The kernel's block and ext2 tests read it back.

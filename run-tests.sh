@@ -4,7 +4,10 @@
 # captures the 0xE9 debug console and checks the result. Exits 0 only if the
 # run powered off by itself after "tests: N passed, 0 failed".
 #
-#   ./run-tests.sh [iso]        default: mihos.iso
+#   ./run-tests.sh [iso [disk]]   defaults: mihos.iso, disk.img
+#
+# The disk (an ext2 image, make all builds it) is the IDE primary master, the
+# CD stays the secondary master. -snapshot: the run never writes to the image.
 #
 # Environment: QEMU (default qemu-system-x86_64), TIMEOUT in seconds (default
 # 120). The log stays in run-tests.log.
@@ -12,6 +15,7 @@
 set -u
 
 iso=${1:-mihos.iso}
+disk=${2:-disk.img}
 qemu=${QEMU:-qemu-system-x86_64}
 limit=${TIMEOUT:-120}
 log=run-tests.log
@@ -21,20 +25,28 @@ if [ ! -f "$iso" ]; then
     exit 2
 fi
 
+if [ ! -f "$disk" ]; then
+    echo "run-tests: $disk not found (build it first: make all, in Docker)" >&2
+    exit 2
+fi
+
 if ! command -v "$qemu" >/dev/null 2>&1; then
     echo "run-tests: $qemu not found" >&2
     exit 2
 fi
 
-# A Windows QEMU needs a Windows path for -debugcon, and Git Bash must not rewrite it
+# A Windows QEMU needs Windows paths for -debugcon and -drive, and Git Bash must not rewrite them
 log_arg=$log
+disk_arg=$disk
 if command -v cygpath >/dev/null 2>&1; then
     log_arg=$(cygpath -m "$PWD/$log")
+    disk_arg=$(cygpath -m "$(cd "$(dirname "$disk")" && pwd)/$(basename "$disk")")
 fi
 
 rm -f "$log"
 start=$(date +%s)
 MSYS_NO_PATHCONV=1 timeout "$limit" "$qemu" -cdrom "$iso" -m 1024 -no-reboot \
+    -drive "file=$disk_arg,format=raw,if=ide,index=0,media=disk" -snapshot \
     -display none -debugcon "file:$log_arg"
 qemu_status=$?
 elapsed=$(($(date +%s) - start))
