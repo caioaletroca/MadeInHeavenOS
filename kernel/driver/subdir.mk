@@ -5,5 +5,6 @@ timer.c \
 input.c \
 keymap.c \
 console.c \
-mem.c
+mem.c \
+block.c
 
