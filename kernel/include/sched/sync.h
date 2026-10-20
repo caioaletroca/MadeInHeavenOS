@@ -28,23 +28,6 @@ typedef struct
 } mutex_guard_t;
 
 /**
- * @brief Lock the mutex (`guard(mutex, m)` acquire). May sleep: never with a spinlock held.
- */
-static inline mutex_guard_t mutex_guard_init(mutex_t *mutex)
-{
-    mutex_lock(mutex);
-    return (mutex_guard_t){.mutex = mutex};
-}
-
-/**
- * @brief Unlock it at the end of the scope (`guard(mutex, m)` release).
- */
-static inline void mutex_guard_exit(mutex_guard_t *guard)
-{
-    mutex_unlock(guard->mutex);
-}
-
-/**
  * Initializes a semaphore with the given value.
  *
  * @param semaphore The semaphore to initialize.
@@ -86,5 +69,22 @@ void mutex_lock(mutex_t *mutex);
  * @param mutex The mutex to unlock.
  */
 void mutex_unlock(mutex_t *mutex);
+
+/**
+ * @brief Lock the mutex (`guard(mutex, m)` acquire). May sleep: never with a spinlock held.
+ */
+static inline mutex_guard_t mutex_guard_init(mutex_t *mutex)
+{
+    mutex_lock(mutex);
+    return (mutex_guard_t){.mutex = mutex};
+}
+
+/**
+ * @brief Unlock it at the end of the scope (`guard(mutex, m)` release).
+ */
+static inline void mutex_guard_exit(mutex_guard_t *guard)
+{
+    mutex_unlock(guard->mutex);
+}
 
 #endif /* _SCHED_SYNC_H_ */
