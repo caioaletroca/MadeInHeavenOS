@@ -53,4 +53,18 @@ block_device_t *block_find(const char *name);
  */
 int block_read(block_device_t *dev, uint64_t sector, uint32_t count, void *buffer);
 
+/**
+ * @brief Read bytes from a block device, at any offset and of any length.
+ *
+ * Reads whole sectors underneath; a partial first or last sector goes through a
+ * one-sector buffer. The cache will take that buffer's place.
+ *
+ * @param dev The block device to read from.
+ * @param buffer A kernel buffer of at least count bytes.
+ * @param count The number of bytes to read.
+ * @param offset The byte offset on the device.
+ * @return The bytes read (fewer at the end of the device, 0 at or past it), or -errno.
+ */
+long block_read_bytes(block_device_t *dev, void *buffer, size_t count, uint64_t offset);
+
 #endif /* _DRIVER_BLOCK_H_ */
