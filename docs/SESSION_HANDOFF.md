@@ -32,7 +32,7 @@ Working x86-64 PC kernel with:
   arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
   `/bin/echo` as the first command; `/bin/ls` (`-a`, several paths, `/` after directories)
@@ -45,7 +45,9 @@ Working x86-64 PC kernel with:
   `atexit`; `open`/`lseek`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
   runtime (global constructors and destructors, `operator new`)
 - **Disks:** a block layer (`block_read` with range checks) and an ATA PIO driver (polling,
-  28-bit LBA) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators
+  28-bit LBA) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators;
+  each disk as a block device in `/dev` (`/dev/hda`, `S_IFBLK`, read-only, seekable, read at
+  byte offsets through `block_read_bytes`)
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
@@ -62,6 +64,12 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+3bce5df test: cover block devices
+beb1f9d feat(libc): add S_IFBLK, S_ISBLK and DT_BLK
+0ce32df feat(driver): register block devices in devfs
+efb5943 feat(driver): read block devices at byte offsets
+ff81743 feat(fs): add block device nodes
+97fb16c docs(architecture): document the block layer and the ATA driver in handoff
 c66eb53 test(block): add a block self-test on the test disk
 996ab12 feat(platform): add an ATA PIO disk driver
 9acb8ee feat(driver): add the block layer
@@ -285,6 +293,7 @@ tty_init → platform_boot_info_init → arch_init [TSS first] → input_init �
 → devfs_init [mounted on /dev] → mem_devices_init [/dev/null, /dev/zero]
 → scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [/dev/console, console thread]
+→ block_devfs_init [/dev/hda…: the disks platform_init found]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → mm_selftest
 → scheduler_selftest [+ sync tests] → console_selftest → user_selftest → vfs_selftest
 → elf_selftest
@@ -516,11 +525,13 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   non-directory → `-ENOTDIR`. **A device** (`VFS_CHARDEV`): `file_create(node->device_ops,
   access)`, the access mode a value in `flags & O_ACCMODE` (`O_RDONLY` 0 → `FILE_READ`,
   `O_WRONLY` → `FILE_WRITE`, `O_RDWR` → both, 3 → `-EINVAL`; `O_RDONLY` is 0, so it cannot be
-  tested as a bit). **Anything else**: write access → `-EROFS` (nothing writable yet), then
-  `file_create(&vfs_file_ops, FILE_READ)`. Either way the lookup's reference moves into
-  `file->node`. `vfs_file_ops`: `read` = `vfs_read` at `offset`, advancing it; no `write`; no
-  `release` (`file_put` puts the node). Directories open (listed with `getdents`); reading one
-  gives `-EISDIR`.
+  tested as a bit). **Anything else** (files, directories, disks): write access → `-EROFS`
+  (nothing writable yet), then `file_create(&vfs_file_ops, FILE_READ)`. Either way the lookup's
+  reference moves into `file->node`. `vfs_file_ops`: `read` = `vfs_read` at `offset`, advancing
+  it; no `write`; no `release` (`file_put` puts the node). Directories open (listed with
+  `getdents`); reading one gives `-EISDIR`. `vfs_read`: a directory → `-EISDIR`, a node without
+  a `read` op (character devices, read through their `file_ops`) → `-EINVAL`. A block device is
+  read like a file: `lseek` works on it, since only `VFS_CHARDEV` is refused.
 - **`open(path, flags)`** (`sys_open`): the path copied into a `kmalloc`'d `VFS_PATH_MAX` (4096)
   buffer (`-E2BIG` → `-ENAMETOOLONG`, `-EFAULT`), freed on every path; `vfs_open` (`O_DIRECTORY`:
   a file gives `-ENOTDIR`, for `opendir`; without it directories and files both open);
@@ -538,7 +549,8 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   `position_lock`: `vfs_file_getdents(file, buffer, size, &next)` (in `vfs.c`, never sees user
   pointers) packs entries from `offset` on, `address_space_write`, and only then `offset = next`,
   so `-EFAULT` loses no entries. Record (uapi `<mihos/dirent.h>`, `struct mihos_dirent`):
-  `d_ino` (u64), `d_reclen` (u16), `d_type` (u8: `MIHOS_DT_DIR` 4 / `MIHOS_DT_REG` 8), `d_name`
+  `d_ino` (u64), `d_reclen` (u16), `d_type` (u8: `MIHOS_DT_CHR` 2 / `MIHOS_DT_DIR` 4 / `MIHOS_DT_BLK` 6 /
+  `MIHOS_DT_REG` 8), `d_name`
   `'\0'`-terminated at offset 11; `d_reclen = ALIGN_UP(11 + length + 1, 8)` so every `d_ino` is
   8-aligned. Returns bytes, 0 at the end, `-EINVAL` if the first record does not fit (Linux).
 - **`stat(path, st)` / `fstat(fd, st)`** (`sys_stat`, `sys_fstat`): `stat` copies the path with
@@ -547,11 +559,12 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   node, then `address_space_write`s it (`-EFAULT`). `fstat`: `-EBADF`, then `vfs_stat` of
   `file->node` (every open file has one; node-less files such as pipes will need a decision).
   The ABI (uapi `<mihos/stat.h>`): fixed-width fields with an explicit `__pad0`, Linux's x86-64
-  `struct stat` layout; `MIHOS_S_IFMT`/`IFDIR`/`IFCHR`/`IFREG` (octal, Linux values) in the high
+  `struct stat` layout; `MIHOS_S_IFMT`/`IFDIR`/`IFCHR`/`IFBLK`/`IFREG` (octal, Linux values) in the high
   bits of `st_mode`, permissions in the low 12. **`vfs_stat(node, st)`** zeroes everything, then
   `st_ino`, `st_mode` = type bits | `node->mode`, `st_nlink` 1 (no hard links; also what tools
-  read as "not counted" for directories), `st_size`, `st_blksize` = `PAGE_SIZE`, `st_blocks` in
-  512-byte units, all three times = `node->mtime` (read-only, no clock), `st_dev` = `node->dev`,
+  read as "not counted" for directories), `st_size` (0 for character and block devices, as on
+  Linux: a disk's size comes from `lseek(SEEK_END)`, which uses `node->size`), `st_blksize` =
+  `PAGE_SIZE`, `st_blocks` in 512-byte units (0 for devices), all three times = `node->mtime` (read-only, no clock), `st_dev` = `node->dev`,
   `st_rdev` = `node->rdev`; `st_uid`, `st_gid` 0.
 - **Console backend** (`driver/console.c`): `console_init` registers `console` in devfs (5:1,
   `0600`, Linux's numbers and mode) with the console's `file_ops`, then `vfs_open`s
@@ -807,7 +820,7 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
     `/dev/zero` (`O_RDWR`): 500 bytes read in a loop are zeros, byte 500 untouched, writes
     swallowed. `stat`: `S_ISCHR`, `0666`, `major`/`minor`/`makedev` 1:3 and 1:5, devfs's
     `st_dev`, size 0, `fstat` byte-identical. `/dev` lists the dots (`DT_DIR`) and `null`/`zero`
-    (`DT_CHR`, `d_ino` = `st_ino`). `ESPIPE` (`lseek`), `ENOTDIR` (`getdents`, `opendir`,
+    (`DT_CHR`, `d_ino` = `st_ino`; the disks, `DT_BLK`, are the `disks` test's). `ESPIPE` (`lseek`), `ENOTDIR` (`getdents`, `opendir`,
     `O_DIRECTORY`, `/dev/null/`, `/dev/null/x`), `ENOENT` (`/dev/nope`), `EROFS` outside `/dev`;
     fd 3 free at the end. `/dev` lists `console` as `DT_CHR`; `/dev/console` opened by name
     takes a 0-byte write, is a tty and is fd 0's node. `isatty` is checked only there until the
@@ -816,6 +829,15 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
     zeroed and `errno` unchanged, the same through `/dev/console` by name; `ENOTTY` for an
     unknown request and on an initrd file, a directory, `/dev/null`, `/dev/zero`; `EFAULT`
     (bad pointer), `EINVAL` (a request claiming 1000 bytes), `EBADF` (99, -1).
+  - `disks`: the first `DT_BLK` entry in `/dev` (`hda` on QEMU, `hdb` on Bochs; its `d_ino` =
+    `st_ino`). `stat`: `S_ISBLK`, `0660`, major 3 or 22, minor 0 or 64, size and blocks 0,
+    devfs's `st_dev`, `fstat` of the open disk byte-identical. `lseek(SEEK_END)` = 4 MiB; the
+    ext2 magic at byte 1080 and the label at 1144; 1 KiB at 512 equals 300 bytes and then the
+    rest read on from where the first read stopped (offset 1536 after it); 100 bytes at 10 before
+    the end give 10 (canary kept), then 0, and 0 after seeking past the end. `read` moves at most
+    256 bytes per call, so the test loops (`read_full`). `EROFS` (`O_RDWR`, `O_WRONLY`), `ENOTDIR`
+    (`O_DIRECTORY`, `getdents`), `EBADF` (write), `ENOTTY` (`TIOCGWINSZ`), `isatty` 0; fd 3 free at
+    the end.
   - `tty`: `isatty` 0 + `ENOTTY` on `/dev/null` and `/dev/zero`, 1 on `/dev/console`; and
     `isatty` 1 on fds 0–2 with `errno` untouched, 0 + `ENOTTY` on a file and a
     directory, 0 + `EBADF` on closed, 99 and -1. Then, before stdout's first write, fd 1 is
@@ -845,7 +867,8 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   `/usr/tests` are `0755` with an mtime between 2023 and 2100, `/usr` and `/` `0755` with mtime
   0 (catches a file's values leaking onto its parents); an open `hello`'s `file->node` is its
   lookup's node; `/dev/console` is `S_IFCHR | 0600`, 5:1, on devfs, and `console_file()` is that
-  node opened read-write with the console's ops.
+  node opened read-write with the console's ops. `/dev` lists its dots, `null`, `zero`,
+  `console`, then only `VFS_BLOCKDEV` entries (the disks) until the end.
   The root's and `hello`'s reference counts are unchanged after all of it (a missing `put` in
   lookup fails here).
 - **ELF self-test** (`selftest/elf.c`): `exec_load` of `/usr/tests/hello` (read with
@@ -859,17 +882,38 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
 ### Block devices (`driver/block.c`, `platform/pc/ata.c`)
 
 ```text
+read(fd) ─▶ vfs_file_ops ─▶ vfs_read(node, offset) ─▶ devfs_block_read ─▶ block_read_bytes(dev, buf, count, offset)
+                                       whole sectors straight in, a partial one through a bounce sector ─┘
 caller (self-test; ext2 later) ─▶ block_read(dev, sector, count, buf) ─range check─▶ dev->ops->read
                                                                   ATA PIO: ports, polling, inw ×256 per sector
 ```
 
 - **Block layer** (`include/driver/block.h`): `block_device_t` = `name[16]` (`hda`…),
-  `sector_count`, `const block_ops_t *ops` (`read(dev, sector, count, buffer)`: kernel buffer of
+  `sector_count`, `rdev` (`MIHOS_MKDEV`, chosen by the driver), `const block_ops_t *ops` (`read(dev, sector, count, buffer)`: kernel buffer of
   `count * BLOCK_SECTOR_SIZE` (512) bytes, 0 or -errno), `private` (the driver's data).
   `block_register` (static table of `BLOCK_DEVICES_MAX` 8; duplicate → `-EEXIST`, full →
   `-ENOMEM`; boot time, no lock; the device lives forever), `block_find(name)`, `block_read`:
   `count` 0 → 0, `sector >= sector_count || count > sector_count - sector` → `-EINVAL` (cannot
   wrap), then the driver. The range check lives only here.
+- **Byte reads** (`block_read_bytes(dev, buffer, count, offset)`): `offset` at or past the end →
+  0, `count` cut to `size - offset` (a subtraction, so nothing wraps); then per step: aligned
+  with at least a whole sector left → that many sectors (capped at `UINT32_MAX`) straight into
+  the buffer; otherwise one sector into a 512-byte stack bounce buffer and `min(512 - within,
+  remaining)` bytes copied out (covers an unaligned head and a short tail). A `block_read`
+  error is returned as is, never a short count (it would hide the error). Returns the bytes
+  read. The block cache (step 3) replaces the bounce buffer.
+- **Block devices in `/dev`:** the disks are found in `platform_init`, before `kmalloc` and
+  devfs exist, so `block_devfs_init()` (in `kmain`, after `console_init`: `/dev` lists `null`,
+  `zero`, `console`, then the disks) walks the table and calls `devfs_register_block(name,
+  0660, dev)` for each (failure panics). devfs: `devfs_add(name, type, mode, rdev, ops, &node)`
+  holds what both registrations share (name checks, `kzalloc`'d `devfs_node_t`, inode number,
+  list insert; boot time only, so inserting before the caller fills in the rest is safe);
+  `devfs_register` adds `device_ops`, `devfs_register_block` sets `block` (in `devfs_node_t`)
+  and `node.size = sector_count * 512`. The node's ops have only `read` (`devfs_block_read` →
+  `block_read_bytes`). Opened like a file (`vfs_file_ops`, read-only, `-EROFS` for write
+  access), so `lseek` and `SEEK_END` work; `ioctl` → `ENOTTY`; `stat` → `S_IFBLK | 0660`,
+  size 0, `st_rdev`. Numbers: Linux's IDE ones, major 3 (`IDE0_MAJOR`, primary) or 22
+  (`IDE1_MAJOR`, secondary), minor `slave * 64` (64 minors per drive for its partitions).
 - **ATA PIO** (`platform/pc/ata.c`, PC ports, so `platform/`; `ata.h` declares only
   `ata_init`): `ata_init()` at the end of `platform_init` (before `mm_init`: four static
   `ata_drive_t` slots `{io, control, slave, block}`, no `kmalloc`). Writes nIEN (`0x02`) to both
@@ -901,7 +945,14 @@ caller (self-test; ext2 later) ─▶ block_read(dev, sector, count, buf) ─ran
   exponent 0 at 24, label at 120); a 2-sector read and a 300-sector read (two commands) equal
   single reads, also at sectors 255/256/257; 0 sectors does nothing; the last sector reads;
   past the end, from the last sector for 2, `UINT64_MAX` and `UINT32_MAX` → `-EINVAL`; a
-  second `block_register` → `-EEXIST`.
+  second `block_register` → `-EEXIST`. Then `/dev/<disk>`: `VFS_BLOCKDEV` with the driver's
+  `rdev` (an IDE major) and the disk's size; `vfs_stat` `S_IFBLK | 0660`, size and blocks 0;
+  opens with `FILE_READ` and the same node, `-EROFS` for `O_RDWR`/`O_WRONLY`; seven `vfs_read`s
+  equal a 300-sector `block_read` with a canary after each (a whole sector, 2 bytes inside one,
+  across sectors 1–2, head + 2 sectors + tail, 270 sectors from 512, everything from byte 3,
+  around the 256-sector command boundary); the magic at byte 1080; 100 bytes at 10 before the
+  end give the last 10 (canary kept); at the end, past it, at `UINT64_MAX` and for 0 bytes 0;
+  the node's references unchanged.
 
 ### Userland libc (`libc/`)
 
@@ -1339,10 +1390,18 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   and QEMU, no PCI or DMA); AHCI or virtio later only replace the driver. Not a prerequisite
   after all: "syscalls run with IRQs off" (a sleeping driver lets IRQs through; it costs
   latency, not correctness).
-- **Next, disk step 2:** block devices in `/dev`: `VFS_BLOCKDEV` nodes (`/dev/hda`, `S_IFBLK`,
-  `DT_BLK`), registered with devfs by the block layer, reads through the node. Then (3) a block
-  cache, (4) ext2 read-only mounted at `/mnt`, (5) IRQ-driven reads, partitions, writing, the
-  root on the disk.
+- **Disk step 2, block devices in `/dev` (done):** `VFS_BLOCKDEV` (`S_IFBLK` 0060000, `DT_BLK`
+  6), `block_read_bytes`, `devfs_register_block` + `block_devfs_init`, `rdev` per block device
+  (Linux's IDE numbers), `vfs_read` open to any node with a `read` op, libc `S_IFBLK`/`S_ISBLK`/
+  `DT_BLK`; the block self-test's node checks and the `disks` test. Decided: a disk is read
+  like a file (`vfs_file_ops`, seekable), not through `file_ops` like a character device (Linux's
+  bdev inode); byte-to-sector logic lives in the block layer, devfs only forwards; disks are
+  published after devfs exists, not at discovery; devices report `st_size` 0 (Linux), the size
+  comes from `lseek(SEEK_END)`; read-only (`-EROFS`) until the driver writes.
+- **Next, disk step 3:** a block cache under `block_read_bytes` (fixed-size blocks keyed by
+  device + block number, a hash or list lookup, LRU eviction, a mutex; reads fill a whole block
+  so the 256-byte `sys_read` chunks stop re-reading the same sector). Then (4) ext2 read-only
+  mounted at `/mnt`, (5) IRQ-driven reads, partitions, writing, the root on the disk.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1443,6 +1502,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   LBA (128 GiB), no DMA, no writes, no cache; IDENTIFY's model string unused; names by IDE
   position (`hda`…`hdd`), so the same disk is `hdb` on Bochs. The block table has no lock and
   no unregister. No PCI enumeration yet (AHCI and virtio need it).
+- Block device reads have no cache: every `sys_read` of 256 bytes reads its whole sector again
+  through the bounce buffer, so reading a disk sequentially costs two sector reads per sector.
+  The minors reserved for partitions (`hda1` = 3:1) are unused: no partition table is parsed.
+  `block_read_bytes` returns an error even after reading part of the range (nothing partial).
 - devfs: devices register at boot only (no lock, no unregister, nodes never freed); one flat
   directory; `devfs_readdir` walks the list from the start per index (O(n²) listing).
   Character devices refuse `lseek` (`ESPIPE`) where Linux lets `/dev/null` succeed.
@@ -1525,8 +1588,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   hand, like the shell.
 - `initrd_readdir` walks the children list from the start for every index, so a whole listing
   is O(n²); a file system could use `offset` as an opaque cursor (ext2: a byte position).
-- `getdents` fills at most a page per call; `d_type` is only `DT_DIR`/`DT_REG` (no other node
-  types yet). The `dirs` test hard-codes the root's layout (`bin`, `sbin`, `usr`).
+- `getdents` fills at most a page per call; `d_type` is `DT_DIR`/`DT_REG`/`DT_CHR`/`DT_BLK`
+  (no symlinks, FIFOs or sockets yet). The `dirs` test hard-codes the root's layout (`bin`, `sbin`, `usr`).
 - `sys_exec` (replacing the running image) is not implemented: comes with `fork` in phase C.
 - `process_start` returns -1 instead of an errno on failure.
 - In the counter test the counter shares a cache line with the loop's code, so every increment is
