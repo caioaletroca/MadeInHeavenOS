@@ -23,6 +23,7 @@
 #include "selftest/console.h"
 #include "selftest/elf.h"
 #include "selftest/guard.h"
+#include "selftest/hashtable.h"
 #include "selftest/mm.h"
 #include "selftest/scheduler.h"
 #include "selftest/user.h"
@@ -69,6 +70,7 @@ void kmain(uintptr_t boot_handoff)
     irq_enable();
 
     guard_selftest();
+    hashtable_selftest();
     mm_selftest();
     scheduler_selftest();
     console_selftest();
