@@ -12,10 +12,12 @@
 #define S_IFDIR MIHOS_S_IFDIR
 #define S_IFCHR MIHOS_S_IFCHR
 #define S_IFREG MIHOS_S_IFREG
+#define S_IFBLK MIHOS_S_IFBLK
 
 #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
 #define S_ISCHR(m) (((m) & S_IFMT) == S_IFCHR)
 #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+#define S_ISBLK(m) (((m) & S_IFMT) == S_IFBLK)
 
 // Permissions: owner, group, others, read/write/execute
 #define S_IRWXU 0700
