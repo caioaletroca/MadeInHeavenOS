@@ -1,7 +1,11 @@
 #include <selftest/block.h>
 #include <driver/block.h>
+#include <fs/vfs.h>
+#include <fs/file.h>
 #include <mm/kmalloc.h>
 #include <mihos/errno.h>
+#include <mihos/fcntl.h>
+#include <mihos/stat.h>
 #include <string.h>
 #include <stdint.h>
 #include <panic.h>
@@ -118,11 +122,103 @@ static void block_test_reads(block_device_t *dev)
     kfree(one);
 }
 
+/**
+ * The disk as /dev/<name>: a block device node, read at byte offsets. Every
+ * read must give the same bytes as whole-sector reads of the same range.
+ */
+static void block_test_node(block_device_t *dev)
+{
+    char path[sizeof("/dev/") + BLOCK_NAME_MAX];
+    memcpy(path, "/dev/", 5);
+    strlcpy(path + 5, dev->name, BLOCK_NAME_MAX);
+
+    vfs_node_t *node;
+    int ret = vfs_lookup(path, &node);
+    if (ret != 0)
+        panic("Block self-test: lookup of %s failed: %d\n", path, ret);
+    unsigned int refs = node->refs;
+
+    uint64_t size = dev->sector_count * BLOCK_SECTOR_SIZE;
+    if (node->type != VFS_BLOCKDEV || node->rdev != dev->rdev || node->size != size)
+        panic("Block self-test: %s is not a block device of %s's size and number\n", path, dev->name);
+    if (MIHOS_MAJOR(dev->rdev) != 3 && MIHOS_MAJOR(dev->rdev) != 22)
+        panic("Block self-test: %s has major %u, not an IDE one\n", dev->name, MIHOS_MAJOR(dev->rdev));
+
+    // stat: like Linux, a device reports no size (lseek to the end finds it)
+    struct mihos_stat st;
+    vfs_stat(node, &st);
+    if (st.st_mode != (MIHOS_S_IFBLK | 0660) || st.st_rdev != dev->rdev || st.st_size != 0 || st.st_blocks != 0 ||
+        st.st_dev != node->dev)
+        panic("Block self-test: stat of %s is wrong (mode 0%o)\n", path, st.st_mode);
+
+    // Opens read-only through the VFS (offsets, lseek); write access is refused
+    struct file *file;
+    ret = vfs_open(path, O_RDONLY, &file);
+    if (ret != 0)
+        panic("Block self-test: opening %s failed: %d\n", path, ret);
+    if (file->node != node || file->flags != FILE_READ)
+        panic("Block self-test: %s opened with the wrong node or flags\n", path);
+    file_put(file);
+    if (vfs_open(path, O_RDWR, &file) != -EROFS || vfs_open(path, O_WRONLY, &file) != -EROFS)
+        panic("Block self-test: opening %s for writing did not return -EROFS\n", path);
+
+    uint8_t *sectors = kmalloc(LONG_READ * BLOCK_SECTOR_SIZE);
+    uint8_t *bytes = kmalloc(LONG_READ * BLOCK_SECTOR_SIZE + 1);
+    if (sectors == NULL || bytes == NULL)
+        panic("Block self-test: out of memory\n");
+    block_read_or_panic(dev, 0, LONG_READ, sectors);
+
+    static const struct
+    {
+        uint64_t offset;
+        size_t count;
+    } cases[] = {
+        {0, BLOCK_SECTOR_SIZE},                               // one whole sector
+        {1024 + SB_MAGIC, 2},                                 // inside one sector: the ext2 magic
+        {1000, 100},                                          // across sectors 1 and 2
+        {510, 2 * BLOCK_SECTOR_SIZE + 20},                    // a head, two whole sectors, a tail
+        {BLOCK_SECTOR_SIZE, 270 * BLOCK_SECTOR_SIZE},         // whole sectors, two commands
+        {3, LONG_READ * BLOCK_SECTOR_SIZE - 3},               // everything after an unaligned start
+        {255 * BLOCK_SECTOR_SIZE + 7, 2 * BLOCK_SECTOR_SIZE}, // around a command boundary
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    {
+        memset(bytes, 0xA5, LONG_READ * BLOCK_SECTOR_SIZE + 1);
+        long got = vfs_read(node, bytes, cases[i].count, cases[i].offset);
+        if (got != (long)cases[i].count || memcmp(bytes, sectors + cases[i].offset, cases[i].count) != 0)
+            panic("Block self-test: %zu bytes at %u read %ld bytes or different ones\n", cases[i].count,
+                  (unsigned int)cases[i].offset, got);
+        if (bytes[cases[i].count] != 0xA5)
+            panic("Block self-test: %zu bytes at %u wrote past them\n", cases[i].count, (unsigned int)cases[i].offset);
+    }
+    // Two bytes inside a sector are the real thing, not just equal to the sector read
+    if (vfs_read(node, bytes, 2, 1024 + SB_MAGIC) != 2 || le16(bytes) != EXT2_MAGIC)
+        panic("Block self-test: no ext2 magic at byte %u of %s\n", 1024 + SB_MAGIC, path);
+
+    // The end of the disk: a read across it is cut short, at or past it gives 0
+    block_read_or_panic(dev, dev->sector_count - 1, 1, sectors);
+    memset(bytes, 0xA5, 100);
+    if (vfs_read(node, bytes, 100, size - 10) != 10 || memcmp(bytes, sectors + BLOCK_SECTOR_SIZE - 10, 10) != 0 ||
+        bytes[10] != 0xA5)
+        panic("Block self-test: a read across the end of %s was not cut to its last 10 bytes\n", path);
+    if (vfs_read(node, bytes, 100, size) != 0 || vfs_read(node, bytes, 100, size + 1000) != 0 ||
+        vfs_read(node, bytes, 100, UINT64_MAX) != 0 || vfs_read(node, bytes, 0, 0) != 0)
+        panic("Block self-test: a read at or past the end of %s did not give 0\n", path);
+
+    kfree(bytes);
+    kfree(sectors);
+
+    if (node->refs != refs)
+        panic("Block self-test: %s's references leaked (%u → %u)\n", path, refs, node->refs);
+    vfs_node_put(node);
+}
+
 void block_selftest(void)
 {
     block_device_t *dev = block_test_disk();
 
     block_test_reads(dev);
+    block_test_node(dev);
 
     // Registration: a name already there is refused, unknown names are not found
     if (block_register(dev) != -EEXIST)
