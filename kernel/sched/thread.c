@@ -47,7 +47,7 @@ static void thread_reaper(void *arg)
         scoped_guard(spinlock, &zombie_lock)
         {
             zombie = list_container(zombie_list.next, thread_t, run_link);
-            list_delete(&zombie->run_link);
+            list_remove(&zombie->run_link);
         }
 
         process = zombie->process;

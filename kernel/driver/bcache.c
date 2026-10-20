@@ -60,14 +60,15 @@ static int bcache_claim(block_device_t *dev, uint64_t index, bcache_buf_t **out)
         if (cache->refs != 0)
             continue; // skip buffers that are currently held
 
-        if (hlist_hashed(&cache->hash))
-            hlist_del(&cache->hash);
+        // Remove the buffer from its current hash bucket if it is linked.
+        if (hlist_linked(&cache->hash))
+            hlist_remove(&cache->hash);
 
         cache->dev = dev;
         cache->index = index;
         cache->refs = 1;
         cache->valid = false;
-        hlist_add_head(bucket, &cache->hash);
+        hlist_insert(bucket, &cache->hash);
         bcache_misses++;
         *out = cache;
         return 0;

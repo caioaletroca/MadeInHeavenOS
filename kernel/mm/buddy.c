@@ -76,7 +76,7 @@ frame_t *buddy_alloc(const buddy_system_t *ctx, unsigned int order)
     }
 
     // Remove the allocated block from its free list
-    list_delete(&frame->link);
+    list_remove(&frame->link);
 
     // Toggle bit for the newly allocated frame
     // Order max doesn't have buddies
@@ -120,7 +120,7 @@ void buddy_free(const buddy_system_t *ctx, const frame_t *frame, unsigned int or
             break;
 
         // Remove the buddy from its free list
-        list_delete(&ctx->frames[buddy_index].link);
+        list_remove(&ctx->frames[buddy_index].link);
 
         // Always keep track of the left side index
         if (buddy_index < frame_index)

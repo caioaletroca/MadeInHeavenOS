@@ -924,7 +924,7 @@ bcache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check─�
   (`bcache_claim`, under `bcache_lock`, a spinlock never held during I/O): look the key up in
   `bcache_hash` (16 buckets, `hash_64((uintptr_t)dev ^ index, 4)`, keys compared in the
   bucket walk) → `refs++`, a hit; else walk the LRU from the back (least recent) for the first
-  `refs == 0` buffer, `hlist_del` it from its old bucket, set the key, `valid = false` (safe
+  `refs == 0` buffer, `hlist_remove` it from its old bucket, set the key, `valid = false` (safe
   without `fill`: at 0 references nobody is inside it), `refs = 1`, add it to the new bucket, a
   miss; none free → `-ENOBUFS` (no sleeping: a leak shows as an error, not a hang). **Fill**
   (after the lock, under `buf->fill`): if `!valid`, read `min(8, sector_count - index * 8)`
@@ -993,9 +993,9 @@ bcache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check─�
   64 KiB at block 200 read twice: 16 misses, then 16 hits and none; the node's references
   unchanged.
 - **Hash table self-test** (`selftest/hashtable.c`, right after the guard one): one bucket by
-  hand (every `next`/`pprev` after adds at the front and deletes of the middle, first and only
-  node; `hlist_hashed`; an emptied bucket takes a node again); 100 keys in 4 buckets found
-  exactly once by comparing keys, missing keys not found, the odd keys left after deleting the
+  hand (every `next`/`pprev` after inserts at the front and removes of the middle, first and only
+  node; `hlist_linked`; an emptied bucket takes a node again); 100 keys in 4 buckets found
+  exactly once by comparing keys, missing keys not found, the odd keys left after removing the
   even ones, every bucket empty at the end; `hash_64` below `2^bits` for 1–16 bits, the plain
   product at 64, 1024 consecutive keys 48–80 per bucket of 16; `list_move_after` from the back
   and the middle (both link directions), and of the first item (no change).
@@ -1105,9 +1105,9 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   scheduler, devfs, the block cache…) builds its own structure from them, as Linux does.
   `list.h`: circular doubly linked `list_t`, `list_container`, `list_move_after` (an LRU's
   "most recent"). `hashtable.h`: Linux's hlist, `hlist_head_t` buckets (one pointer) of
-  `hlist_node_t` (`next`, `pprev` = the pointer pointing at the node, so `hlist_del` needs no
-  head and no first-node special case), `hlist_add_head`, `hlist_del` (resets the node),
-  `hlist_hashed`, `hlist_for_each`, `hlist_container`; `HASH_BUCKETS(bits)` buckets, zeroed =
+  `hlist_node_t` (`next`, `pprev` = the pointer pointing at the node, so `hlist_remove` needs no
+  head and no first-node special case), `hlist_insert`, `hlist_remove` (resets the node),
+  `hlist_linked`, `hlist_for_each`, `hlist_container`; `HASH_BUCKETS(bits)` buckets, zeroed =
   empty; `hash_64(value, bits)` = `(value * GOLDEN_RATIO_64) >> (64 - bits)` (unsigned, in range
   by construction). The table stores no keys: callers compare their own in the bucket walk.
 - **Directories** (`<dirent.h>`, `libc/dirent/`, internals in `internal/dirstream.h`): `DIR` is

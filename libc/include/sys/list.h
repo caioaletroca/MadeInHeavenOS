@@ -67,7 +67,7 @@ static inline void list_insert_after(list_t *position, list_t *node)
  *
  * @param node  The item to be removed
  */
-static inline void list_delete(list_t *node)
+static inline void list_remove(list_t *node)
 {
     node->next->prev = node->prev;
     node->prev->next = node->next;
@@ -84,7 +84,7 @@ static inline void list_delete(list_t *node)
  */
 static inline void list_move_after(list_t *position, list_t *node)
 {
-    list_delete(node);
+    list_remove(node);
     list_insert_after(position, node);
 }
 

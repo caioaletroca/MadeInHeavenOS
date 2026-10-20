@@ -43,41 +43,41 @@ static void hashtable_test_bucket(void)
     hlist_node_init(&a.node);
     hlist_node_init(&b.node);
     hlist_node_init(&c.node);
-    if (hlist_hashed(&a.node))
-        panic("Hash table self-test: a new node is hashed\n");
+    if (hlist_linked(&a.node))
+        panic("Hash table self-test: a new node is linked\n");
 
-    // Each add goes to the front: c, b, a
-    hlist_add_head(&head, &a.node);
-    hlist_add_head(&head, &b.node);
-    hlist_add_head(&head, &c.node);
+    // Each insert goes to the front: c, b, a
+    hlist_insert(&head, &a.node);
+    hlist_insert(&head, &b.node);
+    hlist_insert(&head, &c.node);
     if (head.first != &c.node || c.node.next != &b.node || b.node.next != &a.node || a.node.next != NULL)
-        panic("Hash table self-test: adds are not at the front\n");
+        panic("Hash table self-test: inserts are not at the front\n");
     if (c.node.pprev != &head.first || b.node.pprev != &c.node.next || a.node.pprev != &b.node.next)
-        panic("Hash table self-test: pprev after adds is wrong\n");
-    if (!hlist_hashed(&a.node) || !hlist_hashed(&c.node))
-        panic("Hash table self-test: an added node is not hashed\n");
+        panic("Hash table self-test: pprev after inserts is wrong\n");
+    if (!hlist_linked(&a.node) || !hlist_linked(&c.node))
+        panic("Hash table self-test: an inserted node is not linked\n");
 
     // The middle one: c, a
-    hlist_del(&b.node);
-    if (head.first != &c.node || c.node.next != &a.node || a.node.pprev != &c.node.next || hlist_hashed(&b.node))
-        panic("Hash table self-test: deleting the middle node broke the bucket\n");
+    hlist_remove(&b.node);
+    if (head.first != &c.node || c.node.next != &a.node || a.node.pprev != &c.node.next || hlist_linked(&b.node))
+        panic("Hash table self-test: removing the middle node broke the bucket\n");
 
     // The first one: a
-    hlist_del(&c.node);
-    if (head.first != &a.node || a.node.pprev != &head.first || a.node.next != NULL || hlist_hashed(&c.node))
-        panic("Hash table self-test: deleting the first node broke the bucket\n");
+    hlist_remove(&c.node);
+    if (head.first != &a.node || a.node.pprev != &head.first || a.node.next != NULL || hlist_linked(&c.node))
+        panic("Hash table self-test: removing the first node broke the bucket\n");
 
     // The last one: empty, and usable again
-    hlist_del(&a.node);
-    if (head.first != NULL || hlist_hashed(&a.node))
-        panic("Hash table self-test: deleting the only node left something behind\n");
-    hlist_add_head(&head, &b.node);
+    hlist_remove(&a.node);
+    if (head.first != NULL || hlist_linked(&a.node))
+        panic("Hash table self-test: removing the only node left something behind\n");
+    hlist_insert(&head, &b.node);
     if (head.first != &b.node || b.node.pprev != &head.first || b.node.next != NULL)
         panic("Hash table self-test: an emptied bucket does not take a node again\n");
 }
 
 /**
- * A whole table: keys share buckets, lookups compare keys, deletes leave the others.
+ * A whole table: keys share buckets, lookups compare keys, removes leave the others.
  */
 static void hashtable_test_table(void)
 {
@@ -85,26 +85,26 @@ static void hashtable_test_table(void)
     {
         items[i].key = i * 1000;
         hlist_node_init(&items[i].node);
-        hlist_add_head(&table[hash_64(items[i].key, TABLE_BITS)], &items[i].node);
+        hlist_insert(&table[hash_64(items[i].key, TABLE_BITS)], &items[i].node);
     }
 
     for (uint64_t i = 0; i < TABLE_KEYS; i++)
         if (table_find(i * 1000) != &items[i])
             panic("Hash table self-test: key %u is not found\n", (unsigned int)(i * 1000));
     if (table_find(1) != NULL || table_find(UINT64_MAX) != NULL)
-        panic("Hash table self-test: a key never added was found\n");
+        panic("Hash table self-test: a key never inserted was found\n");
 
     for (uint64_t i = 0; i < TABLE_KEYS; i += 2)
-        hlist_del(&items[i].node);
+        hlist_remove(&items[i].node);
     for (uint64_t i = 0; i < TABLE_KEYS; i++)
         if (table_find(i * 1000) != (i % 2 == 0 ? NULL : &items[i]))
-            panic("Hash table self-test: after deleting the even keys, key %u is wrong\n", (unsigned int)(i * 1000));
+            panic("Hash table self-test: after removing the even keys, key %u is wrong\n", (unsigned int)(i * 1000));
 
     for (uint64_t i = 1; i < TABLE_KEYS; i += 2)
-        hlist_del(&items[i].node);
+        hlist_remove(&items[i].node);
     for (unsigned int b = 0; b < HASH_BUCKETS(TABLE_BITS); b++)
         if (table[b].first != NULL)
-            panic("Hash table self-test: bucket %u is not empty after deleting everything\n", b);
+            panic("Hash table self-test: bucket %u is not empty after removing everything\n", b);
 }
 
 /**

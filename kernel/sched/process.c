@@ -137,7 +137,7 @@ void process_child_remove(process_t *child)
 {
     scoped_guard(spinlock, &process_tree_lock)
     {
-        list_delete(&child->sibling);
+        list_remove(&child->sibling);
         child->parent = NULL;
     }
 }
@@ -165,7 +165,7 @@ long process_wait_child(process_t *parent, long pid, process_t **out)
 
                 if (p->state == PROCESS_EXITED)
                 {
-                    list_delete(&p->sibling);
+                    list_remove(&p->sibling);
                     p->parent = NULL;
                     *out = p;
                     return p->pid;
@@ -221,7 +221,7 @@ __attribute__((noreturn)) void process_exit(int status)
         list_for_each_safe(pos, next, &current->children)
         {
             process_t *child = list_container(pos, process_t, sibling);
-            list_delete(&child->sibling);
+            list_remove(&child->sibling);
             if (adopter != NULL)
             {
                 child->parent = adopter;

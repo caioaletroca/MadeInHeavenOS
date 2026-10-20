@@ -58,7 +58,7 @@ static inline void hlist_node_init(hlist_node_t *node)
 /**
  * @brief Whether a node is in a table.
  */
-static inline int hlist_hashed(const hlist_node_t *node)
+static inline int hlist_linked(const hlist_node_t *node)
 {
     return node->pprev != NULL;
 }
@@ -66,10 +66,10 @@ static inline int hlist_hashed(const hlist_node_t *node)
 /**
  * @brief Puts a node at the front of a bucket.
  *
- * @param head The head of the bucket to add the node to.
- * @param node The node to add at the front of the bucket.
+ * @param head The bucket to insert the node into.
+ * @param node The node to insert (at the front: order in a bucket does not matter).
  */
-static inline void hlist_add_head(hlist_head_t *head, hlist_node_t *node)
+static inline void hlist_insert(hlist_head_t *head, hlist_node_t *node)
 {
     node->next = head->first;
     node->pprev = &head->first;
@@ -85,7 +85,7 @@ static inline void hlist_add_head(hlist_head_t *head, hlist_node_t *node)
  *
  * @param node The node to remove from its bucket.
  */
-static inline void hlist_del(hlist_node_t *node)
+static inline void hlist_remove(hlist_node_t *node)
 {
     if (node->pprev != NULL)
     {

@@ -43,7 +43,7 @@ void __malloc_insert(block_t *block)
         if (touches(block, next))
         {
             block->size += next->size;
-            list_delete(&next->link);
+            list_remove(&next->link);
         }
     }
 
@@ -55,7 +55,7 @@ void __malloc_insert(block_t *block)
         if (touches(prev, block))
         {
             prev->size += block->size;
-            list_delete(&block->link);
+            list_remove(&block->link);
         }
     }
 }

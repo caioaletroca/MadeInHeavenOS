@@ -18,7 +18,7 @@ static block_t *take_first_fit(size_t units)
 
         if (block->size == units)
         {
-            list_delete(&block->link);
+            list_remove(&block->link);
             return block;
         }
 

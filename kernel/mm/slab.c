@@ -276,7 +276,7 @@ static void *slab_take_object(slab_t *slab)
  */
 static void slab_reclassify(slab_cache_t *cache, slab_t *slab)
 {
-    list_delete(&slab->link);
+    list_remove(&slab->link);
 
     if (slab->inuse == 0)
     {

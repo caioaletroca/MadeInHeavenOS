@@ -81,7 +81,7 @@ static thread_t *scheduler_next_thread(void)
     else
     {
         // Remove the next thread from the ready queue before switching to it.
-        list_delete(&next_thread->run_link);
+        list_remove(&next_thread->run_link);
     }
 
     // Save the current thread's state and prepare for context switch.
@@ -176,7 +176,7 @@ void scheduler_wake(thread_t *thread)
     if (thread->state != THREAD_BLOCKED)
         return;
 
-    list_delete(&thread->run_link);
+    list_remove(&thread->run_link);
     thread->state = THREAD_READY;
     list_insert_before(&ready_queue, &thread->run_link);
 
