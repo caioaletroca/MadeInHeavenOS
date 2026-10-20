@@ -1,6 +1,7 @@
 #include <platform/platform.h>
 #include "ps2.h"
 #include "pic.h"
+#include "ata.h"
 
 void platform_init(void)
 {
@@ -9,6 +10,9 @@ void platform_init(void)
 
     // PS/2 controller and keyboard (registers IRQ 1)
     ps2_init();
+
+    // Initialize ATA drives
+    ata_init();
 }
 
 void platform_irq_enable(unsigned int irq)

@@ -8,4 +8,5 @@ keyboard.c \
 vga.c \
 screen.c \
 debugcon.c \
-power.c
+power.c \
+ata.c
