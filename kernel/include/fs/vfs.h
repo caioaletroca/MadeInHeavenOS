@@ -19,6 +19,7 @@ typedef enum
     VFS_FILE,
     VFS_DIRECTORY,
     VFS_CHARDEV,
+    VFS_BLOCKDEV, // a disk: read at byte offsets through the node's ops, seekable
 } vfs_node_type_t;
 
 struct file_ops;
@@ -37,8 +38,8 @@ typedef struct vfs_node
     uint64_t dev;                      // file system id (vfs_dev_alloc), st_dev
     struct vfs_node *mounted;          // mount point: the root of the file system mounted here, or NULL
     struct vfs_node *covers;           // mounted root: the directory it is mounted on, or NULL
-    uint64_t rdev;                     // device nodes: MIHOS_MKDEV(major, minor), st_rdev
-    const struct file_ops *device_ops; // device nodes: the driver's ops, given to every open file
+    uint64_t rdev;                     // device nodes (char and block): MIHOS_MKDEV(major, minor), st_rdev
+    const struct file_ops *device_ops; // character devices: the driver's ops, given to every open file
     const struct vfs_node_ops *ops;
     struct vfs_node *parent;
     unsigned int refs;

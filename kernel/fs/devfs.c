@@ -161,7 +161,7 @@ static int devfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
         name = found->name;
         length = found->name_length;
         ino = found->node.ino;
-        type = VFS_CHARDEV;
+        type = found->node.type;
     }
 
     entry->ino = ino;

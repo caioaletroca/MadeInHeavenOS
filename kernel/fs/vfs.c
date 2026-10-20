@@ -23,6 +23,8 @@ static uint32_t vfs_mode_type(vfs_node_type_t type)
         return MIHOS_S_IFDIR;
     case VFS_CHARDEV:
         return MIHOS_S_IFCHR;
+    case VFS_BLOCKDEV:
+        return MIHOS_S_IFBLK;
     default:
         return MIHOS_S_IFREG;
     }
@@ -36,6 +38,8 @@ static uint8_t vfs_dirent_type(vfs_node_type_t type)
         return MIHOS_DT_DIR;
     case VFS_CHARDEV:
         return MIHOS_DT_CHR;
+    case VFS_BLOCKDEV:
+        return MIHOS_DT_BLK;
     default:
         return MIHOS_DT_REG;
     }
@@ -218,12 +222,14 @@ void vfs_stat(vfs_node_t *node, struct mihos_stat *stat)
 {
     memset(stat, 0, sizeof(*stat));
 
+    uint64_t size = (node->type == VFS_CHARDEV || node->type == VFS_BLOCKDEV) ? 0 : node->size;
+
     stat->st_ino = node->ino;
     stat->st_nlink = 1;
     stat->st_mode = vfs_mode_type(node->type) | node->mode;
-    stat->st_size = node->size;
+    stat->st_size = size;
     stat->st_blksize = PAGE_SIZE;
-    stat->st_blocks = ALIGN_UP(node->size, 512) / 512;
+    stat->st_blocks = ALIGN_UP(size, 512) / 512;
     stat->st_dev = node->dev;
     stat->st_rdev = node->rdev;
     stat->st_atim.tv_sec = node->mtime;
@@ -379,7 +385,7 @@ int vfs_open(const char *path, int flags, file_t **out)
     }
     else
     {
-        // Initrd files and directories: nothing is writable yet
+        // Files, directories and disks: nothing is writable yet
         if ((flags & O_ACCMODE) != O_RDONLY)
         {
             vfs_node_put(node);
