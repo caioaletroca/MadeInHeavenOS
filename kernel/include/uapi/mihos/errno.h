@@ -22,5 +22,6 @@
 #define EROFS 30        // read-only file system
 #define ENAMETOOLONG 36 // file name too long
 #define ENOSYS 38
+#define ENOBUFS 105 // no buffer space: every block cache buffer is in use
 
 #endif /* _UAPI_MIHOS_ERRNO_H_ */

@@ -6,5 +6,6 @@ input.c \
 keymap.c \
 console.c \
 mem.c \
-block.c
+block.c \
+bcache.c
 

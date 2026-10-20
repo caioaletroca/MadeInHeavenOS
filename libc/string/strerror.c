@@ -27,6 +27,7 @@ static const char *const messages[] = {
     [EROFS] = "Read-only file system",
     [ENAMETOOLONG] = "File name too long",
     [ENOSYS] = "Function not implemented",
+    [ENOBUFS] = "No buffer space available",
 };
 
 char *strerror(int error)
