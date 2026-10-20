@@ -140,7 +140,8 @@ docs/                     # handoff, roadmap
    done: nodes, path lookup, the initrd mounted as `/`; step (b) done: `open`/`read`/`lseek`;
    step (c) done: `getdents`, libc `opendir`/`readdir`, `ls`, a test runner that lists its tests;
    step (d) done: `stat`/`fstat`; `/dev` done: mounts, devfs, `/dev/null`, `/dev/zero`,
-   `/dev/console`, `ioctl`; next a block driver, then ext2).
+   `/dev/console`, `ioctl`; disks in progress: the block layer and an ATA PIO driver done,
+   block devices in `/dev`, a block cache and read-only ext2 next).
 
 ## Reference projects
 

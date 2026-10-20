@@ -44,6 +44,8 @@ Working x86-64 PC kernel with:
   fds with `printf`, `fgetc`/`fgets`/`ungetc`; `malloc`/`free`/`calloc`/`realloc` on `sbrk`;
   `atexit`; `open`/`lseek`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
   runtime (global constructors and destructors, `operator new`)
+- **Disks:** a block layer (`block_read` with range checks) and an ATA PIO driver (polling,
+  28-bit LBA) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
@@ -60,6 +62,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+c66eb53 test(block): add a block self-test on the test disk
+996ab12 feat(platform): add an ATA PIO disk driver
+9acb8ee feat(driver): add the block layer
+383d442 build: add an ext2 test disk
+839d667 docs(architecture): document ioctl and the end of /dev in handoff
 0e16d70 test: cover ioctl and the terminal check in isatty
 4237875 feat(libc): add ioctl and ask the terminal in isatty
 abd2fc3 feat(driver): answer TIOCGWINSZ on the console
@@ -208,7 +215,7 @@ kernel/
 │   ├── include/asm/              # PUBLIC arch interface: irq_flags.h cpu.h memory.h elf.h
 │   ├── common/include/x86/       # PRIVATE: cpu gdt idt io isr paging tss vectors exceptions
 │   └── x86_64/                   # boot, ISR stubs, gdt64.S, tss.c, arch.c, context.c, isr.c, paging.c
-├── platform/pc/                  # pic, pit, ps2, keyboard, vga, screen (CP437), multiboot2, platform.c
+├── platform/pc/                  # pic, pit, ps2, keyboard, vga, screen (CP437), multiboot2, ata, platform.c
 ├── sched/ mm/ driver/ sys/ fs/ exec/ selftest/
 ├── init.c                        # init_start: starts /sbin/init (pid 1), halts when it exits
 └── kmain.c
@@ -273,7 +280,7 @@ from the same directory.
 ### Boot sequence (`kmain`)
 
 ```text
-tty_init → platform_boot_info_init → arch_init [TSS first] → input_init → platform_init (PIC, PS/2, keyboard IRQ)
+tty_init → platform_boot_info_init → arch_init [TSS first] → input_init → platform_init (PIC, PS/2, keyboard IRQ, ATA disks)
 → mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init] → initrd_init(&boot_info)
 → devfs_init [mounted on /dev] → mem_devices_init [/dev/null, /dev/zero]
 → scheduler_init [idle thread]
@@ -849,6 +856,53 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   `argv = {"elf", "selftest"}`, `envp = {"A=1"}` and checks the initial stack from the kernel side
   (16-aligned, `argc`, the NULLs, `AT_NULL`, the strings behind `argv[1]` and `envp[0]`).
 
+### Block devices (`driver/block.c`, `platform/pc/ata.c`)
+
+```text
+caller (self-test; ext2 later) ─▶ block_read(dev, sector, count, buf) ─range check─▶ dev->ops->read
+                                                                  ATA PIO: ports, polling, inw ×256 per sector
+```
+
+- **Block layer** (`include/driver/block.h`): `block_device_t` = `name[16]` (`hda`…),
+  `sector_count`, `const block_ops_t *ops` (`read(dev, sector, count, buffer)`: kernel buffer of
+  `count * BLOCK_SECTOR_SIZE` (512) bytes, 0 or -errno), `private` (the driver's data).
+  `block_register` (static table of `BLOCK_DEVICES_MAX` 8; duplicate → `-EEXIST`, full →
+  `-ENOMEM`; boot time, no lock; the device lives forever), `block_find(name)`, `block_read`:
+  `count` 0 → 0, `sector >= sector_count || count > sector_count - sector` → `-EINVAL` (cannot
+  wrap), then the driver. The range check lives only here.
+- **ATA PIO** (`platform/pc/ata.c`, PC ports, so `platform/`; `ata.h` declares only
+  `ata_init`): `ata_init()` at the end of `platform_init` (before `mm_init`: four static
+  `ata_drive_t` slots `{io, control, slave, block}`, no `kmalloc`). Writes nIEN (`0x02`) to both
+  control ports (polling; no IRQ 14/15 handler), then per slot (primary `0x1F0`/`0x3F6`,
+  secondary `0x170`/`0x376`, master/slave) `ata_identify`: select (`0xA0 | slave << 4`),
+  delay, zero count/LBA, `IDENTIFY` (`0xEC`); status 0 or `0xFF` → no drive; wait for not-BSY;
+  LBA mid/high non-zero → ATAPI (the boot CD), skipped; then 256 words, words 60–61 = the 28-bit
+  LBA sector count (0 → no LBA, skipped). A disk is registered as `hda`…`hdd` by position and
+  logged (`ata: hda, 4 MiB`).
+- **Helpers:** `ata_delay` reads the alternate status (the control port, no side effects) 4
+  times, about 400 ns, after every drive select and after a command; `ata_wait_ready` spins
+  while BSY (limit 1,000,000 polls → `-EIO`) and returns the status, ignoring ERR (IDENTIFY on
+  a CD aborts on purpose); `ata_wait_data` = ready, then ERR/DF → `-EIO`, no DRQ → `-EIO`;
+  `ata_read_data` waits for data and copies `size / 2` words with `inw`.
+- **`ata_read`:** past 2^28 sectors → `-EINVAL` (LBA48 is debt). Per command of `n` ≤ 256
+  sectors (the count register holds `n & 0xFF`, 0 = 256): `ata_wait_ready` (not `_data`: an
+  idle drive has no DRQ), select `0xE0 | slave << 4 | LBA[24..27]`, delay, count, LBA bytes
+  0–23, `READ SECTORS` (`0x20`), delay; then per sector `ata_read_data` of 512 bytes, the
+  `uint16_t *` advancing 256 words. The driver runs on the caller's thread (no thread of its
+  own: a disk only answers when asked).
+- **Test disk** (`Makefile`): `disk.img`, 4 MiB ext2 with 1 KiB blocks, label `mihos-test`,
+  root-owned, `mke2fs -q -F -t ext2 -b 1024 -L mihos-test -E root_owner=0:0 -d disk`, from
+  `disk/` (`hello.txt`, `docs/README`), rebuilt when a file there or the Makefile changes;
+  `make clean` deletes it. QEMU (`run-tests.sh`): IDE primary master (`hda`), `-snapshot`.
+  Bochs (local `.bochsrc`): `ata0-slave: type=disk, path=disk.img, mode=flat` (`hdb`: the CD
+  is `ata0-master` there).
+- **Block self-test** (`selftest/block.c`, after the VFS one): the first of `hda`…`hdd` (none
+  → panic), 8192 sectors; sector 2 is the ext2 superblock (magic `0xEF53` at 56, block-size
+  exponent 0 at 24, label at 120); a 2-sector read and a 300-sector read (two commands) equal
+  single reads, also at sectors 255/256/257; 0 sectors does nothing; the last sector reads;
+  past the end, from the last sector for 2, `UINT64_MAX` and `UINT32_MAX` → `-EINVAL`; a
+  second `block_register` → `-EEXIST`.
+
 ### Userland libc (`libc/`)
 
 Our own libc until the start of roadmap phase D, then mlibc in user space (see `ROADMAP.md`).
@@ -1279,10 +1333,16 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **`/dev` step (d), `ioctl` (done):** `SYS_IOCTL` with size-encoded requests, the `ioctl` op,
   the console's `TIOCGWINSZ`, libc `<sys/ioctl.h>`, `isatty` as musl's (`/dev/null` is no tty
   any more); the `ioctl` test. **`/dev` is complete.**
-- **Next (roadmap phase B):** a block device driver (virtio-blk on QEMU is the simplest; AHCI
-  for Bochs and real machines), `VFS_BLOCKDEV` nodes in devfs (`/dev/vda`), a block cache, then
-  ext2 read-only, mounted from the disk with the mount table. Before that, the debt "syscalls
-  run with IRQs off" matters: disk reads block.
+- **Disk step 1, block layer + ATA PIO (done):** `block_register`/`find`/`read`, an ATA PIO
+  driver (IDENTIFY over the four IDE slots, polled 28-bit reads), the ext2 test disk
+  (`disk.img`, attached by `run-tests.sh`), the block self-test. Decided: ATA PIO first (Bochs
+  and QEMU, no PCI or DMA); AHCI or virtio later only replace the driver. Not a prerequisite
+  after all: "syscalls run with IRQs off" (a sleeping driver lets IRQs through; it costs
+  latency, not correctness).
+- **Next, disk step 2:** block devices in `/dev`: `VFS_BLOCKDEV` nodes (`/dev/hda`, `S_IFBLK`,
+  `DT_BLK`), registered with devfs by the block layer, reads through the node. Then (3) a block
+  cache, (4) ext2 read-only mounted at `/mnt`, (5) IRQ-driven reads, partitions, writing, the
+  root on the disk.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1379,6 +1439,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `vfs_read_file` copies every program once more (archive → `kmalloc` buffer → address space);
   fine at ~100 KiB, replaced by mapping later. `kmalloc` above 1024 B rounds to a power-of-two
   number of pages.
+- ATA: polling only (the CPU spins for every sector, with IRQs off inside a syscall), 28-bit
+  LBA (128 GiB), no DMA, no writes, no cache; IDENTIFY's model string unused; names by IDE
+  position (`hda`…`hdd`), so the same disk is `hdb` on Bochs. The block table has no lock and
+  no unregister. No PCI enumeration yet (AHCI and virtio need it).
 - devfs: devices register at boot only (no lock, no unregister, nodes never freed); one flat
   directory; `devfs_readdir` walks the list from the start per index (O(n²) listing).
   Character devices refuse `lseek` (`ESPIPE`) where Linux lets `/dev/null` succeed.
@@ -1486,8 +1550,14 @@ Inspect a user program's segments (each `LOAD` page-aligned, no overlaps):
 x86_64-mihos-readelf -l sysroot/usr/tests/hello
 ```
 
+`make all` also builds `disk.img` (needs `mke2fs`: rebuild the Docker image once after a
+Dockerfile change with `docker build . -t mihos-compiler` from `cross-compiler/`, **not**
+`docker-build.bat`: its `robocopy` refreshes the image's sysroot copy, which invalidates the
+cache before the GCC build and rebuilds the whole cross-compiler).
+
 Run Bochs (`port_e9_hack: enabled=1` in `.bochsrc` sends the output to its console; the window
-closes by itself at `system halted`):
+closes by itself at `system halted`; the disk needs `ata0-slave: type=disk, path=disk.img,
+mode=flat`, or the block self-test panics):
 
 ```sh
 bochs -q -f .bochsrc
@@ -1497,8 +1567,8 @@ Run QEMU (verifies keys Bochs drops; `cpu_breakpoint` is a no-op there). `-debug
 the output to the terminal; `-no-shutdown` keeps the window after the power off:
 
 ```sh
-qemu-system-x86_64 -cdrom mihos.iso -m 1024 -no-reboot -no-shutdown -debugcon stdio
-qemu-system-x86_64 -cdrom mihos.iso -m 1024 -no-reboot -no-shutdown -d int,cpu_reset -D qemu.log
+qemu-system-x86_64 -cdrom mihos.iso -drive file=disk.img,format=raw,if=ide,index=0 -snapshot -m 1024 -no-reboot -no-shutdown -debugcon stdio
+qemu-system-x86_64 -cdrom mihos.iso -drive file=disk.img,format=raw,if=ide,index=0 -snapshot -m 1024 -no-reboot -no-shutdown -d int,cpu_reset -D qemu.log
 ```
 
 Automatic test run, no window (about 10 s; exits 0 only after a clean power off with
@@ -1511,7 +1581,7 @@ Automatic test run, no window (about 10 s; exits 0 only after a clean power off 
 The same by hand (on Windows the log path must be a Windows path):
 
 ```sh
-qemu-system-x86_64 -cdrom mihos.iso -m 1024 -no-reboot -display none -debugcon file:run.log
+qemu-system-x86_64 -cdrom mihos.iso -drive file=disk.img,format=raw,if=ide,index=0 -snapshot -m 1024 -no-reboot -display none -debugcon file:run.log
 ```
 
 Local, intentionally uncommitted: `.bochsrc`, `bx_enh_dbg.ini`.
