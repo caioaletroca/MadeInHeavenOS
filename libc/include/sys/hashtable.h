@@ -7,117 +7,103 @@
 
 __BEGIN_DECLS
 
-/**
- * Useful resources:
- * 
- * Integer Hash Function
- * https://gist.github.com/badboy/6267743
-*/
+// A table of 2^bits buckets: hlist_head_t name[HASH_BUCKETS(bits)]; zeroed (static, kzalloc) it is empty
+#define HASH_BUCKETS(bits) (1u << (bits))
+
+// 2^64 divided by the golden ratio, made odd: multiplying by it spreads every input bit into the high bits
+#define GOLDEN_RATIO_64 0x61C8864680B583EBull
+
+/*
+ * Intrusive hash table (Linux's hlist). Embed an hlist_node_t in your struct,
+ * keep an array of HASH_BUCKETS(bits) hlist_head_t, and pick a bucket with
+ * hash_64(key, bits). The table stores no keys: walk the one bucket with
+ * hlist_for_each and compare them yourself (different keys share buckets).
+ *
+ * A bucket is one pointer (half a list_t), so tables stay small; pprev points
+ * at whatever points at the node, so deleting needs no head and no walk.
+ */
+
+typedef struct hlist_node
+{
+    struct hlist_node *next;   // the next node in the bucket, or NULL
+    struct hlist_node **pprev; // the pointer that points at this node (a head's first or a node's next); NULL: not in a table
+} hlist_node_t;
+
+typedef struct hlist_head
+{
+    hlist_node_t *first;
+} hlist_head_t;
 
 /**
- * Hash table structure
-*/
-typedef struct hash_table {
-    // Pointer to the next item
-    struct hash_table *next;
-
-    // A Double pointer to the previous item
-    struct hash_table **pprev;
-} hash_table_t;
-
-/**
- * Hashes a 32 bit key
- * 
- * @param value         Value to be hashed
-*/
-static inline unsigned int hash_32(int key) {
-  key = (key ^ 61) ^ (key >> 16);
-  key = key + (key << 3);
-  key = key ^ (key >> 4);
-  key = key * 0x27d4eb2d; // a prime or an odd constant
-  key = key ^ (key >> 15);
-
-  return key;
+ * @brief Hashes a 64-bit value into `bits` bits: the top bits of a multiplicative hash.
+ *
+ * @param value The key (unsigned: the multiply may overflow, which is defined only for unsigned).
+ * @param bits The table's size as a power of two, 1..64.
+ * @return A bucket index below 2^bits.
+ */
+static inline uint64_t hash_64(uint64_t value, unsigned int bits)
+{
+    return (value * GOLDEN_RATIO_64) >> (64 - bits);
 }
 
 /**
- * Hashes a 64 bit key
- * 
- * @param value         Value to be hashed
-*/
-static inline unsigned long hash_64(long key) {
-  key = (~key) + (key << 21); // key = (key << 21) - key - 1;
-  key = key ^ (key >> 24);
-  key = (key + (key << 3)) + (key << 8); // key * 265
-  key = key ^ (key >> 14);
-  key = (key + (key << 2)) + (key << 4); // key * 21
-  key = key ^ (key >> 28);
-  key = key + (key << 31);
-
-  return key;
+ * @brief Marks a node as not in any table.
+ */
+static inline void hlist_node_init(hlist_node_t *node)
+{
+    node->next = NULL;
+    node->pprev = NULL;
 }
 
 /**
- * Hashes a key into a table index
- * 
- * @param value     Numeric key to be hashed
-*/
-#define hash(value) \
-    ((sizeof(value) <= 4) ? hash_32(value) : hash_64(value))
-
-/**
- * Initializes a hash table
- * 
- * @param table     Hash table double pointer
-*/
-static inline void hash_table_init(hash_table_t **table) {
-    memset(table, 0, sizeof(hash_table_t) * 32);
+ * @brief Whether a node is in a table.
+ */
+static inline int hlist_hashed(const hlist_node_t *node)
+{
+    return node->pprev != NULL;
 }
 
 /**
- * Inserts a new node into a hash table using a given key
- * 
- * @param table     Hash table double pointer
- * @param node      Node pointer
- * @param key       Key for the node
-*/
-static inline void hash_table_insert(hash_table_t **table, hash_table_t *node, long long key) {
-    int index = hash(key);
-    node->next = table[index];
-    node->pprev = &table[index];
-
-    if(table[index] != NULL) {
-        table[index]->pprev = (hash_table_t **)node;
+ * @brief Puts a node at the front of a bucket.
+ *
+ * @param head The head of the bucket to add the node to.
+ * @param node The node to add at the front of the bucket.
+ */
+static inline void hlist_add_head(hlist_head_t *head, hlist_node_t *node)
+{
+    node->next = head->first;
+    node->pprev = &head->first;
+    if (head->first != NULL)
+    {
+        head->first->pprev = &node->next;
     }
-
-    table[index] = node;
+    head->first = node;
 }
 
 /**
- * Deletes a node from a hash table
- * 
- * @param node      Node pointer
-*/
-static inline void hash_table_delete(hash_table_t *node) {
-    hash_table_t *next = node->next;
-    hash_table_t **pprev = node->pprev;
-
-    *pprev = next;
-    if(next != NULL) {
-        next->pprev = pprev;
+ * @brief Takes a node out of its bucket; afterwards it is in no table.
+ *
+ * @param node The node to remove from its bucket.
+ */
+static inline void hlist_del(hlist_node_t *node)
+{
+    if (node->pprev != NULL)
+    {
+        *(node->pprev) = node->next;
+        if (node->next != NULL)
+        {
+            node->next->pprev = node->pprev;
+        }
+        node->next = NULL;
+        node->pprev = NULL;
     }
 }
 
-/**
- * Gets the value from the hash table by a key
- * 
- * @param table     Hash table double pointer
- * @param key       Key for the node
- * @return          The node found
-*/
-static inline hash_table_t *hash_table_lookup(hash_table_t * const *table, long long key) {
-    return table[hash(key)];
-}
+// Walks one bucket: node is an hlist_node_t *
+#define hlist_for_each(node, head) for (node = (head)->first; node != NULL; node = node->next)
+
+// The struct an hlist_node_t is embedded in (list_container for hlists)
+#define hlist_container(node, type, member) ((type *)((char *)(node) - offsetof(type, member)))
 
 __END_DECLS
 
