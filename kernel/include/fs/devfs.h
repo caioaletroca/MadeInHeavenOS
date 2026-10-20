@@ -22,4 +22,16 @@ void devfs_init(void);
  */
 int devfs_register(const char *name, uint32_t mode, uint64_t rdev, const struct file_ops *ops);
 
+struct block_device;
+
+/**
+ * @brief Registers a block device node in /dev, read through the block layer.
+ *
+ * @param name The device node's name.
+ * @param mode The permission bits.
+ * @param dev The block device; its rdev and size go into the node.
+ * @return 0 on success, -EINVAL, -EEXIST or -ENOMEM.
+ */
+int devfs_register_block(const char *name, uint32_t mode, struct block_device *dev);
+
 #endif // _FS_DEVFS_H_

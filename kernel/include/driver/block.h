@@ -22,6 +22,7 @@ typedef struct block_device
 {
     char name[BLOCK_NAME_MAX];
     uint64_t sector_count;
+    uint64_t rdev; // MIHOS_MKDEV(major, minor), chosen by the driver
     const block_ops_t *ops;
     void *private; // the driver's own data (for ATA: which channel and drive)
 } block_device_t;
@@ -66,5 +67,11 @@ int block_read(block_device_t *dev, uint64_t sector, uint32_t count, void *buffe
  * @return The bytes read (fewer at the end of the device, 0 at or past it), or -errno.
  */
 long block_read_bytes(block_device_t *dev, void *buffer, size_t count, uint64_t offset);
+
+/**
+ * @brief Publish every registered block device in /dev (mode 0660).
+ * Once, after devfs_init: disks are found before the allocator and devfs exist.
+ */
+void block_devfs_init(void);
 
 #endif /* _DRIVER_BLOCK_H_ */

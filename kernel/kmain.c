@@ -9,6 +9,7 @@
 #include <driver/timer.h>
 #include <driver/console.h>
 #include <driver/mem.h>
+#include <driver/block.h>
 #include <platform/platform.h>
 #include <sched/thread.h>
 #include <sched/scheduler.h>
@@ -57,6 +58,8 @@ void kmain(uintptr_t boot_handoff)
     scheduler_init(&boot_thread);
     threads_init();
     console_init(&keymap_abnt2);
+
+    block_devfs_init();
 
     timer_init(TIMER_FREQUENCY_HZ);
 

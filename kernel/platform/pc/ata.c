@@ -1,6 +1,7 @@
 #include "ata.h"
 #include <x86/io.h>
 #include <driver/block.h>
+#include <mihos/stat.h>
 #include <mihos/errno.h>
 #include <stdint.h>
 #include <string.h>
@@ -38,6 +39,9 @@
 #define ATA_SR_CORR 0x04
 #define ATA_SR_IDX 0x02
 #define ATA_SR_ERR 0x01
+
+#define IDE0_MAJOR 3
+#define IDE1_MAJOR 22
 
 /**
  * ATA drive structure
@@ -254,6 +258,8 @@ void ata_init(void)
         strlcpy(drive->block.name, names[i], sizeof(drive->block.name));
         drive->block.ops = &ata_block_ops;
         drive->block.private = drive;
+        // Linux's IDE numbers: major 3 for the primary channel, 22 for the secondary
+        drive->block.rdev = MIHOS_MKDEV(i < 2 ? IDE0_MAJOR : IDE1_MAJOR, drive->slave * 64);
 
         if (block_register(&drive->block) < 0)
             panic("ata: cannot register %s\n", names[i]);

@@ -1,7 +1,9 @@
 #include <driver/block.h>
+#include <fs/devfs.h>
 #include <mihos/errno.h>
 #include <stdint.h>
 #include <string.h>
+#include <panic.h>
 #include <util.h>
 
 static block_device_t *devices[BLOCK_DEVICES_MAX];
@@ -88,4 +90,18 @@ long block_read_bytes(block_device_t *dev, void *buffer, size_t count, uint64_t 
     }
 
     return (long)done;
+}
+
+void block_devfs_init(void)
+{
+    for (int i = 0; i < BLOCK_DEVICES_MAX; i++)
+    {
+        block_device_t *dev = devices[i];
+        if (devices[i] != NULL)
+        {
+            int ret = devfs_register_block(dev->name, 0660, dev);
+            if (ret < 0)
+                panic("block_devfs_init: failed to register block device %s with error %d\n", dev->name, ret);
+        }
+    }
 }

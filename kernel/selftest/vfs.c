@@ -391,8 +391,16 @@ static void vfs_test_mount(void)
     vfs_expect_entry(dev, 2, "null", VFS_CHARDEV, null->ino);
     vfs_expect_entry(dev, 3, "zero", VFS_CHARDEV, zero->ino);
     vfs_expect_entry(dev, 4, "console", VFS_CHARDEV, 0); // registered by console_init, after mem
-    if (vfs_readdir(dev, 5, &entry) != 0 || vfs_readdir(dev, 100, &entry) != 0)
-        panic("VFS self-test: /dev lists more than its dots, null, zero and console\n");
+    // Then the disks (block_devfs_init, after the console), each a block device
+    uint64_t index = 5;
+    while (vfs_readdir(dev, index, &entry) == 1)
+    {
+        if (entry.type != VFS_BLOCKDEV)
+            panic("VFS self-test: /dev lists '%s' after the console, not a disk\n", entry.name);
+        index++;
+    }
+    if (vfs_readdir(dev, 100, &entry) != 0)
+        panic("VFS self-test: /dev lists more than its dots, null, zero, console and the disks\n");
     vfs_node_put(zero);
     vfs_node_put(null);
 

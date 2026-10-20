@@ -204,8 +204,10 @@ int vfs_lookup(const char *path, vfs_node_t **out)
 
 long vfs_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset)
 {
-    if (node->type != VFS_FILE)
+    if (node->type == VFS_DIRECTORY)
         return -EISDIR;
+    if (node->ops->read == NULL)
+        return -EINVAL; // character devices are read through their file_ops, never here
 
     return node->ops->read(node, buffer, count, offset);
 }

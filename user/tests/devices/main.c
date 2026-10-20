@@ -119,7 +119,7 @@ static void test_readdir(void)
             continue;
         }
 
-        types_ok = types_ok && entry->d_type == DT_CHR;
+        types_ok = types_ok && (entry->d_type == DT_CHR || entry->d_type == DT_BLK); // disks: the disks test
         if (strcmp(entry->d_name, "null") == 0)
         {
             seen_null++;
