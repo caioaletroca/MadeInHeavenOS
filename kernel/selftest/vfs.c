@@ -173,14 +173,15 @@ static void vfs_test_readdir(void)
     vfs_node_t *hello = vfs_expect(HELLO, VFS_FILE);
 
     // The root: "." and ".." are both itself, then the archive's directories in order.
-    // "dev" is the initrd's own directory (readdir does not follow mounts): no inode to compare
+    // "dev" and "mnt" are the initrd's own directories (readdir does not follow mounts): no inode to compare
     vfs_expect_entry(root, 0, ".", VFS_DIRECTORY, root->ino);
     vfs_expect_entry(root, 1, "..", VFS_DIRECTORY, root->ino);
     vfs_expect_entry(root, 2, "bin", VFS_DIRECTORY, 0);
     vfs_expect_entry(root, 3, "dev", VFS_DIRECTORY, 0);
-    vfs_expect_entry(root, 4, "sbin", VFS_DIRECTORY, 0);
-    vfs_expect_entry(root, 5, "usr", VFS_DIRECTORY, usr->ino);
-    if (vfs_readdir(root, 6, &entry) != 0 || vfs_readdir(root, 100, &entry) != 0)
+    vfs_expect_entry(root, 4, "mnt", VFS_DIRECTORY, 0);
+    vfs_expect_entry(root, 5, "sbin", VFS_DIRECTORY, 0);
+    vfs_expect_entry(root, 6, "usr", VFS_DIRECTORY, usr->ino);
+    if (vfs_readdir(root, 7, &entry) != 0 || vfs_readdir(root, 100, &entry) != 0)
         panic("VFS self-test: readdir past the root's last entry did not return 0\n");
 
     vfs_expect_entry(usr, 0, ".", VFS_DIRECTORY, usr->ino);
@@ -210,10 +211,10 @@ static void vfs_test_readdir(void)
 }
 
 // Every record of the root, as vfs_file_getdents packs it
-static const char *const root_names[] = {".", "..", "bin", "dev", "sbin", "usr"};
-#define ROOT_COUNT 6
-#define ROOT_RECORDS 96 // 6 records of 16 bytes: 11-byte header + name + '\0', rounded to 8
-#define SBIN_INDEX 4
+static const char *const root_names[] = {".", "..", "bin", "dev", "mnt", "sbin", "usr"};
+#define ROOT_COUNT 7
+#define ROOT_RECORDS 112 // 7 records of 16 bytes: 11-byte header + name + '\0', rounded to 8
+#define SBIN_INDEX 5
 
 static void vfs_test_getdents(void)
 {

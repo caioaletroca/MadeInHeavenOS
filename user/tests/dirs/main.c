@@ -9,13 +9,13 @@
 
 /*
  * Directories: opendir/readdir/rewinddir/closedir, and the getdents records
- * under them. The initrd's layout is known: / holds bin, sbin and usr (in
- * archive order), /usr/tests holds every test, this one included.
+ * under them. The initrd's layout is known: / holds bin, dev, mnt, sbin and
+ * usr (in archive order), /usr/tests holds every test, this one included.
  */
 
 #define TESTS "/usr/tests"
-#define ROOT_COUNT 6
-#define ROOT_RECORDS 96 // ".", "..", "bin", "dev", "sbin", "usr": 16 bytes each
+#define ROOT_COUNT 7
+#define ROOT_RECORDS 112 // ".", "..", "bin", "dev", "mnt", "sbin", "usr": 16 bytes each
 
 // One directory's listing, as readdir returns it
 typedef struct listing
@@ -156,7 +156,7 @@ static int records_match(const void *buffer, long n, const char *const expected[
 
 static void test_getdents(void)
 {
-    static const char *const root[] = {".", "..", "bin", "dev", "sbin", "usr"};
+    static const char *const root[] = {".", "..", "bin", "dev", "mnt", "sbin", "usr"};
     uint64_t buffer[64]; // 512 bytes, 8-aligned like the records
 
     int fd = open("/", O_RDONLY | O_DIRECTORY);

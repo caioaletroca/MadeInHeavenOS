@@ -61,6 +61,7 @@ mihos.txt
 run-tests.log
 
 # Build results
+/build
 /*/build
 /isodir
 /sysroot

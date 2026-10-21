@@ -17,9 +17,10 @@ GRUB_CFG := grub.cfg
 PROGRAM_DIRS := bin sbin usr/tests
 PROGRAMS := $(filter-out %.elf,$(foreach dir,$(PROGRAM_DIRS),$(wildcard $(SYSROOT_DIR)/$(dir)/*)))
 
-# Empty directories other file systems are mounted on (fs/devfs.c mounts /dev):
-# a mount point must exist before anything can be mounted on it
-MOUNT_POINTS := dev
+# Empty directories other file systems are mounted on (fs/devfs.c mounts /dev,
+# the first ext2 disk goes on /mnt): a mount point must exist before anything
+# can be mounted on it
+MOUNT_POINTS := dev mnt
 
 INITRD_STAGING := $(BINARY_DIR)/initrd
 INITRD := $(BINARY_DIR)/initrd.tar

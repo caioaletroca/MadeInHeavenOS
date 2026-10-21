@@ -10,16 +10,32 @@ OBJDUMP ?= $(HOST)-objdump
 DISK_IMAGE := disk.img
 DISK_SIZE := 4M
 DISK_FILES := $(shell find disk -type f)
+DISK_STAGING := build/disk
 
 .PHONY: all headers libc kernel user grub install clean purge dump print-config
 
 all: grub $(DISK_IMAGE)
 
-# The test disk: an ext2 file system (1 KiB blocks) made from disk/, attached
-# by run-tests.sh and .bochsrc next to the boot CD. Rebuilt when a file changes
+# The test disk: an ext2 file system (1 KiB blocks), attached by run-tests.sh
+# and .bochsrc next to the boot CD, rebuilt when a file changes. Made from
+# disk/ plus files generated here, too big, sparse or long-named for git:
+#   big.txt   300 KiB of 8-byte lines "%07d\n", each holding its own line
+#             number (byte offset = 8 * line), so a block read from the wrong
+#             place shows; 300 blocks: direct, single and double indirect
+#   sparse    "start", a hole up to 16 KiB, "end": no blocks for the middle
+#   aaa...a   a 255-character name, the longest ext2 allows
+#   link      a symlink to hello.txt (the VFS has no symlinks yet: skipped)
 $(DISK_IMAGE): $(DISK_FILES) Makefile
-	rm -f $@
-	mke2fs -q -F -t ext2 -b 1024 -L mihos-test -E root_owner=0:0 -d disk $@ $(DISK_SIZE)
+	rm -rf $@ $(DISK_STAGING)
+	mkdir -p $(DISK_STAGING)
+	cp -R disk/. $(DISK_STAGING)/
+	seq -f '%07g' 0 38399 > $(DISK_STAGING)/big.txt
+	printf 'start' > $(DISK_STAGING)/sparse
+	truncate -s 16384 $(DISK_STAGING)/sparse
+	printf 'end' >> $(DISK_STAGING)/sparse
+	echo 'The longest name.' > "$(DISK_STAGING)/$$(printf 'a%.0s' $$(seq 255))"
+	ln -s hello.txt $(DISK_STAGING)/link
+	mke2fs -q -F -t ext2 -b 1024 -L mihos-test -E root_owner=0:0 -d $(DISK_STAGING) $@ $(DISK_SIZE)
 
 # The kernel/user contract (<mihos/...>) first: libc and user programs include it
 headers:
@@ -46,14 +62,14 @@ clean:
 	$(MAKE) -C kernel clean
 	$(MAKE) -C user clean
 	$(MAKE) -C grub clean
-	rm -rf isodir sysroot mihos.iso $(DISK_IMAGE)
+	rm -rf isodir sysroot mihos.iso $(DISK_IMAGE) build
 
 purge:
 	$(MAKE) -C libc purge
 	$(MAKE) -C kernel purge
 	$(MAKE) -C user purge
 	$(MAKE) -C grub purge
-	rm -rf isodir sysroot mihos.iso $(DISK_IMAGE)
+	rm -rf isodir sysroot mihos.iso $(DISK_IMAGE) build
 
 dump: $(KERNEL)
 	$(OBJDUMP) -d $(KERNEL) > mihos.txt
