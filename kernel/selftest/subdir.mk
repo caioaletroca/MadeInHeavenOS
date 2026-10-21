@@ -2,6 +2,7 @@ local_sources := \
 block.c \
 console.c \
 elf.c \
+ext2.c \
 guard.c \
 hashtable.c \
 mm.c \

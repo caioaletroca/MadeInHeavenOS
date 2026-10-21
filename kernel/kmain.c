@@ -23,6 +23,7 @@
 #include "selftest/block.h"
 #include "selftest/console.h"
 #include "selftest/elf.h"
+#include "selftest/ext2.h"
 #include "selftest/guard.h"
 #include "selftest/hashtable.h"
 #include "selftest/mm.h"
@@ -79,6 +80,7 @@ void kmain(uintptr_t boot_handoff)
     user_selftest();
     vfs_selftest();
     block_selftest();
+    ext2_selftest(); // after the block one: that one counts cache hits and misses
     elf_selftest();
     kprintf("self-tests: ok\n"); // each one panics on failure
 
