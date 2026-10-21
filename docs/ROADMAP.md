@@ -141,7 +141,8 @@ docs/                     # handoff, roadmap
    step (c) done: `getdents`, libc `opendir`/`readdir`, `ls`, a test runner that lists its tests;
    step (d) done: `stat`/`fstat`; `/dev` done: mounts, devfs, `/dev/null`, `/dev/zero`,
    `/dev/console`, `ioctl`; disks in progress: the block layer, an ATA PIO driver, block
-   devices in `/dev` and the block cache done, read-only ext2 next).
+   devices in `/dev`, the block cache and read-only ext2 on `/mnt` done; next writing,
+   partitions and IRQ-driven reads, then the root on the disk).
 
 ## Reference projects
 

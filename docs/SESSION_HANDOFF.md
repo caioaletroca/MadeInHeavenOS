@@ -49,6 +49,9 @@ Working x86-64 PC kernel with:
   each disk as a block device in `/dev` (`/dev/hda`, `S_IFBLK`, read-only, seekable, read at
   byte offsets through `block_read_bytes`); a **block cache** (`bcache_get`/`bcache_put`: 64
   leased 4 KiB buffers, hash lookup, LRU eviction) under every disk read
+- **ext2, read-only:** the first ext2 disk mounted on `/mnt` at boot; directories, file reads
+  through direct and indirect blocks (holes read as zeros), real modes, times and link counts;
+  one cached node per inode, freed after the last reference
 - Intrusive `list.h` and an hlist `hashtable.h` (multiplicative `hash_64`) shared by kernel and libc
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
@@ -60,12 +63,21 @@ Working x86-64 PC kernel with:
 - Console: US and ABNT2 keymaps with dead keys, line discipline, blocking `console_read()`
 - UTF-8 tty drawing CP437 glyphs on VGA text mode with a hardware cursor; `kprintf` is atomic per call
 - Kernel split into generic code, arch contracts and platform contracts, enforced by the build
-- Guard, hash table, MM, preemption, sync, console, user-mode, VFS, block and ELF self-tests and the user test programs
+- Guard, hash table, MM, preemption, sync, console, user-mode, VFS, block, ext2 and ELF self-tests and the user test programs
   passing in Bochs (stdin_interactive by hand); keyboard verified in Bochs and QEMU
 
 Latest commits:
 
 ```text
+5060b51 test: cover ext2
+beb4b3b feat(fs): mount the first ext2 disk at /mnt
+9d8ebf1 feat(fs): read ext2 files
+1928bba feat(fs): list and look up ext2 directories
+8219ac0 feat(fs): add ext2 inodes and the node cache
+e08c80d feat(fs): read the ext2 superblock and group descriptors
+29a49d4 build: keep the test disk's files byte-exact in git
+fb49d44 build: add /mnt and a richer ext2 test disk
+89c64df refactor(libc): name list and hlist operations consistently
 e9d610b test: cover the hash table and the block cache
 ec8c250 refactor(driver): read block devices through the cache
 878b25a feat(driver): add the block cache
@@ -303,6 +315,7 @@ tty_init → platform_boot_info_init → arch_init [TSS first] → input_init �
 → scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [/dev/console, console thread]
 → block_devfs_init [/dev/hda…: the disks platform_init found] → bcache_init [64 buffers]
+→ ext2_init [first ext2 disk on /mnt]
 → timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → hashtable_selftest → mm_selftest
 → scheduler_selftest [+ sync tests] → console_selftest → user_selftest → vfs_selftest
 → elf_selftest
@@ -570,7 +583,7 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   The ABI (uapi `<mihos/stat.h>`): fixed-width fields with an explicit `__pad0`, Linux's x86-64
   `struct stat` layout; `MIHOS_S_IFMT`/`IFDIR`/`IFCHR`/`IFBLK`/`IFREG` (octal, Linux values) in the high
   bits of `st_mode`, permissions in the low 12. **`vfs_stat(node, st)`** zeroes everything, then
-  `st_ino`, `st_mode` = type bits | `node->mode`, `st_nlink` 1 (no hard links; also what tools
+  `st_ino`, `st_mode` = type bits | `node->mode`, `st_nlink` = `node->nlink` (1 for the initrd and devfs; also what tools
   read as "not counted" for directories), `st_size` (0 for character and block devices, as on
   Linux: a disk's size comes from `lseek(SEEK_END)`, which uses `node->size`), `st_blksize` =
   `PAGE_SIZE`, `st_blocks` in 512-byte units (0 for devices), all three times = `node->mtime` (read-only, no clock), `st_dev` = `node->dev`,
@@ -660,7 +673,10 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   `type`, `length`, `name[256]`}: 1, 0 past the last, or -errno; each file system emits `.` and
   `..` itself at 0 and 1, as ext2 stores them on disk; no nodes are created for a listing),
   `release` (after the last `put`; NULL: never freed). `vfs_node_put` decrements under the lock
-  and calls `release` after it. `vfs_path_next(&p, &length)`: skips any `/`, returns a component
+  and calls `release` after it. `vfs_node_tryget` takes a reference only if there is one (a
+  cache's lookup: at 0 the release is on its way, so a node never comes back from 0 and each
+  `release` runs once; Linux's `igrab`). `nlink` (1 unless the file system counts links, as
+  ext2 does) goes to `st_nlink`. `vfs_path_next(&p, &length)`: skips any `/`, returns a component
   as pointer + length, no copy (a non-writing `strtok_r`). `vfs_lookup(path, &node)`: absolute
   paths only (relative or `""` → `-ENOENT`: no current directory yet); holds exactly one
   reference per step (gets the next node, puts the current one, a single `put` on every exit);
@@ -967,11 +983,17 @@ bcache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check─�
   `uint16_t *` advancing 256 words. The driver runs on the caller's thread (no thread of its
   own: a disk only answers when asked).
 - **Test disk** (`Makefile`): `disk.img`, 4 MiB ext2 with 1 KiB blocks, label `mihos-test`,
-  root-owned, `mke2fs -q -F -t ext2 -b 1024 -L mihos-test -E root_owner=0:0 -d disk`, from
-  `disk/` (`hello.txt`, `docs/README`), rebuilt when a file there or the Makefile changes;
-  `make clean` deletes it. QEMU (`run-tests.sh`): IDE primary master (`hda`), `-snapshot`.
-  Bochs (local `.bochsrc`): `ata0-slave: type=disk, path=disk.img, mode=flat` (`hdb`: the CD
-  is `ata0-master` there).
+  root-owned, `mke2fs -q -F -t ext2 -b 1024 -L mihos-test -E root_owner=0:0 -d build/disk`,
+  rebuilt when a file in `disk/` or the Makefile changes; `make clean` deletes it and `build/`.
+  `build/disk` is `disk/` (`hello.txt`, `empty`, `docs/README`, `docs/deep/nested/file.txt`;
+  `.gitattributes` keeps them byte-exact, `-text`) plus generated files: `big.txt` (300 KiB of
+  `"%07d\n"` lines holding their own number: direct, single and double indirect blocks),
+  `sparse` (`"start"`, a hole to 16384, `"end"`: holes in `i_block[1..11]` and inside the
+  single-indirect block), a 255-character name, `link` (a symlink). What `mke2fs` makes of
+  it: revision 1, 256-byte inodes, incompat `FILETYPE` only, compat `0x38`, ro_compat
+  `0x3`, one group, root directory in block 276. QEMU (`run-tests.sh`, and `run.bat` for
+  interactive runs): IDE primary master (`hda`), `-snapshot`. Bochs (local `.bochsrc`):
+  `ata0-slave: type=disk, path=disk.img, mode=flat` (`hdb`: the CD is `ata0-master` there).
 - **Block self-test** (`selftest/block.c`, after the VFS one): the first of `hda`…`hdd` (none
   → panic), 8192 sectors; sector 2 is the ext2 superblock (magic `0xEF53` at 56, block-size
   exponent 0 at 24, label at 120); a 2-sector read and a 300-sector read (two commands) equal
@@ -999,6 +1021,94 @@ bcache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check─�
   even ones, every bucket empty at the end; `hash_64` below `2^bits` for 1–16 bits, the plain
   product at 64, 1024 consecutive keys 48–80 per bucket of 16; `list_move_after` from the back
   and the middle (both link directions), and of the first item (no change).
+
+### ext2, read-only (`fs/ext2.c`, `fs/ext2_disk.h`, `include/fs/ext2.h`)
+
+```text
+/ (initrd) ─ mnt ── mounted ──▶ ext2 root (inode 2) ─ hello.txt (inode 20)
+                                                    └ docs (14) ─ deep ─ nested ─ file.txt
+read(/mnt/big.txt) ─▶ ext2_read ─ per ext2 block: ext2_bmap ─▶ ext2_block_get ─▶ bcache lease ─ memcpy
+lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─▶ ext2_iget(ino) ─▶ node cache
+```
+
+- **On-disk format** (`fs/ext2_disk.h`, private to `ext2.c`): `ext2_super_t` (1024 bytes at byte
+  1024 of the disk), `ext2_group_t` (32), `ext2_inode_t` (the first 128 bytes of an inode),
+  `ext2_dirent_t` (8-byte header + name), with `_Static_assert`s on sizes and offsets; read in
+  place from cache buffers, little-endian like x86 (a big-endian arch needs conversions).
+- **Mount** (`ext2_mount(disk, &root)`): copies the superblock from cache block 0, then
+  `ext2_check_super`: no magic, revision ≠ 1, an incompat feature other than `FILETYPE` or no
+  `FILETYPE`, blocks over 4 KiB (they would straddle cache buffers), an inode size not a power of
+  two in 128..block size → `-EINVAL` ("not ours"); zero blocks or inodes per group, the first
+  data block past the end, more blocks than the disk, groups too few for `s_inodes_count` →
+  `-EIO` (inconsistent). Ro_compat and compat features are ignored (we never write: Linux's
+  three-tier rule). `ext2_read_groups` copies the descriptor table (from block
+  `s_first_data_block + 1`, over as many blocks as needed) into a `kmalloc`'d array and checks
+  every group's inode table lies inside the file system, so `iget` trusts it. Then
+  `mutex_init`, `vfs_dev_alloc`, and the root (`ext2_iget(2)`; not a directory → `-EIO`).
+  `ext2_fs_t` = the disk, `dev`, block size, block/inode counts, inodes per group, inode size,
+  groups, the group table, `lock` and the node hash (`nodes[64]`, `kzalloc`'d: empty).
+- **Disk access** (`ext2_block_get(fs, block, &lease, &data)`): the only way to the disk; block 0
+  or past the end → `-EIO` (a corrupt pointer); otherwise `bcache_get` of the cache block
+  holding it and `data` = its first byte there (a block never straddles two cache buffers).
+  Every caller puts the lease right after use; at most one is held at a time.
+- **Nodes** (`ext2_node_t` = `vfs_node_t` + `fs`, `ino`, a copy of `i_block[15]`, `hash`):
+  `ext2_iget(fs, ino, parent, &node)`, under `fs->lock` (a mutex: it may read the disk; taken
+  before the cache's locks, never inside them): ino 0 or past `s_inodes_count` → `-EIO`; a cached
+  node is returned only through `vfs_node_tryget` (at 0 it is dying: unhashed, and a fresh one is
+  read); otherwise the inode is found at group `(ino-1) / inodes_per_group`, slot `(ino-1) %
+  inodes_per_group`, `inode_size` bytes each, from the group's `bg_inode_table`; only regular
+  files and directories become nodes (`-ENOENT` otherwise). The node gets `mode & 07777`,
+  `mtime`, `nlink` (`i_links_count`), `size` (`i_size`, plus `i_size_high << 32` for files:
+  large_file), `parent` (the directory it was found in, with a reference, so `..` stays valid;
+  the root is its own parent). **Release:** unhash under the lock if still linked, `kfree`, then
+  put the parent after the lock (that may release it in turn: a chain of releases up the tree).
+- **`ext2_bmap(fs, node, logical, &block)`:** 12 direct pointers, then `i_block[12..14]` with
+  1, 2, 3 levels of tables of `block_size / 4` entries (256 with 1 KiB blocks: +256 KiB, +64 MiB,
+  +16 GiB); walks down one leased block per level like a page table; 0 anywhere is a hole.
+- **Directories:** `ext2_dir_walk(dir, visit, context)` runs `visit(entry, context)` (a function
+  pointer plus a context struct: a closure by hand) for every used entry, block by block, while
+  the block is leased; 0 goes on, 1 stops (the walk returns 1), -errno fails. Each record is
+  checked first: 8 bytes of header left in the block, `rec_len` ≥ 8, a multiple of 4, inside the
+  block, holding `8 + name_len` → else `-EIO` (never a loop or a read past the block). Inode 0
+  (deleted) is skipped. `readdir` counts shown entries (regular files and directories: others
+  are skipped and not counted, so indexes stay dense) up to `index`; `.` and `..` come from the
+  disk. `lookup` compares `name_len` and the bytes (exact, case-sensitive), then calls `iget`
+  after the walk with no lease held; a match that is not a file or directory is `-ENOENT`.
+- **Read** (`ext2_read`): clamped to the size; per ext2 block: `bmap`, a hole → `memset` 0,
+  else the slice copied from the leased block; errors are returned as is.
+- **Boot mount** (`ext2_init`, after `bcache_init`): for each `block_at(i)` (the block table in
+  registration order) `ext2_mount`; `-EINVAL` skips quietly, other errors are logged; the first
+  one is `vfs_mount`ed on `/mnt` (an empty directory of the initrd, `MOUNT_POINTS` in
+  `grub/Makefile`), its reference put (the mount keeps one), and logged (`ext2: hda mounted on
+  /mnt`); none: `ext2: no disk to mount`.
+- **ext2 self-test** (`selftest/ext2.c`, after the block one, whose exact cache counts it
+  would disturb): `/mnt` is inode 2, a mount, on its own `st_dev`, `0755`, plausible mtime,
+  `..` is `/`; the listing in disk order (`.`, `..`, `lost+found`, the 255-character name,
+  `big.txt`, `docs`, `empty`, `hello.txt`, `sparse`; `link` not shown) and `nlink` = 2 +
+  subdirectories; readdir's inode = lookup's. Lookups: `link`, a prefix, a longer name, other
+  case → `ENOENT`, 256 characters → `ENAMETOOLONG`, `..` inside the file system reaching the
+  same nodes. Nodes: two lookups one node (`refs` 2, parent `/mnt`, `/mnt` +1); the last put
+  frees it and lets `/mnt` go; a fresh node after; `docs` holds `/mnt`, a held `file.txt` holds
+  `docs` through `nested` and `deep`, putting it releases the chain. Reads: three small files
+  exactly, `empty` 0 bytes, `big.txt` whole (every line) and seven pieces across direct /
+  single / double-indirect boundaries and the end equal to it with a canary, 0 at and past the
+  end; `sparse`'s hole zeros; `EROFS`, a directory opens and reads `EISDIR`. Broken disks: an
+  overlay block device reads the test disk through `block_read` and patches 1–4 bytes, one
+  device per case (the cache is keyed by device): unchanged mounts; no magic, revision 0, an
+  unknown incompat feature, no `FILETYPE`, 8 KiB blocks, 200-byte inodes → `-EINVAL`; more
+  blocks than the disk, no inodes per group, more inodes than the groups, an inode table at
+  block 0 → `-EIO`; a regular-file root → `-EIO`; a zero / unaligned / too long `rec_len` and a
+  name longer than its record in the root directory → mount works, `readdir` and `lookup` give
+  `-EIO`. Mounted overlays stay allocated (no unmount).
+- **`ext2` test** (`user/tests/ext2`): the listing with types and the dots as inode 2, `link`
+  absent, `hello.txt`'s `d_ino` = `st_ino`, `docs/deep/nested` lists `file.txt`, `/mnt/..` lists
+  `usr`; `stat`: `/mnt` `0755`, inode 2, `nlink` 4, `st_dev` unlike `/` and `/dev`, `hello.txt`
+  21 bytes one link, a path through `..` the same inode, `big.txt` `0644` with its size,
+  `fstat` byte-identical; reads of the small files, `empty`, all of `big.txt` through 256-byte
+  `read`s, `lseek` to lines 0/127/128/1535/1536/34303/34304/38399 (both sides of each block-kind
+  boundary), `SEEK_END`, the last 5 bytes; `sparse`'s zeros; `EROFS` (`O_WRONLY`, `O_RDWR`),
+  `ENOENT` (`link`, missing), `ENOTDIR` (`hello.txt/`, `opendir` of a file, `getdents` on a
+  file), `EISDIR`, `EBADF` (write); fd 3 free at the end.
 
 ### Userland libc (`libc/`)
 
@@ -1462,11 +1572,21 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   for its keys and fill, as Linux does; cache blocks are 4 KiB whatever the file system's block
   size; xv6's two locks (a spinlock for the list and keys, a per-buffer mutex across the disk
   read); every buffer leased → `-ENOBUFS`, not sleeping; everything reads through the cache.
-- **Next, disk step 4:** ext2 read-only, mounted at `/mnt`: the superblock (magic, block size,
-  counts) and block group descriptors through `bcache_get`, inodes from the inode table, a
-  directory's entries for `lookup`/`readdir`, a file's data through its 12 direct and the
-  indirect blocks; ext2 nodes in the VFS (`release` frees them, unlike the initrd's). Then
-  (5) IRQ-driven reads, partitions, writing, the root on the disk.
+- **List and hlist names (done):** `list_remove`, `hlist_insert`/`hlist_remove`/`hlist_linked`.
+- **Disk step 4, ext2 read-only (done):** `/mnt` in the initrd and a test disk with indirect
+  blocks, holes, a long name and a symlink; the superblock and group checks, `ext2_iget` and the
+  node cache (`vfs_node_tryget`, `nlink` in the VFS), directory walks with checked records,
+  `bmap` through three levels, reads with holes, `block_at` and the boot mount; the ext2
+  self-test (with an overlay device for broken disks) and the `ext2` test. Decided: Linux's
+  feature rule (incompat refuses, ro_compat/compat ignored read-only); `FILETYPE` and revision 1
+  required; on-disk structs read in place; one node per inode, freed at the last put, never
+  revived from 0 (`tryget`, so `release` runs once per node); a node holds its parent; only
+  regular files and directories exposed; the first ext2 disk mounted on `/mnt` at boot.
+- **Next, disk step 5 (pick an order):** writing (ATA `WRITE SECTORS`, dirty buffers and
+  write-back in the cache, then ext2 block/inode allocation through the bitmaps, `write`,
+  `creat`/`unlink`/`mkdir`); partitions (MBR/GPT → `hda1` on the reserved minors, mounting a
+  partition); IRQ-driven ATA reads (sleep instead of polling). The root on the disk comes after
+  writing. Phase C (the process model) can also start now: none of these block it.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1648,16 +1768,32 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The crash loop guard counts kills in a row, not kills per time (no clock in user space).
 - The adoption test's grandchild cannot be waited for: a failure is only its printed `FAIL` line,
   not counted by the runner.
-- `stat` has no clock behind it: all three times are the archive's `mtime`; no users
-  (`uid`/`gid` 0), `nlink` always 1. No `lstat` (no symlinks) or `fstatat` (no current
-  directory).
+- `stat` has no clock behind it: all three times are the file's `mtime` (ext2's `i_atime`
+  and `i_ctime` are not read); no users (`uid`/`gid` 0, ext2's `i_uid`/`i_gid` ignored);
+  `nlink` 1 outside ext2. No `lstat` (no symlinks) or `fstatat` (no current directory).
 - `ls` prints file arguments in argument order, mixed with the directories (real `ls` prints
   files first, then each directory). Its options, several paths and errors are checked by
   hand, like the shell.
 - `initrd_readdir` walks the children list from the start for every index, so a whole listing
   is O(n²); a file system could use `offset` as an opaque cursor (ext2: a byte position).
 - `getdents` fills at most a page per call; `d_type` is `DT_DIR`/`DT_REG`/`DT_CHR`/`DT_BLK`
-  (no symlinks, FIFOs or sockets yet). The `dirs` test hard-codes the root's layout (`bin`, `sbin`, `usr`).
+  (no symlinks, FIFOs or sockets yet). The `dirs` test hard-codes the root's layout (`bin`, `dev`, `mnt`, `sbin`, `usr`).
+- ext2 (each item becomes work when something needs it):
+  - read-only: no writing at all (block and inode allocation, bitmaps, free counts, `s_state`,
+    mount counts), so `EROFS` for every write access;
+  - symlinks, device files, FIFOs and sockets on the disk are not shown or found (no VFS node
+    types for them; symlinks with `readlink` and path resolution in phase C);
+  - revision 0 and disks without `FILETYPE` are refused (readdir would have to read each
+    inode for its type); blocks over 4 KiB are refused (they would straddle cache buffers);
+  - `readdir` counts from the first entry on every call (O(n²) per listing; a byte-offset
+    cursor fixes it); `lookup` is a linear scan (the `dir_index` hash trees are ignored);
+  - no unmount: a mounted file system stays allocated forever, also after a failed
+    `vfs_mount`, and the self-test's overlay mounts leak the same way; one disk is mounted,
+    at boot only (no `mount` syscall), always on `/mnt`;
+  - `i_flags` (immutable, append-only, compressed, `EXT2_INDEX_FL`) and extended attributes
+    are ignored; `s_state` (not cleanly unmounted, errors) is not checked;
+  - `fs->lock` covers the whole `iget`, including its disk read: lookups of different new
+    files wait for each other.
 - `sys_exec` (replacing the running image) is not implemented: comes with `fork` in phase C.
 - `process_start` returns -1 instead of an errno on failure.
 - In the counter test the counter shares a cache line with the loop's code, so every increment is
