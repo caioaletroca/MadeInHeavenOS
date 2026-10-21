@@ -331,22 +331,253 @@ int ext2_mount(block_device_t *disk, vfs_node_t **root)
     return 0;
 }
 
-// Directories come in the next step
-static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child)
+/**
+ * @brief Map a logical block number to a physical block number in an ext2 file
+ *
+ * @param fs: The ext2 filesystem structure
+ * @param n: The ext2 node
+ * @param logical: The logical block number
+ * @param out: The resulting physical block number
+ * @return 0 on success, negative error code on failure
+ */
+static int ext2_bmap(ext2_fs_t *fs, const ext2_node_t *n, uint64_t logical, uint32_t *out)
 {
-    (void)dir;
-    (void)name;
-    (void)length;
-    (void)child;
-    return -ENOSYS;
+    if (logical < EXT2_NDIR_BLOCKS)
+    {
+        *out = n->block[logical];
+        return 0;
+    }
+    logical -= EXT2_NDIR_BLOCKS;
+
+    uint64_t per_block = fs->block_size / sizeof(uint32_t); // number of block pointers per indirect block
+    uint64_t span = per_block;                              // number of blocks spanned by a single indirect block
+
+    for (int levels = 1; levels <= 3; levels++, span *= per_block)
+    {
+        if (logical >= span)
+        {
+            logical -= span;
+            continue;
+        }
+
+        // Walk down: at each level, which entry, and what is left below it
+        uint32_t block = n->block[EXT2_NDIR_BLOCKS + levels - 1];
+        for (uint64_t below = span / per_block; block != 0; below /= per_block)
+        {
+            bcache_buf_t *lease;
+            const uint8_t *data;
+            int ret = ext2_block_get(fs, block, &lease, &data);
+            if (ret < 0)
+                return ret;
+
+            block = ((const uint32_t *)data)[logical / below];
+            bcache_put(lease);
+
+            logical %= below;
+            if (below == 1)
+                break; // that was the last level: block is the data block
+        }
+
+        *out = block;
+        return 0;
+    }
+
+    return -EIO; // logical block number out of range
 }
 
-static int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
+/**
+ * @brief Convert an ext2 directory entry type to a VFS node type
+ *
+ * @param file_type: The ext2 directory entry type
+ * @param type: The resulting VFS node type
+ * @return true if the conversion was successful, false otherwise
+ */
+static bool ext2_entry_type(uint8_t file_type, vfs_node_type_t *type)
 {
-    (void)dir;
-    (void)index;
-    (void)entry;
-    return -ENOSYS;
+    switch (file_type)
+    {
+    case EXT2_FT_REG_FILE:
+        *type = VFS_FILE;
+        return true;
+    case EXT2_FT_DIR:
+        *type = VFS_DIRECTORY;
+        return true;
+    default:
+        return false;
+    }
+}
+
+/**
+ * Called for each used entry of a directory, while its block is leased:
+ * `entry` points into the cache buffer and is only valid during the call.
+ *
+ * @return 0 to go on, 1 to stop the walk, or -errno to fail it.
+ */
+typedef int (*ext2_visit_t)(const ext2_dirent_t *entry, void *context);
+
+/**
+ * @brief Walk through the entries of a directory
+ *
+ * @param dir: The ext2 directory node
+ * @param visit: The visit function to call for each directory entry
+ * @param context: The context to pass to the visit function
+ * @return 0 on success, negative error code on failure
+ */
+static int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context)
+{
+    ext2_fs_t *fs = dir->fs;
+    uint64_t blocks = (dir->node.size + fs->block_size - 1) / fs->block_size;
+
+    for (uint64_t i = 0; i < blocks; i++)
+    {
+        uint32_t block;
+        int ret = ext2_bmap(fs, dir, i, &block);
+        if (ret < 0)
+            return ret;
+        if (block == 0)
+            continue;
+
+        bcache_buf_t *lease;
+        const uint8_t *data;
+        ret = ext2_block_get(fs, block, &lease, &data);
+        if (ret < 0)
+            return ret;
+
+        // Records chain through rec_len and end exactly at the end of the block
+        uint32_t rec_len;
+        for (uint32_t offset = 0; offset < fs->block_size; offset += rec_len)
+        {
+            const ext2_dirent_t *e = (const ext2_dirent_t *)(data + offset);
+
+            // Check before trusting the disk: room for a header, then a rec_len that
+            // moves forward (0 would loop forever), stays in the block and holds the name
+            bool corrupt = fs->block_size - offset < sizeof(ext2_dirent_t);
+            if (!corrupt)
+            {
+                rec_len = e->rec_len;
+                corrupt = rec_len < sizeof(ext2_dirent_t) || rec_len % 4 != 0 ||
+                          rec_len > fs->block_size - offset ||
+                          sizeof(ext2_dirent_t) + e->name_len > rec_len;
+            }
+            if (corrupt)
+            {
+                bcache_put(lease);
+                return -EIO;
+            }
+
+            if (e->inode == 0)
+                continue; // a deleted entry (or an empty block's placeholder)
+
+            ret = visit(e, context);
+            if (ret != 0)
+            {
+                bcache_put(lease);
+                return ret;
+            }
+        }
+
+        bcache_put(lease);
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Context for reading directory entries
+ */
+typedef struct ext2_readdir_context
+{
+    uint64_t index;
+    uint64_t count;
+    vfs_dirent_t *entry;
+} ext2_readdir_context_t;
+
+/**
+ * @brief Visit function for reading directory entries
+ *
+ * @param e: The ext2 directory entry
+ * @param context: The readdir context
+ * @return int: 1 if the entry matches the index, 0 otherwise
+ */
+static int ext2_readdir_visit(const ext2_dirent_t *e, void *context)
+{
+    ext2_readdir_context_t *ctx = context;
+
+    vfs_node_type_t type;
+    if (!ext2_entry_type(e->file_type, &type))
+        return 0;
+
+    if (ctx->count++ != ctx->index)
+        return 0;
+
+    ctx->entry->ino = e->inode;
+    ctx->entry->type = type;
+    ctx->entry->length = e->name_len;
+    memcpy(ctx->entry->name, e->name, e->name_len);
+    ctx->entry->name[e->name_len] = '\0';
+
+    return 1;
+}
+
+/**
+ * @brief Context for looking up a directory entry by name
+ */
+typedef struct ext2_lookup_context
+{
+    const char *name;
+    size_t length;
+    uint32_t ino;
+    uint8_t file_type;
+} ext2_lookup_context_t;
+
+/**
+ * @brief Visit function for looking up a directory entry by name
+ *
+ * @param e: The ext2 directory entry
+ * @param context: The lookup context
+ * @return int: 1 if the entry matches the name, 0 otherwise
+ */
+static int ext2_lookup_visit(const ext2_dirent_t *e, void *context)
+{
+    ext2_lookup_context_t *ctx = context;
+
+    if (e->name_len != ctx->length)
+        return 0;
+
+    if (memcmp(e->name, ctx->name, ctx->length) != 0)
+        return 0;
+
+    ctx->ino = e->inode;
+    ctx->file_type = e->file_type;
+
+    return 1;
+}
+
+/**
+ * @brief Look up a directory entry by name
+ *
+ * @param dir: The directory VFS node
+ * @param name: The name of the entry to look up
+ * @param length: The length of the name
+ * @param child: Pointer to store the resulting child VFS node
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child)
+{
+    ext2_lookup_context_t ctx = {
+        .name = name,
+        .length = length,
+    };
+    int ret = ext2_dir_walk(EXT2_NODE(dir), ext2_lookup_visit, &ctx);
+    if (ret < 0)
+        return ret;
+
+    vfs_node_type_t type;
+    if (ret == 0 || !ext2_entry_type(ctx.file_type, &type))
+        return -ENOENT; // not there, or a kind the VFS cannot show yet
+
+    // After the walk, with no lease held: iget takes fs->lock and may read the disk
+    return ext2_iget(EXT2_NODE(dir)->fs, ctx.ino, dir, child);
 }
 
 // File reads come in the next step
@@ -357,6 +588,23 @@ static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t off
     (void)count;
     (void)offset;
     return -ENOSYS;
+}
+
+/**
+ * @brief Read a directory entry by index
+ *
+ * @param dir: The directory VFS node
+ * @param index: The index of the entry to read
+ * @param entry: Pointer to store the resulting directory entry
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
+{
+    ext2_readdir_context_t ctx = {
+        .index = index,
+        .count = 0,
+        .entry = entry};
+    return ext2_dir_walk(EXT2_NODE(dir), ext2_readdir_visit, &ctx);
 }
 
 /**
