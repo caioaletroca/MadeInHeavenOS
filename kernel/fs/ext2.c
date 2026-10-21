@@ -580,14 +580,57 @@ static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_nod
     return ext2_iget(EXT2_NODE(dir)->fs, ctx.ino, dir, child);
 }
 
-// File reads come in the next step
+/**
+ * @brief Read data from an ext2 file
+ *
+ * @param file: The VFS node representing the file
+ * @param buffer: The buffer to read data into
+ * @param count: The number of bytes to read
+ * @param offset: The offset within the file to start reading from
+ * @return long: The number of bytes read, or a negative error code on failure
+ */
 static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset)
 {
-    (void)file;
-    (void)buffer;
-    (void)count;
-    (void)offset;
-    return -ENOSYS;
+    ext2_node_t *n = EXT2_NODE(file);
+    ext2_fs_t *fs = n->fs;
+
+    if (offset >= file->size)
+        return 0;
+
+    count = MIN(count, file->size - offset);
+
+    uint8_t *out = buffer;
+    size_t done = 0;
+    while (done < count)
+    {
+        uint64_t position = offset + done;
+        uint64_t logical = position / fs->block_size;
+        size_t within = position % fs->block_size;
+        size_t chunk = MIN(fs->block_size - within, count - done);
+
+        uint32_t block;
+        int ret = ext2_bmap(fs, n, logical, &block);
+        if (ret < 0)
+            return ret;
+
+        if (block == 0)
+            memset(out + done, 0, chunk);
+        else
+        {
+            bcache_buf_t *lease;
+            const uint8_t *data;
+            ret = ext2_block_get(fs, block, &lease, &data);
+            if (ret < 0)
+                return ret;
+
+            memcpy(out + done, data + within, chunk);
+            bcache_put(lease);
+        }
+
+        done += chunk;
+    }
+
+    return (long)done;
 }
 
 /**
