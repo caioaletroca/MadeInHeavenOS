@@ -36,6 +36,14 @@ typedef struct block_device
 int block_register(block_device_t *dev);
 
 /**
+ * @brief Get the block device at the specified index
+ *
+ * @param index: The index of the block device
+ * @return The block device at the specified index, or NULL if out of range
+ */
+block_device_t *block_at(size_t index);
+
+/**
  * @brief Find a block device by name.
  *
  * @param name The name of the block device to find.

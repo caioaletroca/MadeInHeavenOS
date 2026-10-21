@@ -671,3 +671,33 @@ static void ext2_release(vfs_node_t *node)
     if (parent != NULL)
         vfs_node_put(parent);
 }
+
+void ext2_init(void)
+{
+    for (size_t i = 0; block_at(i) != NULL; i++)
+    {
+        block_device_t *disk = block_at(i);
+
+        vfs_node_t *root;
+        int ret = ext2_mount(disk, &root);
+        if (ret == -EINVAL) // not ext2, or not one we can read: try the next disk
+            continue;
+
+        if (ret < 0)
+        {
+            kprintf("ext2: %s: cannot mount: %d\n", disk->name, ret);
+            continue;
+        }
+
+        ret = vfs_mount("/mnt", root);
+        vfs_node_put(root);
+
+        if (ret < 0)
+            kprintf("ext2: %s: cannot mount on /mnt: %d\n", disk->name, ret);
+        else
+            kprintf("ext2: %s mounted on /mnt\n", disk->name);
+        return; // one disk on /mnt, mounted or not
+    }
+
+    kprintf("ext2: no disk to mount\n");
+}

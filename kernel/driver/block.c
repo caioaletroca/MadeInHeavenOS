@@ -27,6 +27,11 @@ int block_register(block_device_t *dev)
     return -ENOMEM; // No available slot
 }
 
+block_device_t *block_at(size_t index)
+{
+    return index < BLOCK_DEVICES_MAX ? devices[index] : NULL;
+}
+
 block_device_t *block_find(const char *name)
 {
     for (int i = 0; i < BLOCK_DEVICES_MAX; i++)

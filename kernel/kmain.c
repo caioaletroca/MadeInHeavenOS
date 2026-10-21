@@ -16,6 +16,7 @@
 #include <sched/scheduler.h>
 #include <fs/initrd.h>
 #include <fs/devfs.h>
+#include <fs/ext2.h>
 #include <boot_info.h>
 #include <init.h>
 
@@ -64,6 +65,7 @@ void kmain(uintptr_t boot_handoff)
     block_devfs_init();
 
     bcache_init();
+    ext2_init();
 
     timer_init(TIMER_FREQUENCY_HZ);
 
