@@ -74,6 +74,7 @@ void vfs_node_init(vfs_node_t *node, vfs_node_type_t type, const vfs_node_ops_t 
     node->device_ops = NULL;
     node->parent = NULL;
     node->refs = 1;
+    node->nlink = 1;
     spinlock_init(&node->lock);
 }
 
@@ -83,6 +84,17 @@ void vfs_node_get(vfs_node_t *node)
     {
         node->refs++;
     }
+}
+
+bool vfs_node_tryget(vfs_node_t *node)
+{
+    guard(spinlock, &node->lock);
+
+    if (node->refs == 0)
+        return false;
+
+    node->refs++;
+    return true;
 }
 
 void vfs_node_put(vfs_node_t *node)
@@ -234,6 +246,7 @@ void vfs_stat(vfs_node_t *node, struct mihos_stat *stat)
     stat->st_blocks = ALIGN_UP(size, 512) / 512;
     stat->st_dev = node->dev;
     stat->st_rdev = node->rdev;
+    stat->st_nlink = node->nlink;
     stat->st_atim.tv_sec = node->mtime;
     stat->st_mtim.tv_sec = node->mtime;
     stat->st_ctim.tv_sec = node->mtime;

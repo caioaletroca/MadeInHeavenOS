@@ -27,6 +27,29 @@ typedef struct ext2_fs
     hlist_head_t nodes[HASH_BUCKETS(EXT2_NODE_HASH_BITS)];
 } ext2_fs_t;
 
+typedef struct ext2_node
+{
+    vfs_node_t node; // what the VFS sees (the "base class")
+    ext2_fs_t *fs;
+    uint32_t ino;
+    uint32_t block[EXT2_N_BLOCKS]; // copy of the inode's i_block
+    hlist_node_t hash;             // in fs->nodes, under fs->lock
+} ext2_node_t;
+
+#define EXT2_NODE(n) list_container(n, ext2_node_t, node)
+
+static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
+static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
+static int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
+static void ext2_release(vfs_node_t *node);
+
+static const vfs_node_ops_t ext2_ops = {
+    .lookup = ext2_lookup,
+    .read = ext2_read,
+    .readdir = ext2_readdir,
+    .release = ext2_release,
+};
+
 /**
  * @brief Get a block from the ext2 filesystem
  *
@@ -175,6 +198,97 @@ static void ext2_fs_free(ext2_fs_t *fs)
     kfree(fs);
 }
 
+/**
+ * @brief Get an inode from the ext2 filesystem
+ *
+ * @param fs: The ext2 filesystem structure
+ * @param ino: The inode number to get
+ * @param parent: The parent VFS node
+ * @param out: Pointer to store the resulting VFS node
+ * @return 0 on success, negative error code on failure
+ */
+static int ext2_iget(ext2_fs_t *fs, uint32_t ino, vfs_node_t *parent, vfs_node_t **out)
+{
+    if (ino == 0 || ino > fs->inodes_count)
+        return -EIO;
+
+    guard(mutex, &fs->lock);
+
+    hlist_head_t *bucket = &fs->nodes[hash_64(ino, EXT2_NODE_HASH_BITS)];
+    hlist_node_t *pos;
+    hlist_for_each(pos, bucket)
+    {
+        ext2_node_t *cached = hlist_container(pos, ext2_node_t, hash);
+        if (cached->ino != ino)
+            continue;
+
+        if (vfs_node_tryget(&cached->node))
+        {
+            *out = &cached->node;
+            return 0;
+        }
+
+        // At 0 references: its release is on the way; take it out, read a fresh one
+        hlist_remove(&cached->hash);
+        break;
+    }
+
+    // Where the inode is: its group's part of the inode table, then the slot in it
+    uint32_t group = (ino - 1) / fs->inodes_per_group;
+    uint64_t offset = (uint64_t)((ino - 1) % fs->inodes_per_group) * fs->inode_size;
+    uint32_t block = fs->group_table[group].bg_inode_table + (uint32_t)(offset / fs->block_size);
+
+    bcache_buf_t *lease;
+    const uint8_t *data;
+    int ret = ext2_block_get(fs, block, &lease, &data);
+    if (ret < 0)
+        return ret;
+
+    ext2_inode_t inode;
+    memcpy(&inode, data + offset % fs->block_size, sizeof(inode));
+    bcache_put(lease);
+
+    vfs_node_type_t type;
+    switch (inode.i_mode & EXT2_S_IFMT)
+    {
+    case EXT2_S_IFREG:
+        type = VFS_FILE;
+        break;
+    case EXT2_S_IFDIR:
+        type = VFS_DIRECTORY;
+        break;
+    default:
+        return -ENOENT;
+    }
+
+    ext2_node_t *n = kzalloc(sizeof(*n));
+    if (n == NULL)
+        return -ENOMEM;
+
+    vfs_node_init(&n->node, type, &ext2_ops);
+    n->node.ino = ino;
+    n->node.dev = fs->dev;
+    n->node.mode = inode.i_mode & 07777;
+    n->node.mtime = inode.i_mtime;
+    n->node.nlink = inode.i_links_count;
+    n->node.size = inode.i_size;
+    if (type == VFS_FILE)
+        n->node.size |= (uint64_t)inode.i_size_high << 32; // large_file: sizes past 4 GiB
+
+    // ".." of the root is the root itself (the VFS steps out of mounts through covers)
+    n->node.parent = parent != NULL ? parent : &n->node;
+    if (parent != NULL)
+        vfs_node_get(parent); // a child keeps its directory alive, so ".." stays valid
+
+    n->fs = fs;
+    n->ino = ino;
+    memcpy(n->block, inode.i_block, sizeof(n->block));
+    hlist_insert(bucket, &n->hash);
+
+    *out = &n->node;
+    return 0;
+}
+
 int ext2_mount(block_device_t *disk, vfs_node_t **root)
 {
     ext2_super_t superblock;
@@ -200,8 +314,69 @@ int ext2_mount(block_device_t *disk, vfs_node_t **root)
     mutex_init(&fs->lock);
     fs->dev = vfs_dev_alloc();
 
-    // The root directory, inode 2, comes with the node cache (ext2_iget)
-    (void)root;
-    ext2_fs_free(fs);
+    vfs_node_t *node;
+    ret = ext2_iget(fs, EXT2_ROOT_INO, NULL, &node);
+    if (ret == 0 && node->type != VFS_DIRECTORY)
+    {
+        vfs_node_put(node);
+        ret = -EIO;
+    }
+    if (ret < 0)
+    {
+        ext2_fs_free(fs);
+        return ret;
+    }
+
+    *root = node;
+    return 0;
+}
+
+// Directories come in the next step
+static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child)
+{
+    (void)dir;
+    (void)name;
+    (void)length;
+    (void)child;
     return -ENOSYS;
+}
+
+static int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
+{
+    (void)dir;
+    (void)index;
+    (void)entry;
+    return -ENOSYS;
+}
+
+// File reads come in the next step
+static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset)
+{
+    (void)file;
+    (void)buffer;
+    (void)count;
+    (void)offset;
+    return -ENOSYS;
+}
+
+/**
+ * @brief Release an ext2 node
+ *
+ * @param node: The VFS node to release
+ */
+static void ext2_release(vfs_node_t *node)
+{
+    ext2_node_t *n = EXT2_NODE(node);
+
+    scoped_guard(mutex, &n->fs->lock)
+    {
+        if (hlist_linked(&n->hash))
+            hlist_remove(&n->hash);
+    }
+
+    vfs_node_t *parent = node->parent != node ? node->parent : NULL;
+    kfree(n);
+
+    if (parent != NULL)
+        vfs_node_put(parent);
 }

@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <sched/spinlock.h>
 
 #define VFS_NAME_MAX 255
@@ -43,6 +44,7 @@ typedef struct vfs_node
     const struct vfs_node_ops *ops;
     struct vfs_node *parent;
     unsigned int refs;
+    uint32_t nlink; // names pointing at the file (1 where the file system has no links)
     spinlock_t lock;
 } vfs_node_t;
 
@@ -90,6 +92,17 @@ void vfs_node_init(vfs_node_t *node, vfs_node_type_t type, const vfs_node_ops_t 
  * @param node The node to increment the reference count for.
  */
 void vfs_node_get(vfs_node_t *node);
+
+/**
+ * @brief Takes a reference only if the node still has one (a cache's lookup).
+ *
+ * At 0 references the node's release is already on its way: it must not come
+ * back. Linux's igrab / atomic_inc_not_zero.
+ *
+ * @param node The node to attempt to take a reference on.
+ * @return true if a reference was taken.
+ */
+bool vfs_node_tryget(vfs_node_t *node);
 
 /**
  * @brief Decrement the reference count of a VFS node.
