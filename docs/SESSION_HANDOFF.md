@@ -46,8 +46,8 @@ Working x86-64 PC kernel with:
   runtime (global constructors and destructors, `operator new`)
 - **Disks:** a block layer (`block_read`/`block_write` with range checks, `block_flush`) and an
   ATA PIO driver (polling, 28-bit LBA, reads, writes and cache flushes) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators;
-  each disk as a block device in `/dev` (`/dev/hda`, `S_IFBLK`, read-only, seekable, read at
-  byte offsets through `block_read_bytes`); a **block cache** (`block_cache_get`/`block_cache_put`: 64
+  each disk as a block device in `/dev` (`/dev/hda`, `S_IFBLK`, seekable, read and written at
+  byte offsets through `block_read_bytes`/`block_write_bytes`); a **block cache** (`block_cache_get`/`block_cache_put`: 64
   leased 4 KiB buffers, hash lookup, LRU eviction, write-back of dirty buffers on eviction and
   `block_cache_sync`, run at halt) under every disk read
 - **ext2, read-only:** the first ext2 disk mounted on `/mnt` at boot; directories, file reads
@@ -70,6 +70,13 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+5c2e489 test: cover writing /dev/<disk>
+5ce0df4 fix(sys): count the bytes write returned
+7a8b286 feat(driver): write block devices through /dev
+b7579b6 feat(fs): write files through the VFS
+376354c feat(driver): add block_write_bytes
+cce9373 feat(libc): add ENOSPC
+ac37841 docs(architecture): document the cache's write-back in handoff
 35bde4a test(block): cover dirty buffers, write-back and sync
 299dc4c feat(sys): sync the block cache at halt
 a8c63af feat(driver): add block_cache_sync
@@ -580,13 +587,17 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   the spinlock, because a disk read will sleep (Linux's `f_pos_lock`).
 - **VFS files** (`fs/vfs.c`): `vfs_open(path, flags, &file)`: unknown flags → `-EINVAL`, then
   `vfs_lookup` (so a missing path is `-ENOENT` before any access check), `O_DIRECTORY` on a
-  non-directory → `-ENOTDIR`. **A device** (`VFS_CHARDEV`): `file_create(node->device_ops,
-  access)`, the access mode a value in `flags & O_ACCMODE` (`O_RDONLY` 0 → `FILE_READ`,
-  `O_WRONLY` → `FILE_WRITE`, `O_RDWR` → both, 3 → `-EINVAL`; `O_RDONLY` is 0, so it cannot be
-  tested as a bit). **Anything else** (files, directories, disks): write access → `-EROFS`
-  (nothing writable yet), then `file_create(&vfs_file_ops, FILE_READ)`. Either way the lookup's
-  reference moves into `file->node`. `vfs_file_ops`: `read` = `vfs_read` at `offset`, advancing
-  it; no `write`; no `release` (`file_put` puts the node). Directories open (listed with
+  non-directory → `-ENOTDIR`, then the access for every node, a value in `flags & O_ACCMODE`
+  (`O_RDONLY` 0 → `FILE_READ`, `O_WRONLY` → `FILE_WRITE`, `O_RDWR` → both, 3 → `-EINVAL`;
+  `O_RDONLY` is 0, so it cannot be tested as a bit). **A device** (`VFS_CHARDEV`):
+  `file_create(node->device_ops, access)`. **Anything else** (files, directories, disks): write
+  access to a directory → `-EISDIR`, to a node without a `write` op → `-EROFS` (the initrd,
+  ext2 until W4), then `file_create(&vfs_file_ops, access)`: exactly the access asked for, so
+  an `O_WRONLY` file reads `-EBADF`. Either way the lookup's reference moves into
+  `file->node`. `vfs_file_ops`: `read` = `vfs_read` at `offset`, `write` = `vfs_write` at
+  `offset` (`vfs_file_write`, the same `position_lock`), each advancing it by what it moved; no
+  `release` (`file_put` puts the node). `vfs_write`: a directory → `-EISDIR`, no `write` op →
+  `-EROFS`; the op returns the count written (fewer at the end of a disk) or `-errno`. Directories open (listed with
   `getdents`); reading one gives `-EISDIR`. `vfs_read`: a directory → `-EISDIR`, a node without
   a `read` op (character devices, read through their `file_ops`) → `-EINVAL`. A block device is
   read like a file: `lseek` works on it, since only `VFS_CHARDEV` is refused.
@@ -896,7 +907,11 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
     ext2 magic at byte 1080 and the label at 1144; 1 KiB at 512 equals 300 bytes and then the
     rest read on from where the first read stopped (offset 1536 after it); 100 bytes at 10 before
     the end give 10 (canary kept), then 0, and 0 after seeking past the end. `read` moves at most
-    256 bytes per call, so the test loops (`read_full`). `EROFS` (`O_RDWR`, `O_WRONLY`), `ENOTDIR`
+    256 bytes per call, so the test loops (`read_full`). Writes (sectors 7000…, free; all
+    restored): one `write` of 5000 bytes from 100 bytes into sector 7000 across a cache block,
+    the position right after it, read back through the same and a second fd; an `O_WRONLY` fd
+    writes, `read` on it `EBADF`; 16 bytes at 10 before the end write 10, at and past the end
+    `ENOSPC`, 0 bytes 0. `EINVAL` (mode 3), `EISDIR` (`/dev` for writing), `ENOTDIR`
     (`O_DIRECTORY`, `getdents`), `EBADF` (write), `ENOTTY` (`TIOCGWINSZ`), `isatty` 0; fd 3 free at
     the end.
   - `tty`: `isatty` 0 + `ENOTTY` on `/dev/null` and `/dev/zero`, 1 on `/dev/console`; and
@@ -970,6 +985,11 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   `block_cache_get`, `memcpy` of the slice, `block_cache_put` right away (copy-out: the caller has its
   own bytes). A `block_cache_get` error is returned as is, never a short count (it would hide the
   error). Returns the bytes read.
+- **Byte writes** (`block_write_bytes(dev, buffer, count, offset)`): `count` 0 → 0 (also at
+  the end), `offset` at or past the end → `-ENOSPC`, `count` cut to `size - offset` (a short
+  write); per 4 KiB block `block_cache_get` (which still fills it from the disk, even when the
+  slice is the whole block), `begin_write`, `memcpy` in, `end_write`, `put`. The bytes reach the
+  disk at eviction or the next sync. Errors as `block_read_bytes`: returned as is.
 - **Block cache** (`include/driver/block_cache.h`, `driver/block_cache.c`): `BLOCK_CACHE_BUFFERS` 64 buffers of
   `BLOCK_CACHE_BLOCK_SIZE` = `PAGE_SIZE` (8 sectors; 1/2/4 KiB ext2 blocks are slices of one),
   256 KiB, allocated by `block_cache_init` (`kmalloc`, page aligned; failure panics).
@@ -1016,9 +1036,9 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   holds what both registrations share (name checks, `kzalloc`'d `devfs_node_t`, inode number,
   list insert; boot time only, so inserting before the caller fills in the rest is safe);
   `devfs_register` adds `device_ops`, `devfs_register_block` sets `block` (in `devfs_node_t`)
-  and `node.size = sector_count * 512`. The node's ops have only `read` (`devfs_block_read` →
-  `block_read_bytes`). Opened like a file (`vfs_file_ops`, read-only, `-EROFS` for write
-  access), so `lseek` and `SEEK_END` work; `ioctl` → `ENOTTY`; `stat` → `S_IFBLK | 0660`,
+  and `node.size = sector_count * 512`. The node's ops are `read` (`devfs_block_read` →
+  `block_read_bytes`) and `write` (`devfs_block_write` → `block_write_bytes`). Opened like a
+  file (`vfs_file_ops`, with the access asked for), so `lseek` and `SEEK_END` work; `ioctl` → `ENOTTY`; `stat` → `S_IFBLK | 0660`,
   size 0, `st_rdev`. Numbers: Linux's IDE ones, major 3 (`IDE0_MAJOR`, primary) or 22
   (`IDE1_MAJOR`, secondary), minor `slave * 64` (64 minors per drive for its partitions).
 - **ATA PIO** (`platform/pc/ata.c`, PC ports, so `platform/`; `ata.h` declares only
@@ -1080,7 +1100,8 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   while a cached one still hits, every `refs` 0 afterwards; block 1024 and `UINT64_MAX`
   `-EINVAL`, the last block fine. Then `/dev/<disk>`: `VFS_BLOCKDEV` with the driver's
   `rdev` (an IDE major) and the disk's size; `vfs_stat` `S_IFBLK | 0660`, size and blocks 0;
-  opens with `FILE_READ` and the same node, `-EROFS` for `O_RDWR`/`O_WRONLY`; seven `vfs_read`s
+  `O_RDONLY`/`O_WRONLY`/`O_RDWR` open with the same node and exactly `FILE_READ`/`FILE_WRITE`/both,
+  mode 3 `-EINVAL`; seven `vfs_read`s
   equal a 300-sector `block_read` with a canary after each (a whole sector, 2 bytes inside one,
   across sectors 1–2, head + 2 sectors + tail, 270 sectors from 512, everything from byte 3,
   around the 256-sector command boundary); the magic at byte 1080; 100 bytes at 10 before the
@@ -1674,10 +1695,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **W2 (done):** `fill_lock` → `data_lock`, `dirty`, `block_cache_begin_write`/`end_write`,
     write-back on eviction (pin under the old key, write without the spinlock, unpin, claim
     again), `block_cache_sync` at `system_halt`; the block self-test's write-back section.
-  - **W3 (next):**
-    `/dev/hda` writable: `block_write_bytes`, a VFS `write` node op,
-    `vfs_file_ops.write`, `-EROFS` only for nodes without `write`.
-  - **W4:** ext2 overwrites file data inside the size (no allocation).
+  - **W3 (done):** `ENOSPC`, `block_write_bytes`, the `write` node op, `vfs_write`,
+    `vfs_file_write`, the access mode for every node in `vfs_open` (`-EISDIR`, `-EROFS` only
+    without a `write` op), devfs block nodes writable, `sys_write` counting what was written;
+    the block self-test's node writes and the `disks` test's writes. Decided: a disk's end is
+    Linux's (cut short across it, `ENOSPC` at it, 0 bytes always 0).
+  - **W4 (next):** ext2 overwrites file data inside the size (no allocation).
   - **W5:** allocation: bitmaps (bit `i` = block `i + s_first_data_block`, inode `i + 1`), free
     counts, inode / group descriptor / superblock write-back, appending with new indirect
     blocks.
@@ -1800,7 +1823,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   a write-back writes all 8 sectors even if one byte changed; sync walks all 64 buffers and
   flushes every disk, written or not.
 - The minors reserved for partitions (`hda1` = 3:1) are unused: no partition table is parsed.
-  `block_read_bytes` returns an error even after reading part of the range (nothing partial).
+  `block_read_bytes` and `block_write_bytes` return an error even after moving part of the
+  range (POSIX wants the partial count; a written part stays written). A write covering a
+  whole cache block still reads it from the disk first (no "get without fill").
 - devfs: devices register at boot only (no lock, no unregister, nodes never freed); one flat
   directory; `devfs_readdir` walks the list from the start per index (O(n²) listing).
   Character devices refuse `lseek` (`ESPIPE`) where Linux lets `/dev/null` succeed.
@@ -1811,8 +1836,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - Mounts are two node pointers, set at boot: no `umount`, no lock (a mount after user space
   starts would race lookups), no mount over `/`. No current directory (absolute paths only).
 - `read` moves at most 256 bytes per syscall (`SYSCALL_CHUNK_SIZE`): correct (a short read) but
-  slow for files; no `fread`/`fopen` in libc yet. `sys_write` counts a whole chunk as written even
-  if the backend reported fewer bytes.
+  slow for files; no `fread`/`fopen` in libc yet. `sys_write` copies 256-byte chunks too (one
+  backend call each) and stops at the first short one.
 - `stdio.h` gets `O_*` from `<mihos/fcntl.h>` along with `SEEK_*` (POSIX keeps `O_*` out of
   `stdio.h`); split `SEEK_*` into their own uapi header if it matters.
 - A program removed from `user/` stays in the sysroot, and so in the initrd, until `make clean`;
