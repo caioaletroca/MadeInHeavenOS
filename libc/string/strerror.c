@@ -23,6 +23,7 @@ static const char *const messages[] = {
     [EINVAL] = "Invalid argument",
     [EMFILE] = "Too many open files",
     [ENOTTY] = "Not a terminal",
+    [ENOSPC] = "No space left on device",
     [ESPIPE] = "Illegal seek",
     [EROFS] = "Read-only file system",
     [ENAMETOOLONG] = "File name too long",
