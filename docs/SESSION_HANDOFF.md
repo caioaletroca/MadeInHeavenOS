@@ -48,7 +48,8 @@ Working x86-64 PC kernel with:
   ATA PIO driver (polling, 28-bit LBA, reads, writes and cache flushes) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators;
   each disk as a block device in `/dev` (`/dev/hda`, `S_IFBLK`, read-only, seekable, read at
   byte offsets through `block_read_bytes`); a **block cache** (`block_cache_get`/`block_cache_put`: 64
-  leased 4 KiB buffers, hash lookup, LRU eviction) under every disk read
+  leased 4 KiB buffers, hash lookup, LRU eviction, write-back of dirty buffers on eviction and
+  `block_cache_sync`, run at halt) under every disk read
 - **ext2, read-only:** the first ext2 disk mounted on `/mnt` at boot; directories, file reads
   through direct and indirect blocks (holes read as zeros), real modes, times and link counts;
   one cached node per inode, freed after the last reference
@@ -69,6 +70,12 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+35bde4a test(block): cover dirty buffers, write-back and sync
+299dc4c feat(sys): sync the block cache at halt
+a8c63af feat(driver): add block_cache_sync
+63996e2 feat(driver): write dirty cache buffers back on eviction
+7862149 refactor(driver): rename the cache's fill_lock to data_lock
+c378688 docs(architecture): document ATA writes and the writing plan in handoff
 a6f8068 test(block): cover writes and flushes
 f5dd637 feat(platform): write and flush ATA disks
 568f6e1 refactor(platform): share the ATA command setup
@@ -303,7 +310,7 @@ from the same directory.
 4. **Intrusive links end in `_link`** (`child_link`, `device_link`, `lru_link`, `hash_link`,
    `cache_link`); list heads and tables are plural nouns (`children`, `nodes`). The embedded
    `vfs_node_t` in a file system's node struct is `base` (`n->base.size`).
-5. **Lock fields name what they protect** (`position_lock`, `fill_lock`; a plain `lock` guards
+5. **Lock fields name what they protect** (`position_lock`, `data_lock`; a plain `lock` guards
    the struct it is in).
 
 ### Arch contract (what a new arch must provide)
@@ -967,7 +974,7 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   `BLOCK_CACHE_BLOCK_SIZE` = `PAGE_SIZE` (8 sectors; 1/2/4 KiB ext2 blocks are slices of one),
   256 KiB, allocated by `block_cache_init` (`kmalloc`, page aligned; failure panics).
   `block_cache_buf_t` = key `dev` + `index`, `refs`, `lru_link` (`list_t`), `hash_link` (`hlist_node_t`),
-  `fill_lock` (mutex), `valid`, `data`. **Leases:** `block_cache_get(dev, index, &buf)` → a referenced,
+  `data_lock` (mutex), `valid`, `dirty`, `data`. **Leases:** `block_cache_get(dev, index, &buf)` → a referenced,
   filled buffer, or `-EINVAL` (index past `ceil(sector_count / 8)`), `-ENOBUFS` (every buffer
   leased), the disk's error; `block_cache_put(buf)` (a put at 0 references panics). A buffer with
   references is never reused, so a holder may read `data` until its put. **Claim**
@@ -975,15 +982,33 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   `block_cache_hash` (16 buckets, `hash_64((uintptr_t)dev ^ index, 4)`, keys compared in the
   bucket walk) → `refs++`, a hit; else walk the LRU from the back (least recent) for the first
   `refs == 0` buffer, `hlist_remove` it from its old bucket, set the key, `valid = false` (safe
-  without `fill_lock`: at 0 references nobody is inside it), `refs = 1`, add it to the new bucket, a
+  without `data_lock`: at 0 references nobody is inside it), `refs = 1`, add it to the new bucket, a
   miss; none free → `-ENOBUFS` (no sleeping: a leak shows as an error, not a hang). **Fill**
-  (after the lock, under `buf->fill`): if `!valid`, read `min(8, sector_count - index * 8)`
+  (after the lock, under `data_lock`): if `!valid`, read `block_cache_sectors` (`min(8, sector_count - index * 8)`)
   sectors (the disk's partial last block zero-filled past the end), `valid = ret == 0`; a
   failed read puts the buffer and returns the error (the next get retries). A second reader of
-  the same block hits, waits on `fill_lock`, finds it valid: one disk read for both. **Put:** under
+  the same block hits, waits on `data_lock`, finds it valid: one disk read for both. **Put:** under
   the lock, `refs--`; at 0 `list_move_after(&block_cache_lru, ...)` (the front: most recent).
   `block_cache_stats(&hits, &misses)`: claims that found the key and claims that took a buffer (a
-  retry after a failed read counts as a hit). Nothing is ever dirty yet (no writes).
+  retry after a failed read counts as a hit).
+- **Writes and write-back:** `data_lock` guards `data`, `valid` and `dirty`; it is held for a
+  fill, a write-back, and by a writer between `block_cache_begin_write(buf)` (a held buffer) and
+  `block_cache_end_write(buf)` (sets `dirty`). Only a holder sets `dirty`, only a write-back
+  clears it, both under `data_lock`, so at 0 references it cannot change and claim reads it
+  under the spinlock. One `data_lock` at a time (two could deadlock). Readers take no lock:
+  consistency of concurrent reads and writes is the file system's job. **Eviction:** when the
+  oldest free buffer is dirty, claim sets `refs = 1` under its old key (a get of that block
+  still hits it and waits: the only correct copy is never lost) and returns
+  `BLOCK_CACHE_WRITE_BACK`; `block_cache_get` runs `block_cache_write_back` (under `data_lock`:
+  dirty again checked, all of `block_cache_sectors` written, `dirty = false` on success),
+  `block_cache_unpin` (`refs--` without moving it: it stays at the back, the first the retry
+  takes), and claims again from scratch (its own block may have been cached meanwhile, or the
+  victim dirtied again); a failed write-back fails the get, the buffer stays dirty.
+  **`block_cache_sync()`:** every buffer with a `dev` is pinned (`refs++`, so claim skips it;
+  held ones too, since only the write-back reads `dirty` reliably), written back, unpinned;
+  then `block_flush` on every registered disk; goes on after errors, returns the first.
+  `system_halt` calls it before `irq_disable` (it takes mutexes) and logs a failure; `panic`
+  does not sync.
 - **Block devices in `/dev`:** the disks are found in `platform_init`, before `kmalloc` and
   devfs exist, so `block_devfs_init()` (in `kmain`, after `console_init`: `/dev` lists `null`,
   `zero`, `console`, then the disks) walks the table and calls `devfs_register_block(name,
@@ -1061,7 +1086,13 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   around the 256-sector command boundary); the magic at byte 1080; 100 bytes at 10 before the
   end give the last 10 (canary kept); at the end, past it, at `UINT64_MAX` and for 0 bytes 0;
   64 KiB at block 200 read twice: 16 misses, then 16 hits and none; the node's references
-  unchanged.
+  unchanged. Write-back (`block_test_write_back`, after the cache section, on cache blocks 875
+  and 876 = the write section's sectors): a written buffer is `dirty` and the disk keeps the old
+  bytes until `block_cache_sync`, then holds the new ones; a dirty block evicted by 64 new
+  blocks (920…983) is on the disk, and its next get misses and reads it back; a held dirty
+  buffer is written by a sync and keeps `refs` 1; after a sync 64 uncached blocks (300…363) are
+  leased at once (a reference leaked by the sync would give `-ENOBUFS`); both blocks restored
+  through the cache.
 - **Hash table self-test** (`selftest/hashtable.c`, right after the guard one): one bucket by
   hand (every `next`/`pprev` after inserts at the front and removes of the middle, first and only
   node; `hlist_linked`; an emptied bucket takes a node again); 100 keys in 4 buckets found
@@ -1640,10 +1671,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   `-snapshot` as the referee for W5/W6; Bochs's disk `mode=volatile` (like QEMU's `-snapshot`).
   - **W1 (done):** `block_write`/`block_flush`, `ata_command`, ATA `WRITE SECTORS` and `CACHE
     FLUSH`; the block self-test's write section.
-  - **W2 (next):** `dirty` in the cache, `block_cache_mark_dirty`, write-back on eviction (claim
-    the dirty buffer, drop the spinlock, write under `fill_lock`, retry), `block_cache_sync`
-    (every dirty buffer, then `block_flush`) at `system_halt`.
-  - **W3:** `/dev/hda` writable: `block_write_bytes`, a VFS `write` node op,
+  - **W2 (done):** `fill_lock` → `data_lock`, `dirty`, `block_cache_begin_write`/`end_write`,
+    write-back on eviction (pin under the old key, write without the spinlock, unpin, claim
+    again), `block_cache_sync` at `system_halt`; the block self-test's write-back section.
+  - **W3 (next):**
+    `/dev/hda` writable: `block_write_bytes`, a VFS `write` node op,
     `vfs_file_ops.write`, `-EROFS` only for nodes without `write`.
   - **W4:** ext2 overwrites file data inside the size (no allocation).
   - **W5:** allocation: bitmaps (bit `i` = block `i + s_first_data_block`, inode `i + 1`), free
@@ -1760,8 +1792,13 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - Block cache: a fixed 64 buffers (no growing or shrinking under memory pressure); `-ENOBUFS`
   when all are leased (a caller holding many blocks at once, e.g. a deep indirect walk, must put
   as it goes); the LRU walk is linear and skips leased buffers; no read-ahead; `refs` and the
-  counters under one global spinlock (fine on one CPU). Read-only: no dirty flag or write-back
-  yet. A failed read is retried by the next get but counted as a hit.
+  counters under one global spinlock (fine on one CPU). A failed read is retried by the next
+  get but counted as a hit. Write-back: no flusher thread (dirty data reaches the disk only on
+  eviction, a sync or the halt: a crash loses it all, and no `sync`/`fsync` syscall yet); a
+  dirty buffer whose write-back keeps failing stays at the back of the LRU and fails every miss
+  that reaches it (no skipping to the next free buffer, no error reporting beyond the get);
+  a write-back writes all 8 sectors even if one byte changed; sync walks all 64 buffers and
+  flushes every disk, written or not.
 - The minors reserved for partitions (`hda1` = 3:1) are unused: no partition table is parsed.
   `block_read_bytes` returns an error even after reading part of the range (nothing partial).
 - devfs: devices register at boot only (no lock, no unregister, nodes never freed); one flat
