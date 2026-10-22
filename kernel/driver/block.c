@@ -55,6 +55,28 @@ int block_read(block_device_t *dev, uint64_t sector, uint32_t count, void *buffe
     return dev->ops->read(dev, sector, count, buffer);
 }
 
+int block_write(block_device_t *dev, uint64_t sector, uint32_t count, const void *buffer)
+{
+    if (count == 0)
+        return 0; // Nothing to write if count is 0
+
+    if (sector >= dev->sector_count || count > dev->sector_count - sector)
+        return -EINVAL; // Invalid sector or count
+
+    if (dev->ops->write == NULL)
+        return -EROFS; // Driver cannot write
+
+    return dev->ops->write(dev, sector, count, buffer);
+}
+
+int block_flush(block_device_t *dev)
+{
+    if (dev->ops->flush == NULL)
+        return 0; // No flush needed
+
+    return dev->ops->flush(dev);
+}
+
 long block_read_bytes(block_device_t *dev, void *buffer, size_t count, uint64_t offset)
 {
     uint64_t size = dev->sector_count * BLOCK_SECTOR_SIZE;

@@ -13,6 +13,8 @@ struct block_device;
 typedef struct block_ops
 {
     int (*read)(struct block_device *dev, uint64_t sector, uint32_t count, void *buffer);
+    int (*write)(struct block_device *dev, uint64_t sector, uint32_t count, const void *buffer);
+    int (*flush)(struct block_device *dev);
 } block_ops_t;
 
 /**
@@ -65,6 +67,28 @@ block_device_t *block_find(const char *name);
  * @return 0 on success, or a negative error code on failure.
  */
 int block_read(block_device_t *dev, uint64_t sector, uint32_t count, void *buffer);
+
+/**
+ * @brief Write sectors to a block device, straight to the driver.
+ *
+ * Only the block cache calls this (and the block self-test): a write around the
+ * cache would leave a cached copy of those sectors stale.
+ *
+ * @param dev The block device to write to.
+ * @param sector The starting sector to write to.
+ * @param count The number of sectors to write.
+ * @param buffer The data, count * BLOCK_SECTOR_SIZE bytes.
+ * @return 0 on success, -EINVAL past the end, -EROFS if the driver cannot write, or the driver's error.
+ */
+int block_write(block_device_t *dev, uint64_t sector, uint32_t count, const void *buffer);
+
+/**
+ * @brief Make every write the device acknowledged permanent (empty the disk's own write cache).
+ *
+ * @param dev The block device to flush.
+ * @return 0 on success (also when the driver has no flush), or the driver's error.
+ */
+int block_flush(block_device_t *dev);
 
 /**
  * @brief Read bytes from a block device, at any offset and of any length.
