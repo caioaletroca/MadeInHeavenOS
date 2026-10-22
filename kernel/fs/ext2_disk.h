@@ -17,11 +17,11 @@
 #define EXT2_DYNAMIC_REV 1  // revision 1: s_inode_size and the feature flags are valid
 #define EXT2_GOOD_OLD_INODE_SIZE 128
 
-#define EXT2_NDIR_BLOCKS 12 // i_block[0..11]: direct
-#define EXT2_IND_BLOCK 12   // i_block[12]: one level of indirection
-#define EXT2_DIND_BLOCK 13  // i_block[13]: two
-#define EXT2_TIND_BLOCK 14  // i_block[14]: three
-#define EXT2_N_BLOCKS 15
+#define EXT2_DIRECT_BLOCKS 12 // i_block[0..11]: direct
+#define EXT2_SINGLE_INDIRECT 12   // i_block[12]: one level of indirection
+#define EXT2_DOUBLE_INDIRECT 13  // i_block[13]: two
+#define EXT2_TRIPLE_INDIRECT 14  // i_block[14]: three
+#define EXT2_BLOCK_POINTERS 15
 
 // Incompatible features: a driver must refuse a disk with one it does not know
 #define EXT2_FEATURE_INCOMPAT_FILETYPE 0x0002 // directory entries carry the file type
@@ -102,7 +102,7 @@ typedef struct ext2_inode
     uint32_t i_blocks;               // 28: 512-byte units, indirect blocks included
     uint32_t i_flags;                // 32
     uint32_t i_osd1;                 // 36
-    uint32_t i_block[EXT2_N_BLOCKS]; // 40: 12 direct, then single, double, triple indirect; 0 = hole
+    uint32_t i_block[EXT2_BLOCK_POINTERS]; // 40: 12 direct, then single, double, triple indirect; 0 = hole
     uint32_t i_generation;           // 100
     uint32_t i_file_acl;             // 104
     uint32_t i_size_high;            // 108: high 32 bits of a regular file's size (large_file)

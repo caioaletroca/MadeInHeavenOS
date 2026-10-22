@@ -12,7 +12,7 @@
 
 #define EXT2_NODE_HASH_BITS 6 // 64 buckets for cached nodes
 
-typedef struct ext2_fs
+typedef struct ext2_volume
 {
     block_device_t *disk;
     uint64_t dev;          // st_dev (vfs_dev_alloc)
@@ -25,15 +25,15 @@ typedef struct ext2_fs
     ext2_group_t *group_table; // kmalloc'd copy of the group descriptors
     mutex_t lock;              // the node cache: nodes[] and every node's hash link
     hlist_head_t nodes[HASH_BUCKETS(EXT2_NODE_HASH_BITS)];
-} ext2_fs_t;
+} ext2_volume_t;
 
 typedef struct ext2_node
 {
     vfs_node_t base; // what the VFS sees (the "base class")
-    ext2_fs_t *fs;
+    ext2_volume_t *volume;
     uint32_t ino;
-    uint32_t block[EXT2_N_BLOCKS]; // copy of the inode's i_block
-    hlist_node_t hash;             // in fs->nodes, under fs->lock
+    uint32_t block[EXT2_BLOCK_POINTERS]; // copy of the inode's i_block
+    hlist_node_t cache_link;             // in volume->nodes, under volume->lock
 } ext2_node_t;
 
 #define EXT2_NODE(n) list_container(n, ext2_node_t, base)
@@ -53,19 +53,19 @@ static const vfs_node_ops_t ext2_ops = {
 /**
  * @brief Get a block from the ext2 filesystem
  *
- * @param fs: The ext2 filesystem
+ * @param volume: The ext2 filesystem
  * @param block: The block number to get
  * @param lease: Pointer to a block cache buffer lease
  * @param data: Pointer to store the data pointer
  * @return 0 on success, negative error code on failure. The block data is returned via the @data parameter.
  */
-static int ext2_block_get(ext2_fs_t *fs, uint32_t block, block_cache_buf_t **lease, const uint8_t **data)
+static int ext2_block_get(ext2_volume_t *volume, uint32_t block, block_cache_buf_t **lease, const uint8_t **data)
 {
-    if (block == 0 || block >= fs->blocks_count)
+    if (block == 0 || block >= volume->blocks_count)
         return -EIO; // a corrupt pointer: trusting it would read some other file's data
 
-    uint64_t byte = (uint64_t)block * fs->block_size;
-    int ret = block_cache_get(fs->disk, byte / BLOCK_CACHE_BLOCK_SIZE, lease);
+    uint64_t byte = (uint64_t)block * volume->block_size;
+    int ret = block_cache_get(volume->disk, byte / BLOCK_CACHE_BLOCK_SIZE, lease);
     if (ret < 0)
         return ret;
 
@@ -80,7 +80,7 @@ static int ext2_block_get(ext2_fs_t *fs, uint32_t block, block_cache_buf_t **lea
  * @param superblock: Pointer to store the superblock
  * @return 0 on success, negative error code on failure
  */
-static int ext2_read_super(block_device_t *disk, ext2_super_t *superblock)
+static int ext2_read_superblock(block_device_t *disk, ext2_super_t *superblock)
 {
     block_cache_buf_t *lease;
     int ret = block_cache_get(disk, 0, &lease);
@@ -97,10 +97,10 @@ static int ext2_read_super(block_device_t *disk, ext2_super_t *superblock)
  *
  * @param superblock: The ext2 superblock
  * @param disk: The block device representing the ext2 filesystem
- * @param fs: The ext2 filesystem structure to initialize
+ * @param volume: The ext2 filesystem structure to initialize
  * @return 0 on success, negative error code on failure
  */
-static int ext2_check_super(const ext2_super_t *superblock, const block_device_t *disk, ext2_fs_t *fs)
+static int ext2_check_superblock(const ext2_super_t *superblock, const block_device_t *disk, ext2_volume_t *volume)
 {
     if (superblock->s_magic != EXT2_MAGIC)
         return -EINVAL;
@@ -135,12 +135,12 @@ static int ext2_check_super(const ext2_super_t *superblock, const block_device_t
     if ((uint64_t)groups * superblock->s_inodes_per_group < superblock->s_inodes_count)
         return -EIO;
 
-    fs->block_size = block_size;
-    fs->blocks_count = superblock->s_blocks_count;
-    fs->inodes_count = superblock->s_inodes_count;
-    fs->inodes_per_group = superblock->s_inodes_per_group;
-    fs->inode_size = inode_size;
-    fs->groups = groups;
+    volume->block_size = block_size;
+    volume->blocks_count = superblock->s_blocks_count;
+    volume->inodes_count = superblock->s_inodes_count;
+    volume->inodes_per_group = superblock->s_inodes_per_group;
+    volume->inode_size = inode_size;
+    volume->groups = groups;
 
     return 0;
 }
@@ -148,39 +148,39 @@ static int ext2_check_super(const ext2_super_t *superblock, const block_device_t
 /**
  * @brief Read the group descriptors from the disk and initialize the group table
  *
- * @param fs: The ext2 filesystem structure
+ * @param volume: The ext2 filesystem structure
  * @param first_data_block: The first data block of the filesystem
  * @return 0 on success, negative error code on failure
  */
-static int ext2_read_groups(ext2_fs_t *fs, uint32_t first_data_block)
+static int ext2_read_groups(ext2_volume_t *volume, uint32_t first_data_block)
 {
-    size_t size = (size_t)fs->groups * sizeof(ext2_group_t);
-    fs->group_table = kmalloc(size);
-    if (fs->group_table == NULL)
+    size_t size = (size_t)volume->groups * sizeof(ext2_group_t);
+    volume->group_table = kmalloc(size);
+    if (volume->group_table == NULL)
         return -ENOMEM;
 
-    uint8_t *out = (uint8_t *)fs->group_table;
+    uint8_t *out = (uint8_t *)volume->group_table;
     uint32_t block = first_data_block + 1;
     for (size_t done = 0; done < size; block++)
     {
         block_cache_buf_t *lease;
         const uint8_t *data;
-        int ret = ext2_block_get(fs, block, &lease, &data);
+        int ret = ext2_block_get(volume, block, &lease, &data);
         if (ret < 0)
             return ret;
 
-        size_t chunk = MIN((size_t)fs->block_size, size - done);
+        size_t chunk = MIN((size_t)volume->block_size, size - done);
         memcpy(out + done, data, chunk);
         block_cache_put(lease);
         done += chunk;
     }
 
-    // Every group's part of the inode table must lie inside the file system: iget trusts these numbers
-    uint64_t table_blocks = ((uint64_t)fs->inodes_per_group * fs->inode_size + fs->block_size - 1) / fs->block_size;
-    for (uint32_t i = 0; i < fs->groups; i++)
+    // Every group's part of the inode table must lie inside the file system: ext2_node_get trusts these numbers
+    uint64_t table_blocks = ((uint64_t)volume->inodes_per_group * volume->inode_size + volume->block_size - 1) / volume->block_size;
+    for (uint32_t i = 0; i < volume->groups; i++)
     {
-        uint32_t table = fs->group_table[i].bg_inode_table;
-        if (table == 0 || table + table_blocks > fs->blocks_count)
+        uint32_t table = volume->group_table[i].bg_inode_table;
+        if (table == 0 || table + table_blocks > volume->blocks_count)
             return -EIO;
     }
 
@@ -190,35 +190,35 @@ static int ext2_read_groups(ext2_fs_t *fs, uint32_t first_data_block)
 /**
  * @brief Free the memory allocated for the ext2 filesystem structure
  *
- * @param fs: The ext2 filesystem structure to free
+ * @param volume: The ext2 filesystem structure to free
  */
-static void ext2_fs_free(ext2_fs_t *fs)
+static void ext2_volume_free(ext2_volume_t *volume)
 {
-    kfree(fs->group_table);
-    kfree(fs);
+    kfree(volume->group_table);
+    kfree(volume);
 }
 
 /**
  * @brief Get an inode from the ext2 filesystem
  *
- * @param fs: The ext2 filesystem structure
+ * @param volume: The ext2 filesystem structure
  * @param ino: The inode number to get
  * @param parent: The parent VFS node
  * @param out: Pointer to store the resulting VFS node
  * @return 0 on success, negative error code on failure
  */
-static int ext2_iget(ext2_fs_t *fs, uint32_t ino, vfs_node_t *parent, vfs_node_t **out)
+static int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent, vfs_node_t **out)
 {
-    if (ino == 0 || ino > fs->inodes_count)
+    if (ino == 0 || ino > volume->inodes_count)
         return -EIO;
 
-    guard(mutex, &fs->lock);
+    guard(mutex, &volume->lock);
 
-    hlist_head_t *bucket = &fs->nodes[hash_64(ino, EXT2_NODE_HASH_BITS)];
+    hlist_head_t *bucket = &volume->nodes[hash_64(ino, EXT2_NODE_HASH_BITS)];
     hlist_node_t *pos;
     hlist_for_each(pos, bucket)
     {
-        ext2_node_t *cached = hlist_container(pos, ext2_node_t, hash);
+        ext2_node_t *cached = hlist_container(pos, ext2_node_t, cache_link);
         if (cached->ino != ino)
             continue;
 
@@ -229,23 +229,23 @@ static int ext2_iget(ext2_fs_t *fs, uint32_t ino, vfs_node_t *parent, vfs_node_t
         }
 
         // At 0 references: its release is on the way; take it out, read a fresh one
-        hlist_remove(&cached->hash);
+        hlist_remove(&cached->cache_link);
         break;
     }
 
     // Where the inode is: its group's part of the inode table, then the slot in it
-    uint32_t group = (ino - 1) / fs->inodes_per_group;
-    uint64_t offset = (uint64_t)((ino - 1) % fs->inodes_per_group) * fs->inode_size;
-    uint32_t block = fs->group_table[group].bg_inode_table + (uint32_t)(offset / fs->block_size);
+    uint32_t group = (ino - 1) / volume->inodes_per_group;
+    uint64_t offset = (uint64_t)((ino - 1) % volume->inodes_per_group) * volume->inode_size;
+    uint32_t block = volume->group_table[group].bg_inode_table + (uint32_t)(offset / volume->block_size);
 
     block_cache_buf_t *lease;
     const uint8_t *data;
-    int ret = ext2_block_get(fs, block, &lease, &data);
+    int ret = ext2_block_get(volume, block, &lease, &data);
     if (ret < 0)
         return ret;
 
     ext2_inode_t inode;
-    memcpy(&inode, data + offset % fs->block_size, sizeof(inode));
+    memcpy(&inode, data + offset % volume->block_size, sizeof(inode));
     block_cache_put(lease);
 
     vfs_node_type_t type;
@@ -267,7 +267,7 @@ static int ext2_iget(ext2_fs_t *fs, uint32_t ino, vfs_node_t *parent, vfs_node_t
 
     vfs_node_init(&n->base, type, &ext2_ops);
     n->base.ino = ino;
-    n->base.dev = fs->dev;
+    n->base.dev = volume->dev;
     n->base.mode = inode.i_mode & 07777;
     n->base.mtime = inode.i_mtime;
     n->base.nlink = inode.i_links_count;
@@ -280,10 +280,10 @@ static int ext2_iget(ext2_fs_t *fs, uint32_t ino, vfs_node_t *parent, vfs_node_t
     if (parent != NULL)
         vfs_node_get(parent); // a child keeps its directory alive, so ".." stays valid
 
-    n->fs = fs;
+    n->volume = volume;
     n->ino = ino;
     memcpy(n->block, inode.i_block, sizeof(n->block));
-    hlist_insert(bucket, &n->hash);
+    hlist_insert(bucket, &n->cache_link);
 
     *out = &n->base;
     return 0;
@@ -292,30 +292,30 @@ static int ext2_iget(ext2_fs_t *fs, uint32_t ino, vfs_node_t *parent, vfs_node_t
 int ext2_mount(block_device_t *disk, vfs_node_t **root)
 {
     ext2_super_t superblock;
-    int ret = ext2_read_super(disk, &superblock);
+    int ret = ext2_read_superblock(disk, &superblock);
     if (ret < 0)
         return ret;
 
-    ext2_fs_t *fs = kzalloc(sizeof(ext2_fs_t));
-    if (fs == NULL)
+    ext2_volume_t *volume = kzalloc(sizeof(ext2_volume_t));
+    if (volume == NULL)
         return -ENOMEM;
 
-    fs->disk = disk;
+    volume->disk = disk;
 
-    ret = ext2_check_super(&superblock, disk, fs);
+    ret = ext2_check_superblock(&superblock, disk, volume);
     if (ret == 0)
-        ret = ext2_read_groups(fs, superblock.s_first_data_block);
+        ret = ext2_read_groups(volume, superblock.s_first_data_block);
     if (ret < 0)
     {
-        ext2_fs_free(fs);
+        ext2_volume_free(volume);
         return ret;
     }
 
-    mutex_init(&fs->lock);
-    fs->dev = vfs_dev_alloc();
+    mutex_init(&volume->lock);
+    volume->dev = vfs_dev_alloc();
 
     vfs_node_t *node;
-    ret = ext2_iget(fs, EXT2_ROOT_INO, NULL, &node);
+    ret = ext2_node_get(volume, EXT2_ROOT_INO, NULL, &node);
     if (ret == 0 && node->type != VFS_DIRECTORY)
     {
         vfs_node_put(node);
@@ -323,7 +323,7 @@ int ext2_mount(block_device_t *disk, vfs_node_t **root)
     }
     if (ret < 0)
     {
-        ext2_fs_free(fs);
+        ext2_volume_free(volume);
         return ret;
     }
 
@@ -334,22 +334,22 @@ int ext2_mount(block_device_t *disk, vfs_node_t **root)
 /**
  * @brief Map a logical block number to a physical block number in an ext2 file
  *
- * @param fs: The ext2 filesystem structure
+ * @param volume: The ext2 filesystem structure
  * @param n: The ext2 node
  * @param logical: The logical block number
  * @param out: The resulting physical block number
  * @return 0 on success, negative error code on failure
  */
-static int ext2_bmap(ext2_fs_t *fs, const ext2_node_t *n, uint64_t logical, uint32_t *out)
+static int ext2_file_block(ext2_volume_t *volume, const ext2_node_t *n, uint64_t logical, uint32_t *out)
 {
-    if (logical < EXT2_NDIR_BLOCKS)
+    if (logical < EXT2_DIRECT_BLOCKS)
     {
         *out = n->block[logical];
         return 0;
     }
-    logical -= EXT2_NDIR_BLOCKS;
+    logical -= EXT2_DIRECT_BLOCKS;
 
-    uint64_t per_block = fs->block_size / sizeof(uint32_t); // number of block pointers per indirect block
+    uint64_t per_block = volume->block_size / sizeof(uint32_t); // number of block pointers per indirect block
     uint64_t span = per_block;                              // number of blocks spanned by a single indirect block
 
     for (int levels = 1; levels <= 3; levels++, span *= per_block)
@@ -361,12 +361,12 @@ static int ext2_bmap(ext2_fs_t *fs, const ext2_node_t *n, uint64_t logical, uint
         }
 
         // Walk down: at each level, which entry, and what is left below it
-        uint32_t block = n->block[EXT2_NDIR_BLOCKS + levels - 1];
+        uint32_t block = n->block[EXT2_DIRECT_BLOCKS + levels - 1];
         for (uint64_t below = span / per_block; block != 0; below /= per_block)
         {
             block_cache_buf_t *lease;
             const uint8_t *data;
-            int ret = ext2_block_get(fs, block, &lease, &data);
+            int ret = ext2_block_get(volume, block, &lease, &data);
             if (ret < 0)
                 return ret;
 
@@ -425,13 +425,13 @@ typedef int (*ext2_visit_t)(const ext2_dirent_t *entry, void *context);
  */
 static int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context)
 {
-    ext2_fs_t *fs = dir->fs;
-    uint64_t blocks = (dir->base.size + fs->block_size - 1) / fs->block_size;
+    ext2_volume_t *volume = dir->volume;
+    uint64_t blocks = (dir->base.size + volume->block_size - 1) / volume->block_size;
 
     for (uint64_t i = 0; i < blocks; i++)
     {
         uint32_t block;
-        int ret = ext2_bmap(fs, dir, i, &block);
+        int ret = ext2_file_block(volume, dir, i, &block);
         if (ret < 0)
             return ret;
         if (block == 0)
@@ -439,24 +439,24 @@ static int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context)
 
         block_cache_buf_t *lease;
         const uint8_t *data;
-        ret = ext2_block_get(fs, block, &lease, &data);
+        ret = ext2_block_get(volume, block, &lease, &data);
         if (ret < 0)
             return ret;
 
         // Records chain through rec_len and end exactly at the end of the block
         uint32_t rec_len;
-        for (uint32_t offset = 0; offset < fs->block_size; offset += rec_len)
+        for (uint32_t offset = 0; offset < volume->block_size; offset += rec_len)
         {
             const ext2_dirent_t *e = (const ext2_dirent_t *)(data + offset);
 
             // Check before trusting the disk: room for a header, then a rec_len that
             // moves forward (0 would loop forever), stays in the block and holds the name
-            bool corrupt = fs->block_size - offset < sizeof(ext2_dirent_t);
+            bool corrupt = volume->block_size - offset < sizeof(ext2_dirent_t);
             if (!corrupt)
             {
                 rec_len = e->rec_len;
                 corrupt = rec_len < sizeof(ext2_dirent_t) || rec_len % 4 != 0 ||
-                          rec_len > fs->block_size - offset ||
+                          rec_len > volume->block_size - offset ||
                           sizeof(ext2_dirent_t) + e->name_len > rec_len;
             }
             if (corrupt)
@@ -576,8 +576,8 @@ static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_nod
     if (ret == 0 || !ext2_entry_type(ctx.file_type, &type))
         return -ENOENT; // not there, or a kind the VFS cannot show yet
 
-    // After the walk, with no lease held: iget takes fs->lock and may read the disk
-    return ext2_iget(EXT2_NODE(dir)->fs, ctx.ino, dir, child);
+    // After the walk, with no lease held: ext2_node_get takes volume->lock and may read the disk
+    return ext2_node_get(EXT2_NODE(dir)->volume, ctx.ino, dir, child);
 }
 
 /**
@@ -592,7 +592,7 @@ static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_nod
 static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset)
 {
     ext2_node_t *n = EXT2_NODE(file);
-    ext2_fs_t *fs = n->fs;
+    ext2_volume_t *volume = n->volume;
 
     if (offset >= file->size)
         return 0;
@@ -604,12 +604,12 @@ static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t off
     while (done < count)
     {
         uint64_t position = offset + done;
-        uint64_t logical = position / fs->block_size;
-        size_t within = position % fs->block_size;
-        size_t chunk = MIN(fs->block_size - within, count - done);
+        uint64_t logical = position / volume->block_size;
+        size_t within = position % volume->block_size;
+        size_t chunk = MIN(volume->block_size - within, count - done);
 
         uint32_t block;
-        int ret = ext2_bmap(fs, n, logical, &block);
+        int ret = ext2_file_block(volume, n, logical, &block);
         if (ret < 0)
             return ret;
 
@@ -619,7 +619,7 @@ static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t off
         {
             block_cache_buf_t *lease;
             const uint8_t *data;
-            ret = ext2_block_get(fs, block, &lease, &data);
+            ret = ext2_block_get(volume, block, &lease, &data);
             if (ret < 0)
                 return ret;
 
@@ -659,10 +659,10 @@ static void ext2_release(vfs_node_t *node)
 {
     ext2_node_t *n = EXT2_NODE(node);
 
-    scoped_guard(mutex, &n->fs->lock)
+    scoped_guard(mutex, &n->volume->lock)
     {
-        if (hlist_linked(&n->hash))
-            hlist_remove(&n->hash);
+        if (hlist_linked(&n->cache_link))
+            hlist_remove(&n->cache_link);
     }
 
     vfs_node_t *parent = node->parent != node ? node->parent : NULL;
