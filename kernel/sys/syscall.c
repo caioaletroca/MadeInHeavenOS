@@ -181,7 +181,9 @@ static long sys_write(unsigned long fd, uintptr_t buffer, size_t size)
             return done > 0 ? (long)done : status;
         }
 
-        done += length;
+        done += (size_t)status;
+        if ((size_t)status < length)
+            break;
     }
 
     return (long)done;
