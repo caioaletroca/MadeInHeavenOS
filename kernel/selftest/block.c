@@ -25,6 +25,10 @@
 // More than one READ SECTORS command (at most 256 sectors each)
 #define LONG_READ 300
 
+// Writes: free ext2 blocks no other test reads; more than one WRITE SECTORS command
+#define WRITE_START 7000
+#define WRITE_SECTORS 300
+
 static uint16_t le16(const uint8_t *p)
 {
     return (uint16_t)(p[0] | (p[1] << 8));
@@ -121,6 +125,96 @@ static void block_test_reads(block_device_t *dev)
 
     kfree(many);
     kfree(one);
+}
+
+static void block_write_or_panic(block_device_t *dev, uint64_t sector, uint32_t count, const void *buffer)
+{
+    int ret = block_write(dev, sector, count, buffer);
+    if (ret != 0)
+        panic("Block self-test: writing %u sectors at %u failed: %d\n", (unsigned int)count, (unsigned int)sector,
+              ret);
+}
+
+// A byte no other sector has at that position, so a write landing one sector off shows
+static uint8_t write_pattern(uint64_t sector, size_t byte)
+{
+    return (uint8_t)(sector * 31 + byte);
+}
+
+static int read_only_read(block_device_t *dev, uint64_t sector, uint32_t count, void *buffer)
+{
+    (void)dev;
+    (void)sector;
+    (void)count;
+    (void)buffer;
+    return -EIO;
+}
+
+/**
+ * Writes straight to the driver, on sectors 7000..7299 (ext2 blocks 3500..3649:
+ * free on the test disk, and no other test reads them, so no cached copy goes
+ * stale). The original bytes are written back at the end.
+ */
+static void block_test_writes(block_device_t *dev)
+{
+    uint8_t *saved = kmalloc(WRITE_SECTORS * BLOCK_SECTOR_SIZE);
+    uint8_t *pattern = kmalloc(WRITE_SECTORS * BLOCK_SECTOR_SIZE);
+    uint8_t *back = kmalloc(WRITE_SECTORS * BLOCK_SECTOR_SIZE);
+    if (saved == NULL || pattern == NULL || back == NULL)
+        panic("Block self-test: out of memory\n");
+
+    block_read_or_panic(dev, WRITE_START, WRITE_SECTORS, saved);
+
+    // More than one WRITE SECTORS command; every sector reads back as written
+    for (size_t s = 0; s < WRITE_SECTORS; s++)
+        for (size_t b = 0; b < BLOCK_SECTOR_SIZE; b++)
+            pattern[s * BLOCK_SECTOR_SIZE + b] = write_pattern(WRITE_START + s, b);
+    block_write_or_panic(dev, WRITE_START, WRITE_SECTORS, pattern);
+    block_read_or_panic(dev, WRITE_START, WRITE_SECTORS, back);
+    for (size_t s = 0; s < WRITE_SECTORS; s++)
+        if (memcmp(back + s * BLOCK_SECTOR_SIZE, pattern + s * BLOCK_SECTOR_SIZE, BLOCK_SECTOR_SIZE) != 0)
+            panic("Block self-test: sector %u of a %u-sector write reads back different\n",
+                  (unsigned int)(WRITE_START + s), WRITE_SECTORS);
+
+    // One sector in the middle changes only that sector
+    memset(back, 0x5A, BLOCK_SECTOR_SIZE);
+    block_write_or_panic(dev, WRITE_START + 100, 1, back);
+    block_read_or_panic(dev, WRITE_START + 99, 3, back);
+    for (size_t b = 0; b < BLOCK_SECTOR_SIZE; b++)
+        if (back[b] != write_pattern(WRITE_START + 99, b) || back[BLOCK_SECTOR_SIZE + b] != 0x5A ||
+            back[2 * BLOCK_SECTOR_SIZE + b] != write_pattern(WRITE_START + 101, b))
+            panic("Block self-test: a one-sector write did not change exactly sector %u\n", WRITE_START + 100);
+
+    // Nothing to write is 0; past the end and wrapping ranges are refused
+    uint64_t last = dev->sector_count - 1;
+    if (block_write(dev, WRITE_START, 0, pattern) != 0)
+        panic("Block self-test: a 0-sector write did not return 0\n");
+    if (block_write(dev, dev->sector_count, 1, pattern) != -EINVAL ||
+        block_write(dev, last, 2, pattern) != -EINVAL ||
+        block_write(dev, UINT64_MAX, 2, pattern) != -EINVAL ||
+        block_write(dev, 1, UINT32_MAX, pattern) != -EINVAL)
+        panic("Block self-test: a write past the end of the disk was not refused\n");
+
+    if (block_flush(dev) != 0)
+        panic("Block self-test: flushing %s failed\n", dev->name);
+
+    // A driver without write: -EROFS, but a bad range is still -EINVAL first; nothing to flush is fine
+    static const block_ops_t read_only_ops = {.read = read_only_read};
+    block_device_t read_only = {.name = "readonly", .sector_count = 16, .ops = &read_only_ops};
+    if (block_write(&read_only, 0, 1, pattern) != -EROFS || block_write(&read_only, 16, 1, pattern) != -EINVAL ||
+        block_flush(&read_only) != 0)
+        panic("Block self-test: a read-only driver was written to or flushed wrongly\n");
+
+    block_write_or_panic(dev, WRITE_START, WRITE_SECTORS, saved);
+    block_read_or_panic(dev, WRITE_START, WRITE_SECTORS, back);
+    if (memcmp(back, saved, WRITE_SECTORS * BLOCK_SECTOR_SIZE) != 0)
+        panic("Block self-test: sectors %u..%u were not restored\n", WRITE_START, WRITE_START + WRITE_SECTORS - 1);
+    if (block_flush(dev) != 0)
+        panic("Block self-test: flushing %s failed\n", dev->name);
+
+    kfree(back);
+    kfree(pattern);
+    kfree(saved);
 }
 
 static block_cache_buf_t *cache_get_or_panic(block_device_t *dev, uint64_t index)
@@ -333,6 +427,7 @@ void block_selftest(void)
     block_device_t *dev = block_test_disk();
 
     block_test_reads(dev);
+    block_test_writes(dev);
     block_test_cache(dev);
     block_test_node(dev);
 
