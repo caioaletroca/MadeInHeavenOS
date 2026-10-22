@@ -139,9 +139,9 @@ static void test_reads(void)
 static void test_refusals(void)
 {
     errno = 0;
-    CHECK(open(disk, O_RDWR) == -1 && errno == EROFS); // no writes yet
+    CHECK(open(disk, O_ACCMODE) == -1 && errno == EINVAL);
     errno = 0;
-    CHECK(open(disk, O_WRONLY) == -1 && errno == EROFS);
+    CHECK(open("/dev", O_WRONLY) == -1 && errno == EISDIR);
     errno = 0;
     CHECK(open(disk, O_RDONLY | O_DIRECTORY) == -1 && errno == ENOTDIR);
 

@@ -26,6 +26,7 @@ static uint64_t devfs_next_ino = 2;
 static int devfs_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
 static int devfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
 static long devfs_block_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset);
+static long devfs_block_write(vfs_node_t *node, const void *buffer, size_t count, uint64_t offset);
 
 static const vfs_node_ops_t devfs_ops = {
     .lookup = devfs_lookup,
@@ -44,6 +45,7 @@ static const vfs_node_ops_t devfs_device_ops = {
 static const vfs_node_ops_t devfs_block_ops = {
     .lookup = NULL,
     .read = devfs_block_read,
+    .write = devfs_block_write,
     .readdir = NULL,
     .release = NULL,
 };
@@ -239,4 +241,17 @@ static int devfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
 static long devfs_block_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset)
 {
     return block_read_bytes(DEVFS_NODE(node)->block, buffer, count, offset);
+}
+
+/**
+ * Write data to a block device node.
+ * @param node The block device node.
+ * @param buffer The buffer containing data to write.
+ * @param count The number of bytes to write.
+ * @param offset The offset within the block device to start writing to.
+ * @return The number of bytes written, or a negative error code on failure.
+ */
+static long devfs_block_write(vfs_node_t *node, const void *buffer, size_t count, uint64_t offset)
+{
+    return block_write_bytes(DEVFS_NODE(node)->block, buffer, count, offset);
 }

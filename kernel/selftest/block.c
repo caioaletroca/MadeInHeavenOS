@@ -456,16 +456,24 @@ static void block_test_node(block_device_t *dev)
         st.st_dev != node->dev)
         panic("Block self-test: stat of %s is wrong (mode 0%o)\n", path, st.st_mode);
 
-    // Opens read-only through the VFS (offsets, lseek); write access is refused
+    // Opens through the VFS (offsets, lseek) with exactly the access asked for
+    static const struct
+    {
+        int flags;
+        unsigned int access;
+    } opens[] = {{O_RDONLY, FILE_READ}, {O_WRONLY, FILE_WRITE}, {O_RDWR, FILE_READ | FILE_WRITE}};
     struct file *file;
-    ret = vfs_open(path, O_RDONLY, &file);
-    if (ret != 0)
-        panic("Block self-test: opening %s failed: %d\n", path, ret);
-    if (file->node != node || file->flags != FILE_READ)
-        panic("Block self-test: %s opened with the wrong node or flags\n", path);
-    file_put(file);
-    if (vfs_open(path, O_RDWR, &file) != -EROFS || vfs_open(path, O_WRONLY, &file) != -EROFS)
-        panic("Block self-test: opening %s for writing did not return -EROFS\n", path);
+    for (size_t i = 0; i < sizeof(opens) / sizeof(opens[0]); i++)
+    {
+        ret = vfs_open(path, opens[i].flags, &file);
+        if (ret != 0)
+            panic("Block self-test: opening %s with flags %d failed: %d\n", path, opens[i].flags, ret);
+        if (file->node != node || file->flags != opens[i].access)
+            panic("Block self-test: %s opened with the wrong node or flags (%u)\n", path, file->flags);
+        file_put(file);
+    }
+    if (vfs_open(path, O_ACCMODE, &file) != -EINVAL)
+        panic("Block self-test: opening %s with access mode 3 did not return -EINVAL\n", path);
 
     uint8_t *sectors = kmalloc(LONG_READ * BLOCK_SECTOR_SIZE);
     uint8_t *bytes = kmalloc(LONG_READ * BLOCK_SECTOR_SIZE + 1);
