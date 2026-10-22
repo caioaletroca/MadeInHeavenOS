@@ -107,6 +107,41 @@ long block_read_bytes(block_device_t *dev, void *buffer, size_t count, uint64_t 
     return (long)done;
 }
 
+long block_write_bytes(block_device_t *dev, const void *buffer, size_t count, uint64_t offset)
+{
+    if (count == 0)
+        return 0;
+
+    uint64_t size = dev->sector_count * BLOCK_SECTOR_SIZE;
+    if (offset >= size)
+        return -ENOSPC;
+
+    count = MIN(count, size - offset);
+
+    const uint8_t *in = (const uint8_t *)buffer;
+    size_t done = 0;
+    while (done < count)
+    {
+        uint64_t position = offset + done;
+        uint64_t index = position / BLOCK_CACHE_BLOCK_SIZE;
+        size_t within = position % BLOCK_CACHE_BLOCK_SIZE;
+        size_t chunk = MIN(count - done, BLOCK_CACHE_BLOCK_SIZE - within);
+
+        block_cache_buf_t *buf;
+        int ret = block_cache_get(dev, index, &buf);
+        if (ret < 0)
+            return ret;
+
+        block_cache_begin_write(buf);
+        memcpy(buf->data + within, in + done, chunk);
+        block_cache_end_write(buf);
+        block_cache_put(buf);
+        done += chunk;
+    }
+
+    return (long)done;
+}
+
 void block_devfs_init(void)
 {
     for (int i = 0; i < BLOCK_DEVICES_MAX; i++)

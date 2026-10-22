@@ -105,6 +105,21 @@ int block_flush(block_device_t *dev);
 long block_read_bytes(block_device_t *dev, void *buffer, size_t count, uint64_t offset);
 
 /**
+ * @brief Write bytes to a block device, at any offset and of any length.
+ *
+ * Writes into the block cache: one block_cache_get per 4 KiB block the range
+ * touches, the slice copied in between begin_write and end_write. The data
+ * reaches the disk at the buffer's eviction or the next block_cache_sync.
+ *
+ * @param dev The block device to write to.
+ * @param buffer A kernel buffer of at least count bytes.
+ * @param count The number of bytes to write.
+ * @param offset The byte offset on the device.
+ * @return The bytes written (fewer at the end of the device), -ENOSPC at or past it, or -errno.
+ */
+long block_write_bytes(block_device_t *dev, const void *buffer, size_t count, uint64_t offset);
+
+/**
  * @brief Publish every registered block device in /dev (mode 0660).
  * Once, after devfs_init: disks are found before the allocator and devfs exist.
  */
