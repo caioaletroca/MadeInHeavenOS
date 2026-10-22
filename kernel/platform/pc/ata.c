@@ -29,6 +29,8 @@
 // ATA command definitions
 #define ATA_CMD_IDENTIFY 0xEC
 #define ATA_CMD_READ_SECTORS 0x20
+#define ATA_CMD_WRITE_SECTORS 0x30
+#define ATA_CMD_CACHE_FLUSH 0xE7
 
 // ATA status register bits
 #define ATA_SR_BSY 0x80
@@ -127,6 +129,27 @@ static int ata_read_data(ata_drive_t *drive, uint16_t *buffer, size_t size)
     uint16_t *buf = buffer;
     for (size_t i = 0; i < size / 2; i++)
         buf[i] = inw(drive->io + ATA_REG_DATA);
+
+    return 0;
+}
+
+/**
+ * @brief Write data to the ATA drive from the provided buffer.
+ *
+ * @param drive Pointer to the ATA drive structure.
+ * @param buffer Pointer to the buffer containing the data to write.
+ * @param size Number of bytes to write.
+ * @return 0 on success, -EIO on error.
+ */
+static int ata_write_data(ata_drive_t *drive, const uint16_t *buffer, size_t size)
+{
+    // Wait for the drive to be ready before writing data
+    if (ata_wait_data(drive) < 0)
+        return -EIO;
+
+    const uint16_t *buf = buffer;
+    for (size_t i = 0; i < size / 2; i++)
+        outw(drive->io + ATA_REG_DATA, buf[i]);
 
     return 0;
 }
@@ -242,8 +265,88 @@ static int ata_read(block_device_t *dev, uint64_t sector, uint32_t count, void *
     return 0;
 }
 
+/**
+ * @brief Write data to the ATA drive.
+ *
+ * @param dev Pointer to the block device structure.
+ * @param sector Starting sector to write to.
+ * @param count Number of sectors to write.
+ * @param buffer Pointer to the buffer containing the data to write.
+ * @return 0 on success, -EINVAL on invalid parameters, -EIO on I/O error.
+ */
+static int ata_write(block_device_t *dev, uint64_t sector, uint32_t count, const void *buffer)
+{
+    ata_drive_t *drive = dev->private;
+
+    // 28-bit LBA reaches sectors 0 .. 2^28 - 1 (128 GiB); bigger disks need LBA48
+    if (sector + count > (1u << 28))
+        return -EINVAL;
+
+    const uint16_t *words = buffer;
+    uint64_t lba = sector;
+    uint32_t remaining = count;
+    while (remaining > 0)
+    {
+        // The count register is 8 bits: one command writes at most 256 sectors (256 is written as 0)
+        uint32_t n = remaining < 256 ? remaining : 256;
+
+        if (ata_command(drive, lba, n, ATA_CMD_WRITE_SECTORS) < 0)
+            return -EIO;
+
+        // The drive hands over one sector at a time: wait for DRQ before each one
+        for (uint32_t i = 0; i < n; i++)
+        {
+            if (ata_write_data(drive, words, BLOCK_SECTOR_SIZE) < 0)
+                return -EIO;
+
+            words += BLOCK_SECTOR_SIZE / 2;
+        }
+
+        // Wait for the drive to be ready after writing the sectors
+        int status = ata_wait_ready(drive);
+        if (status < 0 || status & ATA_SR_ERR || status & ATA_SR_DF)
+            return -EIO;
+
+        lba += n;
+        remaining -= n;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Flush the ATA drive's cache.
+ *
+ * @param dev Pointer to the block device structure.
+ * @return 0 on success, -EIO on error.
+ */
+static int ata_flush(block_device_t *dev)
+{
+    ata_drive_t *drive = dev->private;
+
+    if (ata_wait_ready(drive) < 0)
+        return -EIO;
+
+    // Select the drive in LBA mode (0xE0) and give it 400 ns to switch
+    outb(drive->io + ATA_REG_DRIVE, (uint8_t)(0xE0 | (drive->slave << 4)));
+    ata_delay(drive);
+
+    // Send the flush cache command to the drive
+    outb(drive->io + ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
+    ata_delay(drive);
+
+    // Wait for the drive to be ready after flushing
+    int status = ata_wait_ready(drive);
+    if (status < 0 || status & ATA_SR_ERR || status & ATA_SR_DF)
+        return -EIO;
+
+    return 0;
+}
+
 static const block_ops_t ata_block_ops = {
     .read = ata_read,
+    .write = ata_write,
+    .flush = ata_flush,
 };
 
 static const char *const names[4] = {"hda", "hdb", "hdc", "hdd"};
