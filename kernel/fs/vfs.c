@@ -224,6 +224,16 @@ long vfs_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset)
     return node->ops->read(node, buffer, count, offset);
 }
 
+long vfs_write(vfs_node_t *node, const void *buffer, size_t count, uint64_t offset)
+{
+    if (node->type == VFS_DIRECTORY)
+        return -EISDIR;
+    if (node->ops->write == NULL)
+        return -EROFS; // a file on a read-only file system; character devices are written through their file_ops, never here
+
+    return node->ops->write(node, buffer, count, offset);
+}
+
 int vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
 {
     if (dir->type != VFS_DIRECTORY)
@@ -352,9 +362,20 @@ static long vfs_file_read(file_t *file, char *buffer, size_t count)
     return n;
 }
 
+static long vfs_file_write(file_t *file, const char *buffer, size_t count)
+{
+    guard(mutex, &file->position_lock);
+
+    long n = vfs_write(file->node, buffer, count, file->offset);
+    if (n > 0)
+        file->offset += (uint64_t)n;
+
+    return n;
+}
+
 static const file_ops_t vfs_file_ops = {
     .read = vfs_file_read,
-    .write = NULL,
+    .write = vfs_file_write,
     .release = NULL,
 };
 
@@ -375,39 +396,45 @@ int vfs_open(const char *path, int flags, file_t **out)
         return -ENOTDIR;
     }
 
+    // The access the open file gets: O_ACCMODE is a value, not bits (O_RDONLY is 0)
+    unsigned int access;
+    switch (flags & O_ACCMODE)
+    {
+    case O_RDONLY:
+        access = FILE_READ;
+        break;
+    case O_WRONLY:
+        access = FILE_WRITE;
+        break;
+    case O_RDWR:
+        access = FILE_READ | FILE_WRITE;
+        break;
+    default:
+        vfs_node_put(node);
+        return -EINVAL;
+    }
+
     file_t *file;
     if (node->type == VFS_CHARDEV)
     {
         // A device: its driver's ops, read and/or write as asked
-        unsigned int access;
-        switch (flags & O_ACCMODE)
-        {
-        case O_RDONLY:
-            access = FILE_READ;
-            break;
-        case O_WRONLY:
-            access = FILE_WRITE;
-            break;
-        case O_RDWR:
-            access = FILE_READ | FILE_WRITE;
-            break;
-        default:
-            vfs_node_put(node);
-            return -EINVAL;
-        }
-
         file = file_create(node->device_ops, access, NULL);
     }
     else
     {
-        // Files, directories and disks: nothing is writable yet
-        if ((flags & O_ACCMODE) != O_RDONLY)
+        // Files, directories and disks: read through the node; written only if its file system can
+        if (access & FILE_WRITE)
         {
-            vfs_node_put(node);
-            return -EROFS;
+            int refused = node->type == VFS_DIRECTORY ? -EISDIR : node->ops->write == NULL ? -EROFS
+                                                                                           : 0;
+            if (refused < 0)
+            {
+                vfs_node_put(node);
+                return refused;
+            }
         }
 
-        file = file_create(&vfs_file_ops, FILE_READ, NULL);
+        file = file_create(&vfs_file_ops, access, NULL);
     }
 
     if (file == NULL)

@@ -37,8 +37,8 @@ typedef struct vfs_node
     uint32_t mode;                     // permission bits only (07777); the type is `type`
     int64_t mtime;                     // last change, seconds since 1970 (0: unknown)
     uint64_t dev;                      // file system id (vfs_dev_alloc), st_dev
-    struct vfs_node *mounted_root;          // mount point: the root of the file system mounted here, or NULL
-    struct vfs_node *mount_point;          // mounted root: the directory it is mounted on, or NULL
+    struct vfs_node *mounted_root;     // mount point: the root of the file system mounted here, or NULL
+    struct vfs_node *mount_point;      // mounted root: the directory it is mounted on, or NULL
     uint64_t rdev;                     // device nodes (char and block): MIHOS_MKDEV(major, minor), st_rdev
     const struct file_ops *device_ops; // character devices: the driver's ops, given to every open file
     const struct vfs_node_ops *ops;
@@ -69,6 +69,9 @@ typedef struct vfs_node_ops
 
     // File: copies up to count bytes from offset; returns the count (0 at the end) or -errno
     long (*read)(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
+
+    // File or disk: copies count bytes in at offset; returns the count written (fewer at the end of a disk) or -errno
+    long (*write)(vfs_node_t *file, const void *buffer, size_t count, uint64_t offset);
 
     // Directory: entry number index into *entry; 1 if there is one, 0 past the last, or -errno
     int (*readdir)(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
@@ -162,6 +165,17 @@ int vfs_lookup(const char *path, vfs_node_t **node);
  * @return The number of bytes read on success, -errno on failure.
  */
 long vfs_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset);
+
+/**
+ * @brief Write data to a node.
+ *
+ * @param node The node to write to.
+ * @param buffer The buffer containing the data to write.
+ * @param count The number of bytes to write.
+ * @param offset The offset within the node to start writing to.
+ * @return The number of bytes written on success, -errno on failure.
+ */
+long vfs_write(vfs_node_t *node, const void *buffer, size_t count, uint64_t offset);
 
 /**
  * @brief Read a directory entry at a given index.
