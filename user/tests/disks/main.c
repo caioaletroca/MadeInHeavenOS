@@ -10,8 +10,9 @@
 
 /*
  * Block devices in /dev: the test disk (disk.img, 4 MiB of ext2 labelled
- * "mihos-test") found by its d_type, what stat says about it, and reads at
- * byte offsets through open, lseek and read. hda on QEMU, hdb on Bochs.
+ * "mihos-test") found by its d_type, what stat says about it, and reads and
+ * writes at byte offsets through open, lseek, read and write. hda on QEMU, hdb
+ * on Bochs.
  */
 
 #define DISK_SIZE (4 * 1024 * 1024)
@@ -19,6 +20,8 @@
 #define SB_MAGIC 1080       // the superblock is at 1024, its magic at 56 in it
 #define SB_VOLUME_NAME 1144 // and the label at 120
 #define EXT2_MAGIC 0xEF53
+#define WRITE_AREA (7000 * 512 + 100) // free sectors; 100 bytes in, so writes start mid-sector
+#define WRITE_LENGTH 5000             // across sectors and the 4 KiB cache block boundary at 7008
 
 static char disk[64];
 
@@ -136,6 +139,73 @@ static void test_reads(void)
     close(fd);
 }
 
+static ssize_t write_at(int fd, const void *buffer, size_t count, off_t offset)
+{
+    if (lseek(fd, offset, SEEK_SET) != offset)
+        return -1;
+    return write(fd, buffer, count);
+}
+
+/*
+ * Writes at byte offsets in the free sectors 7000.. (ext2 blocks 3500.., which
+ * nothing reads) and at the end of the disk, all restored. One write() of
+ * several 256-byte chunks, read back through the same fd and another one.
+ */
+static void test_writes(void)
+{
+    static char saved[WRITE_LENGTH], pattern[WRITE_LENGTH], back[WRITE_LENGTH];
+    char tail[10];
+
+    int fd = open(disk, O_RDWR);
+    CHECK(fd >= 0);
+    if (fd < 0)
+        return;
+    CHECK(read_at(fd, saved, sizeof(saved), WRITE_AREA) == (ssize_t)sizeof(saved));
+    CHECK(read_at(fd, tail, sizeof(tail), DISK_SIZE - 10) == 10);
+
+    // Across sectors and a 4 KiB cache block; the position moves past what was written
+    for (size_t i = 0; i < sizeof(pattern); i++)
+        pattern[i] = (char)(i * 13 + 5);
+    CHECK(write_at(fd, pattern, sizeof(pattern), WRITE_AREA) == (ssize_t)sizeof(pattern));
+    CHECK(lseek(fd, 0, SEEK_CUR) == WRITE_AREA + (off_t)sizeof(pattern));
+    CHECK(read_at(fd, back, sizeof(back), WRITE_AREA) == (ssize_t)sizeof(back));
+    CHECK(memcmp(back, pattern, sizeof(back)) == 0);
+
+    // Another open file of the disk sees the same bytes (one cache)
+    int other = open(disk, O_RDONLY);
+    CHECK(other >= 0);
+    memset(back, 0, sizeof(back));
+    CHECK(read_at(other, back, sizeof(back), WRITE_AREA) == (ssize_t)sizeof(back));
+    CHECK(memcmp(back, pattern, sizeof(back)) == 0);
+    close(other);
+
+    // Write-only: writes work, reads are refused
+    int writer = open(disk, O_WRONLY);
+    CHECK(writer >= 0);
+    CHECK(write_at(writer, "abc", 3, WRITE_AREA + 1) == 3);
+    errno = 0;
+    CHECK(read(writer, back, 1) == -1 && errno == EBADF);
+    close(writer);
+    CHECK(read_at(fd, back, 5, WRITE_AREA) == 5);
+    CHECK(back[0] == pattern[0] && memcmp(back + 1, "abc", 3) == 0 && back[4] == pattern[4]);
+
+    // The end: a write across it is cut short, at or past it ENOSPC, 0 bytes is 0
+    CHECK(write_at(fd, "0123456789ABCDEF", 16, DISK_SIZE - 10) == 10);
+    CHECK(read_at(fd, back, 16, DISK_SIZE - 10) == 10 && memcmp(back, "0123456789", 10) == 0);
+    errno = 0;
+    CHECK(write_at(fd, "x", 1, DISK_SIZE) == -1 && errno == ENOSPC);
+    errno = 0;
+    CHECK(write_at(fd, "x", 1, DISK_SIZE + 1000) == -1 && errno == ENOSPC);
+    CHECK(write_at(fd, "x", 0, DISK_SIZE) == 0);
+
+    // Put everything back
+    CHECK(write_at(fd, tail, sizeof(tail), DISK_SIZE - 10) == 10);
+    CHECK(write_at(fd, saved, sizeof(saved), WRITE_AREA) == (ssize_t)sizeof(saved));
+    CHECK(read_at(fd, back, sizeof(back), WRITE_AREA) == (ssize_t)sizeof(back));
+    CHECK(memcmp(back, saved, sizeof(back)) == 0);
+    close(fd);
+}
+
 static void test_refusals(void)
 {
     errno = 0;
@@ -165,6 +235,7 @@ int main(void)
     {
         test_stat();
         test_reads();
+        test_writes();
         test_refusals();
     }
 

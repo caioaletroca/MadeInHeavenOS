@@ -428,6 +428,105 @@ static void block_test_write_back(block_device_t *dev)
 }
 
 /**
+ * Writes through the node at byte offsets, into the cache: read back through the
+ * node at once, on the disk after a sync. Around the write area (sectors
+ * 7000..7299) and at the end of the disk; both restored.
+ */
+static void block_test_node_writes(block_device_t *dev, vfs_node_t *node)
+{
+    uint64_t size = dev->sector_count * BLOCK_SECTOR_SIZE;
+    uint64_t area = (uint64_t)WRITE_START * BLOCK_SECTOR_SIZE; // = cache block 875's first byte
+    size_t length = WRITE_SECTORS * BLOCK_SECTOR_SIZE;
+    uint8_t *saved = kmalloc(length);
+    uint8_t *bytes = kmalloc(length + 1);
+    uint8_t *sectors = kmalloc(length);
+    uint8_t tail[BLOCK_SECTOR_SIZE];
+    if (saved == NULL || bytes == NULL || sectors == NULL)
+        panic("Block self-test: out of memory\n");
+    block_read_or_panic(dev, WRITE_START, WRITE_SECTORS, saved);
+    block_read_or_panic(dev, dev->sector_count - 1, 1, tail);
+
+    static const struct
+    {
+        uint64_t offset; // from the start of the area (never 0: the byte before is checked too)
+        size_t count;
+    } cases[] = {
+        {1, 1},                                                    // one byte
+        {510, 4},                                                  // across two sectors
+        {BLOCK_CACHE_BLOCK_SIZE - 3, 6},                           // across two cache blocks
+        {700, 3 * BLOCK_CACHE_BLOCK_SIZE + 123},                   // a head, whole blocks, a tail
+        {256 * BLOCK_SECTOR_SIZE - 9, 2 * BLOCK_SECTOR_SIZE + 17}, // around the area's command boundary
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    {
+        uint64_t at = area + cases[i].offset;
+        size_t count = cases[i].count;
+        for (size_t b = 0; b < count; b++)
+            bytes[b] = write_pattern(i + 1, b);
+
+        long got = vfs_write(node, bytes, count, at);
+        if (got != (long)count)
+            panic("Block self-test: writing %zu bytes at %u wrote %ld\n", count, (unsigned int)at, got);
+
+        // The node reads the new bytes at once (from the cache), the neighbours unchanged
+        memset(sectors, 0xA5, count + 2);
+        if (vfs_read(node, sectors, count + 2, at - 1) != (long)count + 2 || memcmp(sectors + 1, bytes, count) != 0)
+            panic("Block self-test: %zu bytes written at %u read back different\n", count, (unsigned int)at);
+        if (sectors[0] != saved[cases[i].offset - 1] || sectors[count + 1] != saved[cases[i].offset + count])
+            panic("Block self-test: writing %zu bytes at %u changed a byte next to them\n", count, (unsigned int)at);
+
+        // The disk holds them after a sync
+        cache_sync_or_panic();
+        block_read_or_panic(dev, WRITE_START, WRITE_SECTORS, sectors);
+        if (memcmp(sectors + cases[i].offset, bytes, count) != 0)
+            panic("Block self-test: %zu bytes written at %u are not on the disk after a sync\n", count,
+                  (unsigned int)at);
+
+        // Put the area back as it was before the next case
+        if (vfs_write(node, saved, length, area) != (long)length)
+            panic("Block self-test: restoring the write area failed\n");
+    }
+
+    // The end of the disk: a write across it is cut short, at or past it -ENOSPC, 0 bytes is 0
+    memset(bytes, 0x77, 100);
+    if (vfs_write(node, bytes, 100, size - 10) != 10)
+        panic("Block self-test: a write across the end of the disk was not cut to 10 bytes\n");
+    if (vfs_read(node, sectors, 10, size - 10) != 10 || memcmp(sectors, bytes, 10) != 0)
+        panic("Block self-test: the last 10 bytes of the disk read back different\n");
+    if (vfs_write(node, bytes, 1, size) != -ENOSPC || vfs_write(node, bytes, 100, size + 1000) != -ENOSPC ||
+        vfs_write(node, bytes, 1, UINT64_MAX) != -ENOSPC)
+        panic("Block self-test: a write at or past the end of the disk did not return -ENOSPC\n");
+    if (vfs_write(node, bytes, 0, size) != 0 || vfs_write(node, bytes, 0, 0) != 0)
+        panic("Block self-test: a 0-byte write did not return 0\n");
+    if (vfs_write(node, tail + BLOCK_SECTOR_SIZE - 10, 10, size - 10) != 10)
+        panic("Block self-test: restoring the end of the disk failed\n");
+
+    // Directories are not written
+    vfs_node_t *dir;
+    if (vfs_lookup("/dev", &dir) != 0)
+        panic("Block self-test: no /dev\n");
+    if (vfs_write(dir, bytes, 1, 0) != -EISDIR)
+        panic("Block self-test: a write to /dev did not return -EISDIR\n");
+    struct file *file;
+    if (vfs_open("/dev", O_WRONLY, &file) != -EISDIR || vfs_open("/dev", O_RDWR, &file) != -EISDIR)
+        panic("Block self-test: opening /dev for writing did not return -EISDIR\n");
+    vfs_node_put(dir);
+
+    // Everything restored, on the disk too
+    cache_sync_or_panic();
+    block_read_or_panic(dev, WRITE_START, WRITE_SECTORS, sectors);
+    if (memcmp(sectors, saved, length) != 0)
+        panic("Block self-test: the write area was not restored\n");
+    block_read_or_panic(dev, dev->sector_count - 1, 1, sectors);
+    if (memcmp(sectors, tail, BLOCK_SECTOR_SIZE) != 0)
+        panic("Block self-test: the end of the disk was not restored\n");
+
+    kfree(sectors);
+    kfree(bytes);
+    kfree(saved);
+}
+
+/**
  * The disk as /dev/<name>: a block device node, read at byte offsets. Every
  * read must give the same bytes as whole-sector reads of the same range.
  */
@@ -530,6 +629,8 @@ static void block_test_node(block_device_t *dev)
 
     kfree(bytes);
     kfree(sectors);
+
+    block_test_node_writes(dev, node);
 
     if (node->refs != refs)
         panic("Block self-test: %s's references leaked (%u → %u)\n", path, refs, node->refs);
