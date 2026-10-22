@@ -36,6 +36,8 @@ static uint32_t block_cache_sectors(block_device_t *dev, uint64_t index)
     return (uint32_t)MIN((uint64_t)BLOCK_CACHE_SECTORS, dev->sector_count - index * BLOCK_CACHE_SECTORS);
 }
 
+#define BLOCK_CACHE_WRITE_BACK 1 // block_cache_claim: *out is a dirty buffer to write back first
+
 /**
  * @brief Finds (dev, index) or claims the least recently used buffer nobody holds for
  * it, with one reference taken. Only list and key work, never I/O: the lock is
@@ -44,7 +46,7 @@ static uint32_t block_cache_sectors(block_device_t *dev, uint64_t index)
  * @param dev The block device.
  * @param index The block index within the device.
  * @param out The output pointer to the claimed buffer.
- * @return 0 on success, -ENOBUFS if no buffer could be claimed.
+ * @return 0 on success, BLOCK_CACHE_WRITE_BACK if a dirty buffer must be written back first, -ENOBUFS if no buffer could be claimed.
  */
 static int block_cache_claim(block_device_t *dev, uint64_t index, block_cache_buf_t **out)
 {
@@ -72,6 +74,16 @@ static int block_cache_claim(block_device_t *dev, uint64_t index, block_cache_bu
         if (buf->refs != 0)
             continue; // skip buffers that are currently held
 
+        // Dirty: its block must reach the disk before the buffer can hold another one.
+        // Pin it under its old key (a get of that block still finds it) and let the
+        // caller write it back without this spinlock
+        if (buf->dirty)
+        {
+            buf->refs = 1;
+            *out = buf;
+            return BLOCK_CACHE_WRITE_BACK;
+        }
+
         // Remove the buffer from its current hash bucket if it is linked.
         if (hlist_linked(&buf->hash_link))
             hlist_remove(&buf->hash_link);
@@ -87,6 +99,41 @@ static int block_cache_claim(block_device_t *dev, uint64_t index, block_cache_bu
     }
 
     return -ENOBUFS;
+}
+
+/**
+ * @brief Writes back a dirty buffer to its block device.
+ *
+ * @param buf The buffer to write back.
+ * @return 0 on success, or a negative error code on failure.
+ */
+static int block_cache_write_back(block_cache_buf_t *buf)
+{
+    guard(mutex, &buf->data_lock);
+
+    if (!buf->dirty)
+        return 0;
+
+    int ret = block_write(buf->dev, buf->index * BLOCK_CACHE_SECTORS, block_cache_sectors(buf->dev, buf->index), buf->data);
+    if (ret == 0)
+        buf->dirty = false;
+
+    return ret;
+}
+
+/**
+ * @brief Unpins a buffer, decrementing its reference count.
+ *
+ * @param buf The buffer to unpin.
+ */
+static void block_cache_unpin(block_cache_buf_t *buf)
+{
+    guard(spinlock, &block_cache_lock);
+
+    if (buf->refs == 0)
+        panic("block_cache_unpin: buffer has no references\n");
+
+    buf->refs--;
 }
 
 void block_cache_init(void)
@@ -121,7 +168,15 @@ int block_cache_get(block_device_t *dev, uint64_t index, block_cache_buf_t **out
         return -EINVAL;
 
     block_cache_buf_t *buf;
-    int ret = block_cache_claim(dev, index, &buf);
+    int ret;
+    while ((ret = block_cache_claim(dev, index, &buf)) == BLOCK_CACHE_WRITE_BACK)
+    {
+        // The oldest free buffer holds unsaved data: save it, then claim again
+        ret = block_cache_write_back(buf);
+        block_cache_unpin(buf);
+        if (ret < 0)
+            return ret;
+    }
     if (ret < 0)
         return ret;
 
@@ -163,6 +218,17 @@ void block_cache_put(block_cache_buf_t *buf)
         if (--buf->refs == 0)
             list_move_after(&block_cache_lru, &buf->lru_link);
     }
+}
+
+void block_cache_begin_write(block_cache_buf_t *buf)
+{
+    mutex_lock(&buf->data_lock);
+}
+
+void block_cache_end_write(block_cache_buf_t *buf)
+{
+    buf->dirty = true;
+    mutex_unlock(&buf->data_lock);
 }
 
 void block_cache_stats(uint64_t *hits, uint64_t *misses)

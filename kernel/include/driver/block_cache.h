@@ -15,8 +15,8 @@
 #define BLOCK_CACHE_HASH_BITS 4                                          // 16 buckets
 
 /**
- * One cached 4 KiB block of a disk. A caller holding a reference (a lease from
- * block_cache_get) may read data until block_cache_put; a buffer with no references can
+ * One cached block of a disk. A caller holding a reference (a lease from
+ * block_cache_get) may read or write data until block_cache_put; a buffer with no references can
  * be reused for another block at any time.
  */
 typedef struct block_cache_buf
@@ -26,8 +26,9 @@ typedef struct block_cache_buf
     unsigned int refs;
     list_t lru_link;
     hlist_node_t hash_link;
-    mutex_t data_lock; // data and valid: held for a fill
+    mutex_t data_lock; // data, valid and dirty: held for a fill, a write-back and between begin_write and end_write
     bool valid;
+    bool dirty; // data differs from the disk; only a holder sets it (end_write), only a write-back clears it
     uint8_t *data;
 } block_cache_buf_t;
 
@@ -52,6 +53,23 @@ int block_cache_get(block_device_t *dev, uint64_t index, block_cache_buf_t **out
  * @param buf The buffer to release.
  */
 void block_cache_put(block_cache_buf_t *buf);
+
+/**
+ * @brief Starts changing a held buffer's data: waits until no fill or write-back is
+ * inside it. Hold one buffer's write at a time (two would deadlock against
+ * another writer holding them the other way round).
+ *
+ * @param buf A buffer the caller holds (from block_cache_get).
+ */
+void block_cache_begin_write(block_cache_buf_t *buf);
+
+/**
+ * @brief Ends the change begun by block_cache_begin_write: the buffer is dirty and
+ * reaches the disk when it is evicted or at the next block_cache_sync.
+ *
+ * @param buf The same buffer.
+ */
+void block_cache_end_write(block_cache_buf_t *buf);
 
 /**
  * @brief How many gets found their block (hits) and how many had to claim a buffer (misses).
