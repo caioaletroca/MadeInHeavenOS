@@ -29,14 +29,14 @@ typedef struct ext2_fs
 
 typedef struct ext2_node
 {
-    vfs_node_t node; // what the VFS sees (the "base class")
+    vfs_node_t base; // what the VFS sees (the "base class")
     ext2_fs_t *fs;
     uint32_t ino;
     uint32_t block[EXT2_N_BLOCKS]; // copy of the inode's i_block
     hlist_node_t hash;             // in fs->nodes, under fs->lock
 } ext2_node_t;
 
-#define EXT2_NODE(n) list_container(n, ext2_node_t, node)
+#define EXT2_NODE(n) list_container(n, ext2_node_t, base)
 
 static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
 static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
@@ -222,9 +222,9 @@ static int ext2_iget(ext2_fs_t *fs, uint32_t ino, vfs_node_t *parent, vfs_node_t
         if (cached->ino != ino)
             continue;
 
-        if (vfs_node_tryget(&cached->node))
+        if (vfs_node_tryget(&cached->base))
         {
-            *out = &cached->node;
+            *out = &cached->base;
             return 0;
         }
 
@@ -265,18 +265,18 @@ static int ext2_iget(ext2_fs_t *fs, uint32_t ino, vfs_node_t *parent, vfs_node_t
     if (n == NULL)
         return -ENOMEM;
 
-    vfs_node_init(&n->node, type, &ext2_ops);
-    n->node.ino = ino;
-    n->node.dev = fs->dev;
-    n->node.mode = inode.i_mode & 07777;
-    n->node.mtime = inode.i_mtime;
-    n->node.nlink = inode.i_links_count;
-    n->node.size = inode.i_size;
+    vfs_node_init(&n->base, type, &ext2_ops);
+    n->base.ino = ino;
+    n->base.dev = fs->dev;
+    n->base.mode = inode.i_mode & 07777;
+    n->base.mtime = inode.i_mtime;
+    n->base.nlink = inode.i_links_count;
+    n->base.size = inode.i_size;
     if (type == VFS_FILE)
-        n->node.size |= (uint64_t)inode.i_size_high << 32; // large_file: sizes past 4 GiB
+        n->base.size |= (uint64_t)inode.i_size_high << 32; // large_file: sizes past 4 GiB
 
-    // ".." of the root is the root itself (the VFS steps out of mounts through covers)
-    n->node.parent = parent != NULL ? parent : &n->node;
+    // ".." of the root is the root itself (the VFS steps out of mounts through mount_point)
+    n->base.parent = parent != NULL ? parent : &n->base;
     if (parent != NULL)
         vfs_node_get(parent); // a child keeps its directory alive, so ".." stays valid
 
@@ -285,7 +285,7 @@ static int ext2_iget(ext2_fs_t *fs, uint32_t ino, vfs_node_t *parent, vfs_node_t
     memcpy(n->block, inode.i_block, sizeof(n->block));
     hlist_insert(bucket, &n->hash);
 
-    *out = &n->node;
+    *out = &n->base;
     return 0;
 }
 
@@ -426,7 +426,7 @@ typedef int (*ext2_visit_t)(const ext2_dirent_t *entry, void *context);
 static int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context)
 {
     ext2_fs_t *fs = dir->fs;
-    uint64_t blocks = (dir->node.size + fs->block_size - 1) / fs->block_size;
+    uint64_t blocks = (dir->base.size + fs->block_size - 1) / fs->block_size;
 
     for (uint64_t i = 0; i < blocks; i++)
     {

@@ -106,7 +106,7 @@ static void ext2_test_root(void)
     vfs_node_t *root = ext2_expect("/", VFS_DIRECTORY);
     vfs_node_t *mnt = ext2_expect(MNT, VFS_DIRECTORY);
 
-    if (mnt->ino != 2 || mnt->dev == 0 || mnt->dev == root->dev || mnt->covers == NULL)
+    if (mnt->ino != 2 || mnt->dev == 0 || mnt->dev == root->dev || mnt->mount_point == NULL)
         panic("ext2 self-test: /mnt is not inode 2 of a mounted file system\n");
 
     struct mihos_stat st;

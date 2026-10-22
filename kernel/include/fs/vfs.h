@@ -37,8 +37,8 @@ typedef struct vfs_node
     uint32_t mode;                     // permission bits only (07777); the type is `type`
     int64_t mtime;                     // last change, seconds since 1970 (0: unknown)
     uint64_t dev;                      // file system id (vfs_dev_alloc), st_dev
-    struct vfs_node *mounted;          // mount point: the root of the file system mounted here, or NULL
-    struct vfs_node *covers;           // mounted root: the directory it is mounted on, or NULL
+    struct vfs_node *mounted_root;          // mount point: the root of the file system mounted here, or NULL
+    struct vfs_node *mount_point;          // mounted root: the directory it is mounted on, or NULL
     uint64_t rdev;                     // device nodes (char and block): MIHOS_MKDEV(major, minor), st_rdev
     const struct file_ops *device_ops; // character devices: the driver's ops, given to every open file
     const struct vfs_node_ops *ops;

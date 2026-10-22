@@ -367,7 +367,7 @@ static void vfs_test_mount(void)
     unsigned int dev_refs = dev->refs;
 
     // Lookup crossed into devfs: its own root, another file system
-    if (dev->covers == NULL || dev->mounted != NULL || dev->dev == root->dev || dev->ino != 1)
+    if (dev->mount_point == NULL || dev->mounted_root != NULL || dev->dev == root->dev || dev->ino != 1)
         panic("VFS self-test: /dev is not devfs's root\n");
     if (vfs_expect_stat("/dev", MIHOS_S_IFDIR | 0755) != 0)
         panic("VFS self-test: devfs's root has an mtime\n");
@@ -414,7 +414,7 @@ static void vfs_test_mount(void)
         panic("VFS self-test: mounting on /dev twice did not return -EBUSY\n");
     if (vfs_mount("/nope", dev) != -ENOENT)
         panic("VFS self-test: mounting on a missing path did not return -ENOENT\n");
-    if (root->mounted != NULL || dev->mounted != NULL)
+    if (root->mounted_root != NULL || dev->mounted_root != NULL)
         panic("VFS self-test: a refused mount was recorded\n");
 
     if (dev->refs != dev_refs)

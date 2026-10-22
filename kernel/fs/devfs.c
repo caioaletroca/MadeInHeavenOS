@@ -9,14 +9,14 @@
 
 typedef struct devfs_node
 {
-    vfs_node_t node;
+    vfs_node_t base;
     char *name;
     size_t name_length;
-    list_t sibling;
+    list_t device_link;
     block_device_t *block; // block devices: what reads go to
 } devfs_node_t;
 
-#define DEVFS_NODE(n) list_container(n, devfs_node_t, node)
+#define DEVFS_NODE(n) list_container(n, devfs_node_t, base)
 
 static vfs_node_t devfs_root;
 static uint64_t devfs_dev;
@@ -60,7 +60,7 @@ static devfs_node_t *devfs_find(const char *name, size_t length)
     list_t *pos;
     list_for_each(pos, &devfs_devices)
     {
-        devfs_node_t *n = list_container(pos, devfs_node_t, sibling);
+        devfs_node_t *n = list_container(pos, devfs_node_t, device_link);
         if (n->name_length == length && memcmp(n->name, name, length) == 0)
             return n;
     }
@@ -101,16 +101,16 @@ static int devfs_add(const char *name, vfs_node_type_t type, uint32_t mode, uint
     }
     memcpy(copy, name, length + 1);
 
-    vfs_node_init(&dev->node, type, ops);
+    vfs_node_init(&dev->base, type, ops);
     dev->name = copy;
     dev->name_length = length;
-    list_insert_before(&devfs_devices, &dev->sibling);
+    list_insert_before(&devfs_devices, &dev->device_link);
 
-    dev->node.dev = devfs_dev;
-    dev->node.ino = devfs_next_ino++;
-    dev->node.mode = mode & 07777;
-    dev->node.rdev = rdev;
-    dev->node.parent = &devfs_root;
+    dev->base.dev = devfs_dev;
+    dev->base.ino = devfs_next_ino++;
+    dev->base.mode = mode & 07777;
+    dev->base.rdev = rdev;
+    dev->base.parent = &devfs_root;
 
     *out = dev;
 
@@ -140,7 +140,7 @@ int devfs_register(const char *name, uint32_t mode, uint64_t rdev, const struct 
     if (ret < 0)
         return ret;
 
-    n->node.device_ops = ops;
+    n->base.device_ops = ops;
 
     return 0;
 }
@@ -153,7 +153,7 @@ int devfs_register_block(const char *name, uint32_t mode, block_device_t *block)
         return ret;
 
     n->block = block;
-    n->node.size = n->block->sector_count * BLOCK_SECTOR_SIZE;
+    n->base.size = n->block->sector_count * BLOCK_SECTOR_SIZE;
 
     return 0;
 }
@@ -172,8 +172,8 @@ static int devfs_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_no
         return -ENOENT;
     }
 
-    vfs_node_get(&n->node);
-    *child = &n->node;
+    vfs_node_get(&n->base);
+    *child = &n->base;
     return 0;
 }
 
@@ -204,7 +204,7 @@ static int devfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
         {
             if (i++ == index)
             {
-                found = list_container(pos, devfs_node_t, sibling);
+                found = list_container(pos, devfs_node_t, device_link);
                 break;
             }
         }
@@ -215,8 +215,8 @@ static int devfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
 
         name = found->name;
         length = found->name_length;
-        ino = found->node.ino;
-        type = found->node.type;
+        ino = found->base.ino;
+        type = found->base.type;
     }
 
     entry->ino = ino;

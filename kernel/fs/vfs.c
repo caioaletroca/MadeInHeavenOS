@@ -68,8 +68,8 @@ void vfs_node_init(vfs_node_t *node, vfs_node_type_t type, const vfs_node_ops_t 
     node->mode = 0;
     node->mtime = 0;
     node->dev = 0;
-    node->mounted = NULL;
-    node->covers = NULL;
+    node->mounted_root = NULL;
+    node->mount_point = NULL;
     node->rdev = 0;
     node->device_ops = NULL;
     node->parent = NULL;
@@ -134,7 +134,7 @@ int vfs_mount(const char *path, vfs_node_t *root)
     if (point->type != VFS_DIRECTORY)
         ret = -ENOTDIR;
 
-    else if (point == vfs_root || point->covers != NULL)
+    else if (point == vfs_root || point->mount_point != NULL)
         ret = -EBUSY;
 
     if (ret < 0)
@@ -143,8 +143,8 @@ int vfs_mount(const char *path, vfs_node_t *root)
         return ret;
     }
 
-    point->mounted = root;
-    root->covers = point;
+    point->mounted_root = root;
+    root->mount_point = point;
     vfs_node_get(root);
     return 0;
 }
@@ -177,8 +177,8 @@ int vfs_lookup(const char *path, vfs_node_t **out)
         else if (length == 2 && name[0] == '.' && name[1] == '.')
         {
             vfs_node_t *up = node;
-            while (up->covers != NULL)
-                up = up->covers;
+            while (up->mount_point != NULL)
+                up = up->mount_point;
 
             next = up->parent;
             vfs_node_get(next);
@@ -194,9 +194,9 @@ int vfs_lookup(const char *path, vfs_node_t **out)
         node = next;
 
         // A mount point: continue in the root mounted there (several mounts may stack)
-        while (node->mounted != NULL)
+        while (node->mounted_root != NULL)
         {
-            vfs_node_t *root = node->mounted;
+            vfs_node_t *root = node->mounted_root;
             vfs_node_get(root);
             vfs_node_put(node);
             node = root;

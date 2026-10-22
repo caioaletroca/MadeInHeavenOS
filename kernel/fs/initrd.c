@@ -47,16 +47,16 @@ static size_t initrd_size;
 
 typedef struct initrd_node
 {
-    vfs_node_t node; // what the VFS sees (the "base class")
+    vfs_node_t base; // what the VFS sees (the "base class")
     char *name;      // kmalloc'd copy, '\0'-terminated
     size_t name_length;
     const void *data; // files: their bytes inside the tar
     list_t children;  // directories: initrd_node_t's, via sibling
-    list_t sibling;   // link in the parent's children
+    list_t child_link;   // link in the parent's children
 } initrd_node_t;
 
 // The initrd_node_t around a vfs_node_t (C#: (InitrdNode)node)
-#define INITRD_NODE(n) list_container(n, initrd_node_t, node)
+#define INITRD_NODE(n) list_container(n, initrd_node_t, base)
 
 static int initrd_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
 static long initrd_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
@@ -70,11 +70,11 @@ static const vfs_node_ops_t initrd_ops = {
 };
 
 /**
- * tar_octal converts a string representing an octal number in a tar header
+ * tar_parse_octal converts a string representing an octal number in a tar header
  * to a size_t value. It skips leading spaces and stops at the first NUL or space.
  * Returns 0 on success, -1 on failure (invalid octal digit).
  */
-static int tar_octal(const char *field, size_t length, size_t *value)
+static int tar_parse_octal(const char *field, size_t length, size_t *value)
 {
     size_t result = 0;
     size_t i = 0;
@@ -104,7 +104,7 @@ static int tar_header_valid(const tar_header_t *header)
         return 0;
 
     size_t stored;
-    if (tar_octal(header->checksum, sizeof(header->checksum), &stored) != 0)
+    if (tar_parse_octal(header->checksum, sizeof(header->checksum), &stored) != 0)
         return 0;
 
     const unsigned char *bytes = (const unsigned char *)header;
@@ -134,7 +134,7 @@ static const tar_header_t *tar_next(size_t *offset, size_t *size, const void **d
         return NULL;
 
     size_t file_size;
-    if (tar_octal(header->size, sizeof(header->size), &file_size) != 0)
+    if (tar_parse_octal(header->size, sizeof(header->size), &file_size) != 0)
         return NULL;
 
     *size = file_size;
@@ -160,30 +160,30 @@ static initrd_node_t *initrd_node_create(vfs_node_type_t type, const char *name,
     if (n == NULL || copy == NULL)
         panic("initrd: out of memory building the tree\n");
 
-    vfs_node_init(&n->node, type, &initrd_ops);
+    vfs_node_init(&n->base, type, &initrd_ops);
     memcpy(copy, name, length);
     copy[length] = '\0';
     n->name = copy;
     n->name_length = length;
-    n->node.ino = initrd_next_ino++;
-    n->node.dev = initrd_dev;
+    n->base.ino = initrd_next_ino++;
+    n->base.dev = initrd_dev;
     list_init(&n->children);
-    list_init(&n->sibling);
+    list_init(&n->child_link);
 
     return n;
 }
 
 /**
- * initrd_child searches for a child node with the given name and length
+ * initrd_find_child searches for a child node with the given name and length
  * within the specified directory node.
  * Returns a pointer to the child node if found, or NULL if not found.
  */
-static initrd_node_t *initrd_child(initrd_node_t *dir, const char *name, size_t length)
+static initrd_node_t *initrd_find_child(initrd_node_t *dir, const char *name, size_t length)
 {
     list_t *pos;
     list_for_each(pos, &dir->children)
     {
-        initrd_node_t *child = list_container(pos, initrd_node_t, sibling);
+        initrd_node_t *child = list_container(pos, initrd_node_t, child_link);
         if (child->name_length == length && memcmp(child->name, name, length) == 0)
             return child;
     }
@@ -198,26 +198,26 @@ static initrd_node_t *initrd_child(initrd_node_t *dir, const char *name, size_t 
  */
 static void initrd_add(initrd_node_t *dir, initrd_node_t *child)
 {
-    child->node.parent = &dir->node;
-    list_insert_before(&dir->children, &child->sibling);
+    child->base.parent = &dir->base;
+    list_insert_before(&dir->children, &child->child_link);
 }
 
 /**
- * initrd_child_dir searches for a child directory with the given name and length
+ * initrd_find_or_create_dir searches for a child directory with the given name and length
  * within the specified directory node. If the child does not exist, it creates
  * a new directory node and adds it to the parent directory.
  * Returns a pointer to the child directory node.
  */
-static initrd_node_t *initrd_child_dir(initrd_node_t *dir, const char *name, size_t length)
+static initrd_node_t *initrd_find_or_create_dir(initrd_node_t *dir, const char *name, size_t length)
 {
-    initrd_node_t *child = initrd_child(dir, name, length);
+    initrd_node_t *child = initrd_find_child(dir, name, length);
     if (child == NULL)
     {
         child = initrd_node_create(VFS_DIRECTORY, name, length);
-        child->node.mode = 0755; // Default mode for directories
+        child->base.mode = 0755; // Default mode for directories
         initrd_add(dir, child);
     }
-    else if (child->node.type != VFS_DIRECTORY)
+    else if (child->base.type != VFS_DIRECTORY)
         panic("initrd: '%.*s' is both a file and a directory\n", (int)length, name);
 
     return child;
@@ -230,12 +230,12 @@ static initrd_node_t *initrd_child_dir(initrd_node_t *dir, const char *name, siz
  */
 static int initrd_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child)
 {
-    initrd_node_t *found = initrd_child(INITRD_NODE(dir), name, length);
+    initrd_node_t *found = initrd_find_child(INITRD_NODE(dir), name, length);
     if (found == NULL)
         return -ENOENT;
 
-    vfs_node_get(&found->node);
-    *child = &found->node;
+    vfs_node_get(&found->base);
+    *child = &found->base;
     return 0;
 }
 
@@ -288,9 +288,9 @@ static int initrd_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
         {
             if (i++ == index)
             {
-                initrd_node_t *child = list_container(pos, initrd_node_t, sibling);
+                initrd_node_t *child = list_container(pos, initrd_node_t, child_link);
 
-                node = &child->node;
+                node = &child->base;
                 name = child->name;
                 length = child->name_length;
                 break;
@@ -326,8 +326,8 @@ static void initrd_add_entry(initrd_node_t *root, const tar_header_t *header, si
 
     // Parse the mode and modification time from the tar header.
     size_t mode, mtime;
-    if (tar_octal(header->mode, sizeof(header->mode), &mode) != 0 ||
-        tar_octal(header->mtime, sizeof(header->mtime), &mtime) != 0)
+    if (tar_parse_octal(header->mode, sizeof(header->mode), &mode) != 0 ||
+        tar_parse_octal(header->mtime, sizeof(header->mtime), &mtime) != 0)
         panic("initrd: '%s' has a bad mode or mtime\n", path);
 
     initrd_node_t *dir = root;
@@ -344,16 +344,16 @@ static void initrd_add_entry(initrd_node_t *root, const tar_header_t *header, si
 
         if (next_length > 0 || !is_file)
         {
-            dir = initrd_child_dir(dir, name, length);
+            dir = initrd_find_or_create_dir(dir, name, length);
             last = dir;
         }
         else
         {
-            if (initrd_child(dir, name, length) != NULL)
+            if (initrd_find_child(dir, name, length) != NULL)
                 panic("initrd: '%s' listed twice\n", path);
 
             initrd_node_t *file = initrd_node_create(VFS_FILE, name, length);
-            file->node.size = size;
+            file->base.size = size;
             file->data = data;
             initrd_add(dir, file);
             last = file;
@@ -365,8 +365,8 @@ static void initrd_add_entry(initrd_node_t *root, const tar_header_t *header, si
 
     if (last != NULL)
     {
-        last->node.mode = (uint32_t)(mode & 07777);
-        last->node.mtime = (int64_t)mtime;
+        last->base.mode = (uint32_t)(mode & 07777);
+        last->base.mtime = (int64_t)mtime;
     }
 }
 
@@ -406,7 +406,7 @@ void initrd_init(const boot_info_t *boot_info)
             break;
 
         size_t file_size;
-        if (!tar_header_valid(header) || tar_octal(header->size, sizeof(header->size), &file_size) != 0)
+        if (!tar_header_valid(header) || tar_parse_octal(header->size, sizeof(header->size), &file_size) != 0)
             panic("initrd: bad header at offset %zu\n", file_offset);
 
         size_t data = file_offset + TAR_BLOCK;
@@ -421,8 +421,8 @@ void initrd_init(const boot_info_t *boot_info)
 
     // The archive is valid: build the tree and make it "/"
     initrd_node_t *root = initrd_node_create(VFS_DIRECTORY, "", 0);
-    root->node.parent = &root->node;
-    root->node.mode = 0755; // Default mode for the root directory
+    root->base.parent = &root->base;
+    root->base.mode = 0755; // Default mode for the root directory
 
     size_t offset = 0;
     size_t size;
@@ -431,5 +431,5 @@ void initrd_init(const boot_info_t *boot_info)
     while ((header = tar_next(&offset, &size, &data)) != NULL)
         initrd_add_entry(root, header, size, data);
 
-    vfs_mount_root(&root->node);
+    vfs_mount_root(&root->base);
 }
