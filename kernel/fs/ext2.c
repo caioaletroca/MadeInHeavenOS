@@ -1,6 +1,6 @@
 #include <fs/ext2.h>
 #include "ext2_disk.h"
-#include <driver/bcache.h>
+#include <driver/block_cache.h>
 #include <sched/sync.h>
 #include <sys/hashtable.h>
 #include <mihos/errno.h>
@@ -55,21 +55,21 @@ static const vfs_node_ops_t ext2_ops = {
  *
  * @param fs: The ext2 filesystem
  * @param block: The block number to get
- * @param lease: Pointer to a bcache buffer lease
+ * @param lease: Pointer to a block cache buffer lease
  * @param data: Pointer to store the data pointer
  * @return 0 on success, negative error code on failure. The block data is returned via the @data parameter.
  */
-static int ext2_block_get(ext2_fs_t *fs, uint32_t block, bcache_buf_t **lease, const uint8_t **data)
+static int ext2_block_get(ext2_fs_t *fs, uint32_t block, block_cache_buf_t **lease, const uint8_t **data)
 {
     if (block == 0 || block >= fs->blocks_count)
         return -EIO; // a corrupt pointer: trusting it would read some other file's data
 
     uint64_t byte = (uint64_t)block * fs->block_size;
-    int ret = bcache_get(fs->disk, byte / BCACHE_BLOCK_SIZE, lease);
+    int ret = block_cache_get(fs->disk, byte / BLOCK_CACHE_BLOCK_SIZE, lease);
     if (ret < 0)
         return ret;
 
-    *data = (*lease)->data + byte % BCACHE_BLOCK_SIZE;
+    *data = (*lease)->data + byte % BLOCK_CACHE_BLOCK_SIZE;
     return 0;
 }
 
@@ -82,13 +82,13 @@ static int ext2_block_get(ext2_fs_t *fs, uint32_t block, bcache_buf_t **lease, c
  */
 static int ext2_read_super(block_device_t *disk, ext2_super_t *superblock)
 {
-    bcache_buf_t *lease;
-    int ret = bcache_get(disk, 0, &lease);
+    block_cache_buf_t *lease;
+    int ret = block_cache_get(disk, 0, &lease);
     if (ret < 0)
         return ret;
 
     memcpy(superblock, lease->data + EXT2_SUPERBLOCK_OFFSET, sizeof(ext2_super_t));
-    bcache_put(lease);
+    block_cache_put(lease);
     return 0;
 }
 
@@ -163,7 +163,7 @@ static int ext2_read_groups(ext2_fs_t *fs, uint32_t first_data_block)
     uint32_t block = first_data_block + 1;
     for (size_t done = 0; done < size; block++)
     {
-        bcache_buf_t *lease;
+        block_cache_buf_t *lease;
         const uint8_t *data;
         int ret = ext2_block_get(fs, block, &lease, &data);
         if (ret < 0)
@@ -171,7 +171,7 @@ static int ext2_read_groups(ext2_fs_t *fs, uint32_t first_data_block)
 
         size_t chunk = MIN((size_t)fs->block_size, size - done);
         memcpy(out + done, data, chunk);
-        bcache_put(lease);
+        block_cache_put(lease);
         done += chunk;
     }
 
@@ -238,7 +238,7 @@ static int ext2_iget(ext2_fs_t *fs, uint32_t ino, vfs_node_t *parent, vfs_node_t
     uint64_t offset = (uint64_t)((ino - 1) % fs->inodes_per_group) * fs->inode_size;
     uint32_t block = fs->group_table[group].bg_inode_table + (uint32_t)(offset / fs->block_size);
 
-    bcache_buf_t *lease;
+    block_cache_buf_t *lease;
     const uint8_t *data;
     int ret = ext2_block_get(fs, block, &lease, &data);
     if (ret < 0)
@@ -246,7 +246,7 @@ static int ext2_iget(ext2_fs_t *fs, uint32_t ino, vfs_node_t *parent, vfs_node_t
 
     ext2_inode_t inode;
     memcpy(&inode, data + offset % fs->block_size, sizeof(inode));
-    bcache_put(lease);
+    block_cache_put(lease);
 
     vfs_node_type_t type;
     switch (inode.i_mode & EXT2_S_IFMT)
@@ -364,14 +364,14 @@ static int ext2_bmap(ext2_fs_t *fs, const ext2_node_t *n, uint64_t logical, uint
         uint32_t block = n->block[EXT2_NDIR_BLOCKS + levels - 1];
         for (uint64_t below = span / per_block; block != 0; below /= per_block)
         {
-            bcache_buf_t *lease;
+            block_cache_buf_t *lease;
             const uint8_t *data;
             int ret = ext2_block_get(fs, block, &lease, &data);
             if (ret < 0)
                 return ret;
 
             block = ((const uint32_t *)data)[logical / below];
-            bcache_put(lease);
+            block_cache_put(lease);
 
             logical %= below;
             if (below == 1)
@@ -437,7 +437,7 @@ static int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context)
         if (block == 0)
             continue;
 
-        bcache_buf_t *lease;
+        block_cache_buf_t *lease;
         const uint8_t *data;
         ret = ext2_block_get(fs, block, &lease, &data);
         if (ret < 0)
@@ -461,7 +461,7 @@ static int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context)
             }
             if (corrupt)
             {
-                bcache_put(lease);
+                block_cache_put(lease);
                 return -EIO;
             }
 
@@ -471,12 +471,12 @@ static int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context)
             ret = visit(e, context);
             if (ret != 0)
             {
-                bcache_put(lease);
+                block_cache_put(lease);
                 return ret;
             }
         }
 
-        bcache_put(lease);
+        block_cache_put(lease);
     }
 
     return 0;
@@ -617,14 +617,14 @@ static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t off
             memset(out + done, 0, chunk);
         else
         {
-            bcache_buf_t *lease;
+            block_cache_buf_t *lease;
             const uint8_t *data;
             ret = ext2_block_get(fs, block, &lease, &data);
             if (ret < 0)
                 return ret;
 
             memcpy(out + done, data + within, chunk);
-            bcache_put(lease);
+            block_cache_put(lease);
         }
 
         done += chunk;

@@ -7,5 +7,5 @@ keymap.c \
 console.c \
 mem.c \
 block.c \
-bcache.c
+block_cache.c
 

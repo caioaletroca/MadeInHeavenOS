@@ -16,7 +16,7 @@ int ext2_mount(block_device_t *disk, vfs_node_t **root);
 
 /**
  * @brief Mounts the first disk holding ext2 on /mnt; logs either way, never panics.
- * Once, after block_devfs_init and bcache_init.
+ * Once, after block_devfs_init and block_cache_init.
  */
 void ext2_init(void);
 

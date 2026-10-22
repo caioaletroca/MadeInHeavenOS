@@ -56,7 +56,7 @@ block_device_t *block_find(const char *name);
  *
  * Only the block cache calls this (and the block self-test, to compare): a
  * read around the cache would miss what is cached, and once there are writes,
- * see stale data. Everything else reads through block_read_bytes or bcache_get.
+ * see stale data. Everything else reads through block_read_bytes or block_cache_get.
  *
  * @param dev The block device to read from.
  * @param sector The starting sector to read from.
@@ -69,7 +69,7 @@ int block_read(block_device_t *dev, uint64_t sector, uint32_t count, void *buffe
 /**
  * @brief Read bytes from a block device, at any offset and of any length.
  *
- * Reads through the block cache: one bcache_get per 4 KiB block the range
+ * Reads through the block cache: one block_cache_get per 4 KiB block the range
  * touches, the slice copied out, the buffer put back at once.
  *
  * @param dev The block device to read from.

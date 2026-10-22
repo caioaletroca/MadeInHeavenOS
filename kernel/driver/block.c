@@ -1,5 +1,5 @@
 #include <driver/block.h>
-#include <driver/bcache.h>
+#include <driver/block_cache.h>
 #include <fs/devfs.h>
 #include <mihos/errno.h>
 #include <stdint.h>
@@ -68,17 +68,17 @@ long block_read_bytes(block_device_t *dev, void *buffer, size_t count, uint64_t 
     while (done < count)
     {
         uint64_t position = offset + done;
-        uint64_t index = position / BCACHE_BLOCK_SIZE;
-        size_t within = position % BCACHE_BLOCK_SIZE;
-        size_t chunk = MIN(count - done, BCACHE_BLOCK_SIZE - within);
+        uint64_t index = position / BLOCK_CACHE_BLOCK_SIZE;
+        size_t within = position % BLOCK_CACHE_BLOCK_SIZE;
+        size_t chunk = MIN(count - done, BLOCK_CACHE_BLOCK_SIZE - within);
 
-        bcache_buf_t *buf;
-        int ret = bcache_get(dev, index, &buf);
+        block_cache_buf_t *buf;
+        int ret = block_cache_get(dev, index, &buf);
         if (ret < 0)
             return ret;
 
         memcpy(out + done, buf->data + within, chunk);
-        bcache_put(buf);
+        block_cache_put(buf);
         done += chunk;
     }
 

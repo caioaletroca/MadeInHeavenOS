@@ -1,6 +1,6 @@
 #include <selftest/block.h>
 #include <driver/block.h>
-#include <driver/bcache.h>
+#include <driver/block_cache.h>
 #include <fs/vfs.h>
 #include <fs/file.h>
 #include <mm/kmalloc.h>
@@ -123,22 +123,22 @@ static void block_test_reads(block_device_t *dev)
     kfree(one);
 }
 
-static bcache_buf_t *cache_get_or_panic(block_device_t *dev, uint64_t index)
+static block_cache_buf_t *cache_get_or_panic(block_device_t *dev, uint64_t index)
 {
-    bcache_buf_t *buf = NULL;
-    int ret = bcache_get(dev, index, &buf);
+    block_cache_buf_t *buf = NULL;
+    int ret = block_cache_get(dev, index, &buf);
     if (ret != 0 || buf == NULL)
-        panic("Block self-test: bcache_get of block %u failed: %d\n", (unsigned int)index, ret);
+        panic("Block self-test: block_cache_get of block %u failed: %d\n", (unsigned int)index, ret);
     if (buf->dev != dev || buf->index != index || !buf->valid)
-        panic("Block self-test: bcache_get of block %u gave a buffer for another block\n", (unsigned int)index);
+        panic("Block self-test: block_cache_get of block %u gave a buffer for another block\n", (unsigned int)index);
     return buf;
 }
 
 // A cached block must hold exactly its 8 sectors
-static void cache_expect_data(block_device_t *dev, bcache_buf_t *buf, uint8_t *sectors)
+static void cache_expect_data(block_device_t *dev, block_cache_buf_t *buf, uint8_t *sectors)
 {
-    block_read_or_panic(dev, buf->index * BCACHE_SECTORS, BCACHE_SECTORS, sectors);
-    if (memcmp(buf->data, sectors, BCACHE_BLOCK_SIZE) != 0)
+    block_read_or_panic(dev, buf->index * BLOCK_CACHE_SECTORS, BLOCK_CACHE_SECTORS, sectors);
+    if (memcmp(buf->data, sectors, BLOCK_CACHE_BLOCK_SIZE) != 0)
         panic("Block self-test: cached block %u differs from its sectors\n", (unsigned int)buf->index);
 }
 
@@ -147,7 +147,7 @@ static void cache_expect_stats(uint64_t *hits, uint64_t *misses, uint64_t new_hi
                                const char *what)
 {
     uint64_t h, m;
-    bcache_status(&h, &m);
+    block_cache_stats(&h, &m);
     if (h - *hits != new_hits || m - *misses != new_misses)
         panic("Block self-test: %s: %u hits and %u misses, expected %u and %u\n", what, (unsigned int)(h - *hits),
               (unsigned int)(m - *misses), (unsigned int)new_hits, (unsigned int)new_misses);
@@ -162,23 +162,23 @@ static void cache_expect_stats(uint64_t *hits, uint64_t *misses, uint64_t new_hi
  */
 static void block_test_cache(block_device_t *dev)
 {
-    uint8_t *sectors = kmalloc(BCACHE_BLOCK_SIZE);
+    uint8_t *sectors = kmalloc(BLOCK_CACHE_BLOCK_SIZE);
     if (sectors == NULL)
         panic("Block self-test: out of memory\n");
 
     uint64_t hits, misses;
-    bcache_status(&hits, &misses);
+    block_cache_stats(&hits, &misses);
 
     // First get reads the disk, the second shares the buffer
-    bcache_buf_t *a = cache_get_or_panic(dev, 1);
+    block_cache_buf_t *a = cache_get_or_panic(dev, 1);
     cache_expect_stats(&hits, &misses, 0, 1, "first get of block 1");
     cache_expect_data(dev, a, sectors);
-    bcache_buf_t *b = cache_get_or_panic(dev, 1);
+    block_cache_buf_t *b = cache_get_or_panic(dev, 1);
     if (b != a || a->refs != 2)
         panic("Block self-test: two gets of block 1 did not share one buffer (refs %u)\n", a->refs);
     cache_expect_stats(&hits, &misses, 1, 0, "second get of block 1");
-    bcache_put(b);
-    bcache_put(a);
+    block_cache_put(b);
+    block_cache_put(a);
     if (a->refs != 0)
         panic("Block self-test: block 1 has %u references after both puts\n", a->refs);
 
@@ -186,43 +186,43 @@ static void block_test_cache(block_device_t *dev)
     if (cache_get_or_panic(dev, 1) != a)
         panic("Block self-test: block 1 moved to another buffer\n");
     cache_expect_stats(&hits, &misses, 1, 0, "get of block 1 after its puts");
-    bcache_put(a);
+    block_cache_put(a);
 
     // Eviction: with block 2 held, 63 buffers are free; 64 new blocks push out the first of them
-    bcache_buf_t *held = cache_get_or_panic(dev, 2);
+    block_cache_buf_t *held = cache_get_or_panic(dev, 2);
     cache_expect_stats(&hits, &misses, 0, 1, "get of block 2");
-    for (uint64_t i = 0; i < BCACHE_BUFFERS; i++)
-        bcache_put(cache_get_or_panic(dev, 600 + i));
-    cache_expect_stats(&hits, &misses, 0, BCACHE_BUFFERS, "64 new blocks");
+    for (uint64_t i = 0; i < BLOCK_CACHE_BUFFERS; i++)
+        block_cache_put(cache_get_or_panic(dev, 600 + i));
+    cache_expect_stats(&hits, &misses, 0, BLOCK_CACHE_BUFFERS, "64 new blocks");
     if (held->index != 2 || held->refs != 1 || !held->valid)
         panic("Block self-test: the held block 2 was evicted\n");
     cache_expect_data(dev, held, sectors);
-    bcache_put(cache_get_or_panic(dev, 600 + BCACHE_BUFFERS - 1)); // the newest: still there
+    block_cache_put(cache_get_or_panic(dev, 600 + BLOCK_CACHE_BUFFERS - 1)); // the newest: still there
     cache_expect_stats(&hits, &misses, 1, 0, "get of the newest block");
-    bcache_put(cache_get_or_panic(dev, 600)); // the oldest: gone, read again
+    block_cache_put(cache_get_or_panic(dev, 600)); // the oldest: gone, read again
     cache_expect_stats(&hits, &misses, 0, 1, "get of the evicted block");
-    bcache_put(held);
+    block_cache_put(held);
 
     // Every buffer leased: a new block gets -ENOBUFS, a cached one is still a hit
-    bcache_buf_t *all[BCACHE_BUFFERS];
-    for (uint64_t i = 0; i < BCACHE_BUFFERS; i++)
+    block_cache_buf_t *all[BLOCK_CACHE_BUFFERS];
+    for (uint64_t i = 0; i < BLOCK_CACHE_BUFFERS; i++)
         all[i] = cache_get_or_panic(dev, 700 + i);
-    cache_expect_data(dev, all[BCACHE_BUFFERS / 2], sectors);
-    bcache_buf_t *none = NULL;
-    if (bcache_get(dev, 800, &none) != -ENOBUFS || none != NULL)
+    cache_expect_data(dev, all[BLOCK_CACHE_BUFFERS / 2], sectors);
+    block_cache_buf_t *none = NULL;
+    if (block_cache_get(dev, 800, &none) != -ENOBUFS || none != NULL)
         panic("Block self-test: a get with every buffer leased did not return -ENOBUFS\n");
-    bcache_put(cache_get_or_panic(dev, 700));
-    for (uint64_t i = 0; i < BCACHE_BUFFERS; i++)
-        bcache_put(all[i]);
-    for (uint64_t i = 0; i < BCACHE_BUFFERS; i++)
+    block_cache_put(cache_get_or_panic(dev, 700));
+    for (uint64_t i = 0; i < BLOCK_CACHE_BUFFERS; i++)
+        block_cache_put(all[i]);
+    for (uint64_t i = 0; i < BLOCK_CACHE_BUFFERS; i++)
         if (all[i]->refs != 0)
             panic("Block self-test: a buffer kept %u references\n", all[i]->refs);
 
     // Past the end of the disk
-    uint64_t blocks = dev->sector_count / BCACHE_SECTORS;
-    if (bcache_get(dev, blocks, &none) != -EINVAL || bcache_get(dev, UINT64_MAX, &none) != -EINVAL || none != NULL)
+    uint64_t blocks = dev->sector_count / BLOCK_CACHE_SECTORS;
+    if (block_cache_get(dev, blocks, &none) != -EINVAL || block_cache_get(dev, UINT64_MAX, &none) != -EINVAL || none != NULL)
         panic("Block self-test: a get past the end of the disk did not return -EINVAL\n");
-    bcache_put(cache_get_or_panic(dev, blocks - 1)); // the last block is fine
+    block_cache_put(cache_get_or_panic(dev, blocks - 1)); // the last block is fine
 
     kfree(sectors);
 }
@@ -312,10 +312,10 @@ static void block_test_node(block_device_t *dev)
 
     // Reads go through the cache: 64 KiB of blocks nothing has read yet cost 16 misses, again 16 hits
     uint64_t hits, misses;
-    bcache_status(&hits, &misses);
+    block_cache_stats(&hits, &misses);
     for (int pass = 0; pass < 2; pass++)
     {
-        if (vfs_read(node, bytes, 16 * BCACHE_BLOCK_SIZE, 200 * BCACHE_BLOCK_SIZE) != 16 * BCACHE_BLOCK_SIZE)
+        if (vfs_read(node, bytes, 16 * BLOCK_CACHE_BLOCK_SIZE, 200 * BLOCK_CACHE_BLOCK_SIZE) != 16 * BLOCK_CACHE_BLOCK_SIZE)
             panic("Block self-test: reading 64 KiB of %s failed\n", path);
         cache_expect_stats(&hits, &misses, pass == 0 ? 0 : 16, pass == 0 ? 16 : 0, "64 KiB through the node");
     }
