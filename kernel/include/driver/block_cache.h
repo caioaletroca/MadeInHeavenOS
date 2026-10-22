@@ -72,6 +72,14 @@ void block_cache_begin_write(block_cache_buf_t *buf);
 void block_cache_end_write(block_cache_buf_t *buf);
 
 /**
+ * @brief Writes every dirty buffer to its disk, then flushes every disk's own cache.
+ * Goes on after an error.
+ *
+ * @return 0, or the first error.
+ */
+int block_cache_sync(void);
+
+/**
  * @brief How many gets found their block (hits) and how many had to claim a buffer (misses).
  *
  * @param hits Pointer to store the number of cache hits.

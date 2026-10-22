@@ -231,6 +231,46 @@ void block_cache_end_write(block_cache_buf_t *buf)
     mutex_unlock(&buf->data_lock);
 }
 
+int block_cache_sync(void)
+{
+    int first_error = 0;
+
+    for (int i = 0; i < BLOCK_CACHE_BUFFERS; i++)
+    {
+        block_cache_buf_t *buf = &block_cache_buffers[i];
+
+        // A reference keeps the buffer on its block while it is written (claim skips it)
+        bool used;
+        scoped_guard(spinlock, &block_cache_lock)
+        {
+            used = buf->dev != NULL;
+            if (used)
+                buf->refs++;
+        }
+        if (!used)
+            continue;
+
+        int ret = block_cache_write_back(buf);
+        block_cache_unpin(buf);
+        if (ret < 0 && first_error == 0)
+            first_error = ret;
+    }
+
+    // The writes are acknowledged; make them permanent
+    for (size_t i = 0; i < BLOCK_DEVICES_MAX; i++)
+    {
+        block_device_t *dev = block_at(i);
+        if (dev == NULL)
+            continue;
+
+        int ret = block_flush(dev);
+        if (ret < 0 && first_error == 0)
+            first_error = ret;
+    }
+
+    return first_error;
+}
+
 void block_cache_stats(uint64_t *hits, uint64_t *misses)
 {
     scoped_guard(spinlock, &block_cache_lock)
