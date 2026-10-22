@@ -179,6 +179,25 @@ static int ata_identify(ata_drive_t *drive)
     return 0;
 }
 
+static int ata_command(ata_drive_t *drive, uint64_t lba, uint32_t n, uint8_t command)
+{
+    if (ata_wait_ready(drive) < 0)
+        return -EIO;
+
+    // Select the drive in LBA mode (0xE0) with LBA bits 24-27, then give it 400 ns to switch
+    outb(drive->io + ATA_REG_DRIVE, (uint8_t)(0xE0 | (drive->slave << 4) | ((lba >> 24) & 0x0F)));
+    ata_delay(drive);
+
+    outb(drive->io + ATA_REG_SECTOR_COUNT, (uint8_t)(n & 0xFF));
+    outb(drive->io + ATA_REG_LBA_LOW, (uint8_t)(lba & 0xFF));
+    outb(drive->io + ATA_REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
+    outb(drive->io + ATA_REG_LBA_HIGH, (uint8_t)((lba >> 16) & 0xFF));
+    outb(drive->io + ATA_REG_COMMAND, command);
+    ata_delay(drive);
+
+    return 0;
+}
+
 /**
  * @brief Read data from the ATA drive.
  *
@@ -204,19 +223,8 @@ static int ata_read(block_device_t *dev, uint64_t sector, uint32_t count, void *
         // The count register is 8 bits: one command reads at most 256 sectors (256 is written as 0)
         uint32_t n = remaining < 256 ? remaining : 256;
 
-        if (ata_wait_ready(drive) < 0)
+        if (ata_command(drive, lba, n, ATA_CMD_READ_SECTORS) < 0)
             return -EIO;
-
-        // Select the drive in LBA mode (0xE0) with LBA bits 24-27, then give it 400 ns to switch
-        outb(drive->io + ATA_REG_DRIVE, (uint8_t)(0xE0 | (drive->slave << 4) | ((lba >> 24) & 0x0F)));
-        ata_delay(drive);
-
-        outb(drive->io + ATA_REG_SECTOR_COUNT, (uint8_t)(n & 0xFF));
-        outb(drive->io + ATA_REG_LBA_LOW, (uint8_t)(lba & 0xFF));
-        outb(drive->io + ATA_REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
-        outb(drive->io + ATA_REG_LBA_HIGH, (uint8_t)((lba >> 16) & 0xFF));
-        outb(drive->io + ATA_REG_COMMAND, ATA_CMD_READ_SECTORS);
-        ata_delay(drive);
 
         // The drive hands over one sector at a time: wait for DRQ before each one
         for (uint32_t i = 0; i < n; i++)
