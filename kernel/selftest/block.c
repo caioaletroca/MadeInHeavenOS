@@ -321,6 +321,112 @@ static void block_test_cache(block_device_t *dev)
     kfree(sectors);
 }
 
+// Fills a held buffer's whole block with bytes only this seed gives, and marks it dirty
+static void cache_write_pattern(block_cache_buf_t *buf, uint8_t seed)
+{
+    block_cache_begin_write(buf);
+    for (size_t i = 0; i < BLOCK_CACHE_BLOCK_SIZE; i++)
+        buf->data[i] = (uint8_t)(seed + i * 7);
+    block_cache_end_write(buf);
+}
+
+// The disk itself (not the cache) holds exactly expected for this block
+static bool disk_holds(block_device_t *dev, uint64_t index, const uint8_t *expected, uint8_t *sectors)
+{
+    block_read_or_panic(dev, index * BLOCK_CACHE_SECTORS, BLOCK_CACHE_SECTORS, sectors);
+    return memcmp(sectors, expected, BLOCK_CACHE_BLOCK_SIZE) == 0;
+}
+
+static void cache_sync_or_panic(void)
+{
+    int ret = block_cache_sync();
+    if (ret != 0)
+        panic("Block self-test: block_cache_sync failed: %d\n", ret);
+}
+
+/**
+ * Dirty buffers: written to the disk only by a sync or an eviction, a held one by
+ * a sync too, and a sync leaves every buffer free again. Blocks 875 and 876
+ * (sectors 7000..7015, the write test's free area), restored at the end.
+ */
+static void block_test_write_back(block_device_t *dev)
+{
+    const uint64_t a_index = WRITE_START / BLOCK_CACHE_SECTORS, b_index = a_index + 1;
+    uint8_t *saved = kmalloc(2 * BLOCK_CACHE_BLOCK_SIZE);
+    uint8_t *expected = kmalloc(BLOCK_CACHE_BLOCK_SIZE);
+    uint8_t *sectors = kmalloc(BLOCK_CACHE_BLOCK_SIZE);
+    if (saved == NULL || expected == NULL || sectors == NULL)
+        panic("Block self-test: out of memory\n");
+    block_read_or_panic(dev, a_index * BLOCK_CACHE_SECTORS, 2 * BLOCK_CACHE_SECTORS, saved);
+
+    // A written block stays in the cache until a sync
+    block_cache_buf_t *a = cache_get_or_panic(dev, a_index);
+    cache_write_pattern(a, 0x11);
+    memcpy(expected, a->data, BLOCK_CACHE_BLOCK_SIZE);
+    if (!a->dirty)
+        panic("Block self-test: a written buffer is not dirty\n");
+    block_cache_put(a);
+    if (!disk_holds(dev, a_index, saved, sectors))
+        panic("Block self-test: block %u reached the disk before a sync\n", (unsigned int)a_index);
+    cache_sync_or_panic();
+    if (!disk_holds(dev, a_index, expected, sectors) || a->dirty)
+        panic("Block self-test: a sync did not write block %u\n", (unsigned int)a_index);
+
+    // Evicting a dirty block writes it first; getting it again reads what was written
+    block_cache_buf_t *b = cache_get_or_panic(dev, b_index);
+    cache_write_pattern(b, 0x22);
+    memcpy(expected, b->data, BLOCK_CACHE_BLOCK_SIZE);
+    block_cache_put(b);
+    for (uint64_t i = 0; i < BLOCK_CACHE_BUFFERS; i++)
+        block_cache_put(cache_get_or_panic(dev, 920 + i)); // every buffer reused once
+    if (!disk_holds(dev, b_index, expected, sectors))
+        panic("Block self-test: evicting dirty block %u did not write it\n", (unsigned int)b_index);
+    uint64_t hits, misses;
+    block_cache_stats(&hits, &misses);
+    b = cache_get_or_panic(dev, b_index);
+    cache_expect_stats(&hits, &misses, 0, 1, "get of the evicted dirty block");
+    if (memcmp(b->data, expected, BLOCK_CACHE_BLOCK_SIZE) != 0 || b->dirty)
+        panic("Block self-test: the evicted dirty block %u read back different\n", (unsigned int)b_index);
+    block_cache_put(b);
+
+    // A held dirty buffer is written by a sync too, and keeps its holder's reference
+    a = cache_get_or_panic(dev, a_index);
+    cache_write_pattern(a, 0x33);
+    memcpy(expected, a->data, BLOCK_CACHE_BLOCK_SIZE);
+    cache_sync_or_panic();
+    if (!disk_holds(dev, a_index, expected, sectors) || a->dirty || a->refs != 1)
+        panic("Block self-test: a sync did not write the held block %u (refs %u)\n", (unsigned int)a_index, a->refs);
+    block_cache_put(a);
+
+    // After a sync every buffer is free: 64 leases of blocks nothing cached (so each
+    // needs a buffer of its own) all succeed
+    cache_sync_or_panic();
+    block_cache_buf_t *all[BLOCK_CACHE_BUFFERS];
+    for (uint64_t i = 0; i < BLOCK_CACHE_BUFFERS; i++)
+        all[i] = cache_get_or_panic(dev, 300 + i);
+    for (uint64_t i = 0; i < BLOCK_CACHE_BUFFERS; i++)
+        block_cache_put(all[i]);
+
+    // Restore both blocks through the cache
+    a = cache_get_or_panic(dev, a_index);
+    block_cache_begin_write(a);
+    memcpy(a->data, saved, BLOCK_CACHE_BLOCK_SIZE);
+    block_cache_end_write(a);
+    block_cache_put(a);
+    b = cache_get_or_panic(dev, b_index);
+    block_cache_begin_write(b);
+    memcpy(b->data, saved + BLOCK_CACHE_BLOCK_SIZE, BLOCK_CACHE_BLOCK_SIZE);
+    block_cache_end_write(b);
+    block_cache_put(b);
+    cache_sync_or_panic();
+    if (!disk_holds(dev, a_index, saved, sectors) || !disk_holds(dev, b_index, saved + BLOCK_CACHE_BLOCK_SIZE, sectors))
+        panic("Block self-test: blocks %u and %u were not restored\n", (unsigned int)a_index, (unsigned int)b_index);
+
+    kfree(sectors);
+    kfree(expected);
+    kfree(saved);
+}
+
 /**
  * The disk as /dev/<name>: a block device node, read at byte offsets. Every
  * read must give the same bytes as whole-sector reads of the same range.
@@ -429,6 +535,7 @@ void block_selftest(void)
     block_test_reads(dev);
     block_test_writes(dev);
     block_test_cache(dev);
+    block_test_write_back(dev);
     block_test_node(dev);
 
     // Registration: a name already there is refused, unknown names are not found
