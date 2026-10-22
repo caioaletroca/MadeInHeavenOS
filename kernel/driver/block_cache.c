@@ -25,6 +25,18 @@ static hlist_head_t *block_cache_bucket(block_device_t *dev, uint64_t index)
 }
 
 /**
+ * @brief Computes how many sectors are in a block, considering the disk's end.
+ *
+ * @param dev The block device.
+ * @param index The block index within the device.
+ * @return Number of sectors in the block.
+ */
+static uint32_t block_cache_sectors(block_device_t *dev, uint64_t index)
+{
+    return (uint32_t)MIN((uint64_t)BLOCK_CACHE_SECTORS, dev->sector_count - index * BLOCK_CACHE_SECTORS);
+}
+
+/**
  * @brief Finds (dev, index) or claims the least recently used buffer nobody holds for
  * it, with one reference taken. Only list and key work, never I/O: the lock is
  * a spinlock.
@@ -91,7 +103,7 @@ void block_cache_init(void)
             panic("block_cache_init: failed to allocate buffer\n");
 
         list_init(&buf->lru_link);
-        mutex_init(&buf->fill_lock);
+        mutex_init(&buf->data_lock);
         hlist_node_init(&buf->hash_link);
         buf->dev = NULL;
         buf->refs = 0;
@@ -114,12 +126,12 @@ int block_cache_get(block_device_t *dev, uint64_t index, block_cache_buf_t **out
         return ret;
 
     // Read the block unless it is there; a second reader of the same block waits here
-    scoped_guard(mutex, &buf->fill_lock)
+    scoped_guard(mutex, &buf->data_lock)
     {
         if (!buf->valid)
         {
             uint64_t first = index * BLOCK_CACHE_SECTORS;
-            uint32_t sectors = (uint32_t)MIN((uint64_t)BLOCK_CACHE_SECTORS, dev->sector_count - first);
+            uint32_t sectors = block_cache_sectors(dev, index);
 
             // The disk's last block may be partial: what lies past the disk reads as zeros
             if (sectors < BLOCK_CACHE_SECTORS)

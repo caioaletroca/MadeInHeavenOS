@@ -9,10 +9,10 @@
 #include <sys/hashtable.h>
 #include <sys/list.h>
 
-#define BLOCK_CACHE_BLOCK_SIZE PAGE_SIZE                            // one page: 1, 2 and 4 KiB ext2 blocks are slices of it
+#define BLOCK_CACHE_BLOCK_SIZE PAGE_SIZE                                 // one page: 1, 2 and 4 KiB ext2 blocks are slices of it
 #define BLOCK_CACHE_SECTORS (BLOCK_CACHE_BLOCK_SIZE / BLOCK_SECTOR_SIZE) // 8
-#define BLOCK_CACHE_BUFFERS 64                                      // 256 KiB of disk in RAM
-#define BLOCK_CACHE_HASH_BITS 4                                     // 16 buckets
+#define BLOCK_CACHE_BUFFERS 64                                           // 256 KiB of disk in RAM
+#define BLOCK_CACHE_HASH_BITS 4                                          // 16 buckets
 
 /**
  * One cached 4 KiB block of a disk. A caller holding a reference (a lease from
@@ -26,7 +26,7 @@ typedef struct block_cache_buf
     unsigned int refs;
     list_t lru_link;
     hlist_node_t hash_link;
-    mutex_t fill_lock;
+    mutex_t data_lock; // data and valid: held for a fill
     bool valid;
     uint8_t *data;
 } block_cache_buf_t;
