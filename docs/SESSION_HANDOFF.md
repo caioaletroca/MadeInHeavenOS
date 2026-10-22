@@ -44,8 +44,8 @@ Working x86-64 PC kernel with:
   fds with `printf`, `fgetc`/`fgets`/`ungetc`; `malloc`/`free`/`calloc`/`realloc` on `sbrk`;
   `atexit`; `open`/`lseek`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
   runtime (global constructors and destructors, `operator new`)
-- **Disks:** a block layer (`block_read` with range checks) and an ATA PIO driver (polling,
-  28-bit LBA) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators;
+- **Disks:** a block layer (`block_read`/`block_write` with range checks, `block_flush`) and an
+  ATA PIO driver (polling, 28-bit LBA, reads, writes and cache flushes) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators;
   each disk as a block device in `/dev` (`/dev/hda`, `S_IFBLK`, read-only, seekable, read at
   byte offsets through `block_read_bytes`); a **block cache** (`block_cache_get`/`block_cache_put`: 64
   leased 4 KiB buffers, hash lookup, LRU eviction) under every disk read
@@ -69,6 +69,15 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+a6f8068 test(block): cover writes and flushes
+f5dd637 feat(platform): write and flush ATA disks
+568f6e1 refactor(platform): share the ATA command setup
+53bf336 feat(driver): add block_write and block_flush
+46c823b docs(architecture): add naming rules and the new names to handoff
+14ba902 refactor(fs): rename ext2's internals plainly
+91ea15a refactor(fs): name mount fields and node links plainly
+0635a36 refactor(driver): rename bcache to block_cache
+f7734af docs(architecture): document ext2 in handoff
 5060b51 test: cover ext2
 beb4b3b feat(fs): mount the first ext2 disk at /mnt
 9d8ebf1 feat(fs): read ext2 files
@@ -935,14 +944,19 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
 ```
 
 - **Block layer** (`include/driver/block.h`): `block_device_t` = `name[16]` (`hda`…),
-  `sector_count`, `rdev` (`MIHOS_MKDEV`, chosen by the driver), `const block_ops_t *ops` (`read(dev, sector, count, buffer)`: kernel buffer of
-  `count * BLOCK_SECTOR_SIZE` (512) bytes, 0 or -errno), `private` (the driver's data).
+  `sector_count`, `rdev` (`MIHOS_MKDEV`, chosen by the driver), `const block_ops_t *ops`
+  (`read(dev, sector, count, buffer)` and `write(dev, sector, count, const buffer)`: kernel
+  buffers of `count * BLOCK_SECTOR_SIZE` (512) bytes, 0 or -errno; `flush(dev)`; `write` NULL:
+  read-only, `flush` NULL: no write cache), `private` (the driver's data).
   `block_register` (static table of `BLOCK_DEVICES_MAX` 8; duplicate → `-EEXIST`, full →
   `-ENOMEM`; boot time, no lock; the device lives forever), `block_find(name)`, `block_read`:
   `count` 0 → 0, `sector >= sector_count || count > sector_count - sector` → `-EINVAL` (cannot
   wrap), then the driver. The range check lives only here. **Only the cache calls
   `block_read`** (and the block self-test, to compare): a read around it would miss cached
-  data and, once there are writes, see stale data.
+  data and, once there are writes, see stale data. `block_write`: the same checks, then no
+  `write` op → `-EROFS` (after the range check: a bad range is `-EINVAL` on any disk), then the
+  driver; also only for the cache (a write around it leaves a cached copy stale).
+  `block_flush(dev)`: no `flush` op → 0, else the driver's result.
 - **Byte reads** (`block_read_bytes(dev, buffer, count, offset)`): `offset` at or past the end →
   0, `count` cut to `size - offset` (a subtraction, so nothing wraps); then per step: `index =
   position / 4096`, `within = position % 4096`, `chunk = MIN(count - done, 4096 - within)`,
@@ -995,13 +1009,21 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   times, about 400 ns, after every drive select and after a command; `ata_wait_ready` spins
   while BSY (limit 1,000,000 polls → `-EIO`) and returns the status, ignoring ERR (IDENTIFY on
   a CD aborts on purpose); `ata_wait_data` = ready, then ERR/DF → `-EIO`, no DRQ → `-EIO`;
-  `ata_read_data` waits for data and copies `size / 2` words with `inw`.
+  `ata_read_data` waits for data and copies `size / 2` words with `inw`; `ata_write_data` waits
+  for data (DRQ: the drive takes the sector) and sends `size / 2` words with `outw` (no `rep
+  outsw`: real drives may need the gaps).
+- **`ata_command(drive, lba, n, command)`:** `ata_wait_ready` (not `_data`: an idle drive has
+  no DRQ), select `0xE0 | slave << 4 | LBA[24..27]`, delay, count (`n & 0xFF`, 0 = 256), LBA
+  bytes 0–23, the command, delay.
 - **`ata_read`:** past 2^28 sectors → `-EINVAL` (LBA48 is debt). Per command of `n` ≤ 256
-  sectors (the count register holds `n & 0xFF`, 0 = 256): `ata_wait_ready` (not `_data`: an
-  idle drive has no DRQ), select `0xE0 | slave << 4 | LBA[24..27]`, delay, count, LBA bytes
-  0–23, `READ SECTORS` (`0x20`), delay; then per sector `ata_read_data` of 512 bytes, the
+  sectors: `ata_command(READ SECTORS 0x20)`, then per sector `ata_read_data` of 512 bytes, the
   `uint16_t *` advancing 256 words. The driver runs on the caller's thread (no thread of its
   own: a disk only answers when asked).
+- **`ata_write`:** the same loop with `WRITE SECTORS` (`0x30`) and `ata_write_data`; after each
+  command's last sector the drive is BSY while it stores the data, so `ata_wait_ready` again
+  and ERR/DF → `-EIO` (the end of the data phase is not the end of the write; without the
+  check a failed write looks fine). **`ata_flush`:** wait ready, select `0xE0 | slave << 4` (no
+  address), `CACHE FLUSH` (`0xE7`), wait ready, ERR/DF → `-EIO`; no data phase.
 - **Test disk** (`Makefile`): `disk.img`, 4 MiB ext2 with 1 KiB blocks, label `mihos-test`,
   root-owned, `mke2fs -q -F -t ext2 -b 1024 -L mihos-test -E root_owner=0:0 -d build/disk`,
   rebuilt when a file in `disk/` or the Makefile changes; `make clean` deletes it and `build/`.
@@ -1019,7 +1041,13 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   exponent 0 at 24, label at 120); a 2-sector read and a 300-sector read (two commands) equal
   single reads, also at sectors 255/256/257; 0 sectors does nothing; the last sector reads;
   past the end, from the last sector for 2, `UINT64_MAX` and `UINT32_MAX` → `-EINVAL`; a
-  second `block_register` → `-EEXIST`. Then the cache (`block_test_cache`, on blocks nothing
+  second `block_register` → `-EEXIST`. Writes (`block_test_writes`, sectors 7000…7299: free
+  ext2 blocks 3500…3649 nothing else reads, so no cached copy goes stale): 300 sectors (two
+  commands), each with its own pattern (`sector * 31 + byte`), read back sector by sector; one
+  sector at 7100 changes only itself; 0 sectors → 0, the same past-the-end cases → `-EINVAL`;
+  `block_flush` 0; an unregistered device without `write` → `-EROFS`, a bad range on it still
+  `-EINVAL`, its flush 0; the original sectors written back and compared (a persistent disk
+  stays unchanged). Then the cache (`block_test_cache`, on blocks nothing
   else reads): two gets of block 1 share one buffer (`refs` 2; one miss, then one hit), its
   data equals its 8 sectors, after both puts it is still cached; with block 2 held, 64 new
   blocks (600…663) evict exactly the oldest free one: the held buffer keeps its key and data,
@@ -1602,11 +1630,30 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   required; on-disk structs read in place; one node per inode, freed at the last put, never
   revived from 0 (`tryget`, so `release` runs once per node); a node holds its parent; only
   regular files and directories exposed; the first ext2 disk mounted on `/mnt` at boot.
-- **Next, disk step 5 (pick an order):** writing (ATA `WRITE SECTORS`, dirty buffers and
-  write-back in the cache, then ext2 block/inode allocation through the bitmaps, `write`,
-  `creat`/`unlink`/`mkdir`); partitions (MBR/GPT → `hda1` on the reserved minors, mounting a
-  partition); IRQ-driven ATA reads (sleep instead of polling). The root on the disk comes after
-  writing. Phase C (the process model) can also start now: none of these block it.
+- **Disk step 5, writing (in progress).** Decided: six sub-steps, each committed and tested
+  alone; write-back (not write-through: W5 rewrites the same bitmap and superblock blocks on
+  every allocation), dirty buffers written on eviction, on `sync()` and at `system_halt`, no
+  flusher thread; whole cache blocks written (a small write fills the buffer first); locks
+  node `lock` → `volume->lock` → the cache's; a writable mount only when every `ro_compat`
+  feature is known (`SPARSE_SUPER`, `LARGE_FILE`), `s_state` not clean at mount, clean at the
+  halt's sync; no clock (times unchanged); `e2fsck -fn` (in Docker) on a disk written without
+  `-snapshot` as the referee for W5/W6; Bochs's disk `mode=volatile` (like QEMU's `-snapshot`).
+  - **W1 (done):** `block_write`/`block_flush`, `ata_command`, ATA `WRITE SECTORS` and `CACHE
+    FLUSH`; the block self-test's write section.
+  - **W2 (next):** `dirty` in the cache, `block_cache_mark_dirty`, write-back on eviction (claim
+    the dirty buffer, drop the spinlock, write under `fill_lock`, retry), `block_cache_sync`
+    (every dirty buffer, then `block_flush`) at `system_halt`.
+  - **W3:** `/dev/hda` writable: `block_write_bytes`, a VFS `write` node op,
+    `vfs_file_ops.write`, `-EROFS` only for nodes without `write`.
+  - **W4:** ext2 overwrites file data inside the size (no allocation).
+  - **W5:** allocation: bitmaps (bit `i` = block `i + s_first_data_block`, inode `i + 1`), free
+    counts, inode / group descriptor / superblock write-back, appending with new indirect
+    blocks.
+  - **W6:** `O_CREAT`/`O_TRUNC`/`O_EXCL`, `unlink`, `mkdir`, `rmdir`, directory entries
+    inserted in a record's slack and removed by growing the previous `rec_len`.
+- **After writing (pick an order):** partitions (MBR/GPT → `hda1` on the reserved minors,
+  mounting a partition); IRQ-driven ATA (sleep instead of polling); the root on the disk.
+  Phase C (the process model) can also start: none of these block it.
 
 ### Shell (`user/bin/sh/`)
 
@@ -1704,7 +1751,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   fine at ~100 KiB, replaced by mapping later. `kmalloc` above 1024 B rounds to a power-of-two
   number of pages.
 - ATA: polling only (the CPU spins for every sector, with IRQs off inside a syscall), 28-bit
-  LBA (128 GiB), no DMA, no writes, no cache; IDENTIFY's model string unused; names by IDE
+  LBA (128 GiB), no DMA; no check that the drive supports `CACHE FLUSH` (IDENTIFY word 83 bit
+  12; Bochs and QEMU do; an old drive would abort it and the flush returns `-EIO`); a write
+  error leaves the sectors of that command in an unknown state (no retry, no report of how far
+  it got); IDENTIFY's model string unused; names by IDE
   position (`hda`…`hdd`), so the same disk is `hdb` on Bochs. The block table has no lock and
   no unregister. No PCI enumeration yet (AHCI and virtio need it).
 - Block cache: a fixed 64 buffers (no growing or shrinking under memory pressure); `-ENOBUFS`
@@ -1844,7 +1894,8 @@ cache before the GCC build and rebuilds the whole cross-compiler).
 
 Run Bochs (`port_e9_hack: enabled=1` in `.bochsrc` sends the output to its console; the window
 closes by itself at `system halted`; the disk needs `ata0-slave: type=disk, path=disk.img,
-mode=flat`, or the block self-test panics):
+mode=volatile`, or the block self-test panics; `volatile` drops the writes at exit, like QEMU's
+`-snapshot`, where `flat` would keep them in `disk.img`):
 
 ```sh
 bochs -q -f .bochsrc
