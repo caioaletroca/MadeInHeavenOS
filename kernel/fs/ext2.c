@@ -33,6 +33,7 @@ typedef struct ext2_node
     ext2_volume_t *volume;
     uint32_t ino;
     uint32_t block[EXT2_BLOCK_POINTERS]; // copy of the inode's i_block
+    mutex_t lock;                        // block[] and base.size: held by reads and writes of the file
     hlist_node_t cache_link;             // in volume->nodes, under volume->lock
 } ext2_node_t;
 
@@ -283,6 +284,7 @@ static int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent
     n->volume = volume;
     n->ino = ino;
     memcpy(n->block, inode.i_block, sizeof(n->block));
+    mutex_init(&n->lock);
     hlist_insert(bucket, &n->cache_link);
 
     *out = &n->base;
@@ -593,6 +595,8 @@ static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t off
 {
     ext2_node_t *n = EXT2_NODE(file);
     ext2_volume_t *volume = n->volume;
+
+    guard(mutex, &n->lock);
 
     if (offset >= file->size)
         return 0;
