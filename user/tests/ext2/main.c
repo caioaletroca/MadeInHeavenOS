@@ -10,7 +10,8 @@
 /*
  * The ext2 test disk (disk.img) mounted on /mnt, from user space: listings,
  * stat, reads through open/lseek/read (big.txt across direct, single and
- * double indirect blocks, the sparse file's hole), and what is refused.
+ * double indirect blocks, the sparse file's hole), overwrites in place, and
+ * what is refused.
  */
 
 #define MNT "/mnt"
@@ -203,6 +204,68 @@ static void test_reads(void)
     close(fd);
 }
 
+static ssize_t write_at(int fd, const void *buffer, size_t count, off_t offset)
+{
+    if (lseek(fd, offset, SEEK_SET) != offset)
+        return -1;
+    return write(fd, buffer, count);
+}
+
+/*
+ * Overwriting a file in place: hello.txt changed through one fd and read back
+ * through another, big.txt across the first single-indirect block; the end of
+ * a file stops a write (short, then ENOSPC: growing files comes later). All
+ * restored, sizes unchanged.
+ */
+static void test_writes(void)
+{
+    char buffer[64];
+    static const char text[] = "Hello from the disk!\n";
+
+    int fd = open(MNT "/hello.txt", O_RDWR);
+    CHECK(fd >= 0);
+    if (fd < 0)
+        return;
+
+    CHECK(write_at(fd, "HELLO", 5, 0) == 5);
+    CHECK(lseek(fd, 0, SEEK_CUR) == 5);
+    int other = open(MNT "/hello.txt", O_RDONLY);
+    CHECK(other >= 0);
+    memset(buffer, 0, sizeof(buffer));
+    CHECK(read_full(other, buffer, sizeof(buffer)) == (ssize_t)strlen(text));
+    CHECK(memcmp(buffer, "HELLO from the disk!\n", strlen(text)) == 0);
+    close(other);
+
+    // Across the end: only what fits; at the end ENOSPC; 0 bytes 0
+    CHECK(write_at(fd, "DISK!\nxyz", 9, 15) == 6);
+    errno = 0;
+    CHECK(write(fd, "x", 1) == -1 && errno == ENOSPC);
+    CHECK(write(fd, "x", 0) == 0);
+
+    struct stat st;
+    CHECK(fstat(fd, &st) == 0 && st.st_size == (off_t)strlen(text));
+    CHECK(write_at(fd, text, strlen(text), 0) == (ssize_t)strlen(text));
+    close(fd);
+    expect_text(MNT "/hello.txt", text);
+
+    // Write-only, in the middle of big.txt: across the end of the direct blocks
+    fd = open(MNT "/big.txt", O_WRONLY);
+    CHECK(fd >= 0);
+    CHECK(write_at(fd, "9999999\n8888888\n", 16, 1535 * 8) == 16);
+    errno = 0;
+    CHECK(read(fd, buffer, 1) == -1 && errno == EBADF);
+    close(fd);
+    fd = open(MNT "/big.txt", O_RDONLY);
+    CHECK(fd >= 0);
+    CHECK(lseek(fd, 1534 * 8, SEEK_SET) == 1534 * 8 && read_full(fd, buffer, 32) == 32);
+    CHECK(line_ok(buffer, 1534) && memcmp(buffer + 8, "9999999\n8888888\n", 16) == 0 && line_ok(buffer + 24, 1537));
+    close(fd);
+    fd = open(MNT "/big.txt", O_WRONLY);
+    CHECK(fd >= 0);
+    CHECK(write_at(fd, "0001535\n0001536\n", 16, 1535 * 8) == 16);
+    close(fd);
+}
+
 static void test_refusals(void)
 {
     char buffer[64];
@@ -239,6 +302,7 @@ int main(void)
     test_listing();
     test_stat();
     test_reads();
+    test_writes();
     test_refusals();
 
     // Every fd and stream was closed: the next open gets fd 3 again

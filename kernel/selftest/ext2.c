@@ -39,6 +39,7 @@
 #define SB_REV_LEVEL 76
 #define SB_INODE_SIZE 88
 #define SB_FEATURE_INCOMPAT 96
+#define SB_FEATURE_RO_COMPAT 100
 #define GROUP_TABLE (2 * BLOCK) // block 2 with 1 KiB blocks
 #define BG_INODE_TABLE 8
 #define I_MODE 0
@@ -340,6 +341,117 @@ static void ext2_test_read(void)
     file_put(file);
 }
 
+static void ext2_write_or_panic(vfs_node_t *node, const void *buffer, size_t count, uint64_t offset)
+{
+    long n = vfs_write(node, buffer, count, offset);
+    if (n != (long)count)
+        panic("ext2 self-test: writing %zu bytes at %u wrote %ld\n", count, (unsigned int)offset, n);
+}
+
+/**
+ * Overwriting file data in place (no allocation yet): big.txt across every
+ * kind of block boundary, read back through the node with its neighbours
+ * unchanged; the end of a file and a hole stop a write (short, or -ENOSPC).
+ * Everything is written back as it was; sizes never change.
+ */
+static void ext2_test_write(void)
+{
+    vfs_node_t *big = ext2_expect(BIG, VFS_FILE);
+    char *data = kmalloc(BIG_SIZE);
+    char *pattern = kmalloc(2 * BLOCK + 16);
+    char *back = kmalloc(2 * BLOCK + 16);
+    if (data == NULL || pattern == NULL || back == NULL)
+        panic("ext2 self-test: out of memory\n");
+    if (vfs_read(big, data, BIG_SIZE, 0) != BIG_SIZE)
+        panic("ext2 self-test: reading big.txt failed\n");
+
+    static const struct
+    {
+        uint32_t offset; // never 0 and never at the end: the bytes around it are checked
+        uint32_t count;
+    } pieces[] = {
+        {100, 1},                       // one byte
+        {BLOCK - 3, 10},                // across blocks 0 and 1
+        {12 * BLOCK - 5, 10},           // the last direct block into the first single-indirect one
+        {12 * BLOCK, BLOCK},            // exactly one single-indirect block
+        {268 * BLOCK - 7, 2 * BLOCK},   // the last single-indirect block into the double-indirect ones
+        {280 * BLOCK + 100, BLOCK + 7}, // inside the double-indirect range
+    };
+    for (size_t i = 0; i < sizeof(pieces) / sizeof(pieces[0]); i++)
+    {
+        uint32_t offset = pieces[i].offset, count = pieces[i].count;
+        for (uint32_t b = 0; b < count; b++)
+            pattern[b] = (char)('A' + (i * 7 + b) % 26);
+
+        ext2_write_or_panic(big, pattern, count, offset);
+        if (vfs_read(big, back, count + 2, offset - 1) != (long)count + 2 || back[0] != data[offset - 1] ||
+            memcmp(back + 1, pattern, count) != 0 || back[count + 1] != data[offset + count])
+            panic("ext2 self-test: %u bytes written to big.txt at %u read back wrong\n", count, offset);
+
+        ext2_write_or_panic(big, data + offset, count, offset); // put the lines back
+    }
+
+    // The end: a write across it is cut short; at it and past it nothing can be written
+    // without new blocks: -ENOSPC. 0 bytes is 0 anywhere
+    if (vfs_write(big, pattern, 100, BIG_SIZE - 5) != 5)
+        panic("ext2 self-test: a write across the end of big.txt was not cut to 5 bytes\n");
+    if (vfs_read(big, back, 10, BIG_SIZE - 5) != 5 || memcmp(back, pattern, 5) != 0)
+        panic("ext2 self-test: the last 5 bytes of big.txt read back wrong\n");
+    ext2_write_or_panic(big, data + BIG_SIZE - 5, 5, BIG_SIZE - 5);
+    if (vfs_write(big, pattern, 1, BIG_SIZE) != -ENOSPC || vfs_write(big, pattern, 1, UINT64_MAX) != -ENOSPC)
+        panic("ext2 self-test: a write at or past the end of big.txt did not return -ENOSPC\n");
+    if (vfs_write(big, pattern, 0, 1000) != 0 || vfs_write(big, pattern, 0, BIG_SIZE) != 0)
+        panic("ext2 self-test: a 0-byte write to big.txt did not return 0\n");
+
+    // Every line as it was, the size unchanged
+    if (big->size != BIG_SIZE || vfs_read(big, data, BIG_SIZE, 0) != BIG_SIZE)
+        panic("ext2 self-test: big.txt changed size\n");
+    for (uint32_t line = 0; line < BIG_LINES; line++)
+        if (!big_line_ok(data + 8 * line, line))
+            panic("ext2 self-test: line %u of big.txt was not restored\n", line);
+    vfs_node_put(big);
+
+    // The sparse file: block 0 ("start") and block 16 ("end") exist, 1..15 are a hole
+    vfs_node_t *sparse = ext2_expect(MNT "/sparse", VFS_FILE);
+    if (vfs_read(sparse, data, BLOCK, 0) != BLOCK)
+        panic("ext2 self-test: reading the sparse file failed\n");
+    ext2_write_or_panic(sparse, "START", 5, 0);
+    if (vfs_write(sparse, pattern, 100, BLOCK - 4) != 4)
+        panic("ext2 self-test: a write running into the sparse file's hole was not cut at the hole\n");
+    if (vfs_write(sparse, pattern, 10, 2 * BLOCK) != -ENOSPC)
+        panic("ext2 self-test: a write inside the sparse file's hole did not return -ENOSPC\n");
+    ext2_write_or_panic(sparse, "END", 3, 16384);
+    if (vfs_read(sparse, back, 5, 0) != 5 || memcmp(back, "START", 5) != 0 ||
+        vfs_read(sparse, back, 4, BLOCK - 4) != 4 || memcmp(back, pattern, 4) != 0 ||
+        vfs_read(sparse, back, 3, 16384) != 3 || memcmp(back, "END", 3) != 0)
+        panic("ext2 self-test: the sparse file's written blocks read back wrong\n");
+    if (vfs_read(sparse, back, 10, 2 * BLOCK) != 10 || memcmp(back, "\0\0\0\0\0\0\0\0\0\0", 10) != 0)
+        panic("ext2 self-test: the sparse file's hole is no longer zeros\n");
+    ext2_write_or_panic(sparse, data, BLOCK, 0);
+    ext2_write_or_panic(sparse, "end", 3, 16384);
+    if (sparse->size != SPARSE_SIZE)
+        panic("ext2 self-test: the sparse file changed size\n");
+    vfs_node_put(sparse);
+
+    // An empty file has nothing to overwrite; a directory is never written
+    vfs_node_t *empty = ext2_expect(MNT "/empty", VFS_FILE);
+    if (vfs_write(empty, "x", 1, 0) != -ENOSPC || vfs_write(empty, "x", 0, 0) != 0 || empty->size != 0)
+        panic("ext2 self-test: writing the empty file did not return -ENOSPC (or 0 for 0 bytes)\n");
+    vfs_node_put(empty);
+    vfs_node_t *docs = ext2_expect(MNT "/docs", VFS_DIRECTORY);
+    if (vfs_write(docs, "x", 1, 0) != -EISDIR)
+        panic("ext2 self-test: writing a directory did not return -EISDIR\n");
+    vfs_node_put(docs);
+
+    // The other small files were not touched
+    ext2_expect_text(MNT "/hello.txt", HELLO_TEXT);
+    ext2_expect_text(MNT "/docs/deep/nested/file.txt", NESTED_TEXT);
+
+    kfree(back);
+    kfree(pattern);
+    kfree(data);
+}
+
 /*
  * Broken disks: an "overlay" block device reads the test disk and replaces a
  * few bytes on the way. Each case has its own device, so the block cache
@@ -372,7 +484,7 @@ static const block_ops_t overlay_ops = {
     .read = overlay_read,
 };
 
-#define OVERLAYS 16
+#define OVERLAYS 20
 static overlay_t overlays[OVERLAYS];
 static block_device_t overlay_devices[OVERLAYS];
 static size_t overlays_used;
@@ -415,10 +527,25 @@ static void ext2_test_broken(void)
     uint64_t root_inode = (uint64_t)inode_table * BLOCK + 1 * inode_size; // inode 2: slot 1
     uint64_t root_dir = (uint64_t)disk_u32(disk, root_inode + I_BLOCK) * BLOCK;
 
-    // Unchanged: an overlay mounts and lists like the real thing
+    // Unchanged: an overlay mounts and lists like the real thing, read-only (the device cannot write)
     vfs_node_t *root;
     if (ext2_mount(overlay_create(disk, 0, 0, 0), &root) != 0 || root->ino != 2)
         panic("ext2 self-test: an unchanged overlay does not mount\n");
+    if (root->ops->write != NULL)
+        panic("ext2 self-test: a disk that cannot write was mounted writable\n");
+    vfs_node_put(root);
+
+    // An unknown ro_compat feature: mounts and reads, but no node can be written
+    if (ext2_mount(overlay_create(disk, SB + SB_FEATURE_RO_COMPAT, 4, 0x0003 | 0x0400), &root) != 0)
+        panic("ext2 self-test: a disk with an unknown ro_compat feature did not mount\n");
+    vfs_node_t *hello = NULL;
+    char text[sizeof(HELLO_TEXT)];
+    if (root->ops->lookup(root, "hello.txt", 9, &hello) != 0 || hello->ops->write != NULL ||
+        vfs_write(hello, "x", 1, 0) != -EROFS)
+        panic("ext2 self-test: a disk with an unknown ro_compat feature can be written\n");
+    if (vfs_read(hello, text, sizeof(text), 0) != (long)strlen(HELLO_TEXT) || memcmp(text, HELLO_TEXT, strlen(HELLO_TEXT)) != 0)
+        panic("ext2 self-test: a disk with an unknown ro_compat feature does not read\n");
+    vfs_node_put(hello);
     vfs_node_put(root);
 
     static const struct
@@ -496,6 +623,7 @@ void ext2_selftest(void)
     ext2_test_lookup();
     ext2_test_nodes();
     ext2_test_read();
+    ext2_test_write();
     ext2_test_broken();
 
     if (mnt->refs != refs)
