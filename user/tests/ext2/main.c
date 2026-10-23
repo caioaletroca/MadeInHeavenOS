@@ -208,10 +208,6 @@ static void test_refusals(void)
     char buffer[64];
 
     errno = 0;
-    CHECK(open(MNT "/hello.txt", O_WRONLY) == -1 && errno == EROFS);
-    errno = 0;
-    CHECK(open(MNT "/hello.txt", O_RDWR) == -1 && errno == EROFS);
-    errno = 0;
     CHECK(open(MNT "/link", O_RDONLY) == -1 && errno == ENOENT);
     errno = 0;
     CHECK(open(MNT "/hello.txt/", O_RDONLY) == -1 && errno == ENOTDIR);

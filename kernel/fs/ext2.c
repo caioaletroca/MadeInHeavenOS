@@ -6,6 +6,7 @@
 #include <mihos/errno.h>
 #include <mm/kmalloc.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 #include <kprintf.h>
 #include <util.h>
@@ -22,6 +23,7 @@ typedef struct ext2_volume
     uint32_t inodes_per_group;
     uint32_t inode_size; // bytes per inode in the table (128 or more)
     uint32_t groups;
+    bool read_only;            // an unknown ro_compat feature: writing could damage the disk
     ext2_group_t *group_table; // kmalloc'd copy of the group descriptors
     mutex_t lock;              // the node cache: nodes[] and every node's hash link
     hlist_head_t nodes[HASH_BUCKETS(EXT2_NODE_HASH_BITS)];
@@ -41,10 +43,19 @@ typedef struct ext2_node
 
 static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
 static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
+static long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint64_t offset);
 static int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
 static void ext2_release(vfs_node_t *node);
 
 static const vfs_node_ops_t ext2_ops = {
+    .lookup = ext2_lookup,
+    .read = ext2_read,
+    .write = ext2_write,
+    .readdir = ext2_readdir,
+    .release = ext2_release,
+};
+
+static const vfs_node_ops_t ext2_read_only_ops = {
     .lookup = ext2_lookup,
     .read = ext2_read,
     .readdir = ext2_readdir,
@@ -71,6 +82,31 @@ static int ext2_block_get(ext2_volume_t *volume, uint32_t block, block_cache_buf
         return ret;
 
     *data = (*lease)->data + byte % BLOCK_CACHE_BLOCK_SIZE;
+    return 0;
+}
+
+/**
+ * @brief Copy bytes into an ext2 block (through the block cache: on the disk at eviction or sync)
+ *
+ * @param volume: The ext2 filesystem
+ * @param block: The block number to write
+ * @param within: The byte offset inside the block
+ * @param data: The bytes to copy
+ * @param count: How many (within + count must not pass the block's end)
+ * @return 0 on success, negative error code on failure
+ */
+static int ext2_block_write(ext2_volume_t *volume, uint32_t block, size_t within, const uint8_t *data, size_t count)
+{
+    block_cache_buf_t *lease;
+    const uint8_t *start;
+    int ret = ext2_block_get(volume, block, &lease, &start);
+    if (ret < 0)
+        return ret;
+
+    block_cache_begin_write(lease);
+    memcpy(lease->data + (start - lease->data) + within, data, count);
+    block_cache_end_write(lease);
+    block_cache_put(lease);
     return 0;
 }
 
@@ -111,7 +147,7 @@ static int ext2_check_superblock(const ext2_super_t *superblock, const block_dev
         return -EINVAL;
 
     // Unknown incompat features change how the disk must be read: refuse. Unknown ro_compat
-    // ones only matter for writing, and compat ones never do (Linux's rule)
+    // ones only matter for writing (read_only below), and compat ones never do (Linux's rule)
     if ((superblock->s_feature_incompat & ~EXT2_FEATURE_INCOMPAT_FILETYPE) != 0 ||
         (superblock->s_feature_incompat & EXT2_FEATURE_INCOMPAT_FILETYPE) == 0)
         return -EINVAL;
@@ -142,6 +178,8 @@ static int ext2_check_superblock(const ext2_super_t *superblock, const block_dev
     volume->inodes_per_group = superblock->s_inodes_per_group;
     volume->inode_size = inode_size;
     volume->groups = groups;
+    volume->read_only = (superblock->s_feature_ro_compat & ~EXT2_FEATURE_RO_COMPAT_KNOWN) != 0 ||
+                        disk->ops->write == NULL;
 
     return 0;
 }
@@ -266,7 +304,7 @@ static int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent
     if (n == NULL)
         return -ENOMEM;
 
-    vfs_node_init(&n->base, type, &ext2_ops);
+    vfs_node_init(&n->base, type, volume->read_only ? &ext2_read_only_ops : &ext2_ops);
     n->base.ino = ino;
     n->base.dev = volume->dev;
     n->base.mode = inode.i_mode & 07777;
@@ -352,7 +390,7 @@ static int ext2_file_block(ext2_volume_t *volume, const ext2_node_t *n, uint64_t
     logical -= EXT2_DIRECT_BLOCKS;
 
     uint64_t per_block = volume->block_size / sizeof(uint32_t); // number of block pointers per indirect block
-    uint64_t span = per_block;                              // number of blocks spanned by a single indirect block
+    uint64_t span = per_block;                                  // number of blocks spanned by a single indirect block
 
     for (int levels = 1; levels <= 3; levels++, span *= per_block)
     {
@@ -635,6 +673,56 @@ static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t off
     }
 
     return (long)done;
+}
+
+/**
+ * @brief Write data to an ext2 file
+ *
+ * @param file: The VFS node representing the file
+ * @param buffer: The buffer containing data to write
+ * @param count: The number of bytes to write
+ * @param offset: The offset within the file to start writing to
+ * @return long: The number of bytes written, or a negative error code on failure
+ */
+static long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint64_t offset)
+{
+    ext2_node_t *n = EXT2_NODE(file);
+    ext2_volume_t *volume = n->volume;
+
+    guard(mutex, &n->lock);
+
+    if (count == 0)
+        return 0;
+    if (offset >= file->size)
+        return -ENOSPC; // growing the file needs new blocks (W5)
+
+    count = MIN(count, file->size - offset);
+
+    const uint8_t *in = buffer;
+    size_t done = 0;
+    while (done < count)
+    {
+        uint64_t position = offset + done;
+        uint64_t logical = position / volume->block_size;
+        size_t within = position % volume->block_size;
+        size_t chunk = MIN(volume->block_size - within, count - done);
+
+        uint32_t block;
+        int ret = ext2_file_block(volume, n, logical, &block);
+        if (ret < 0)
+            return ret;
+
+        if (block == 0)
+            break; // a hole: writing it needs a new block (W5)
+
+        ret = ext2_block_write(volume, block, within, in + done, chunk);
+        if (ret < 0)
+            return ret;
+
+        done += chunk;
+    }
+
+    return done > 0 ? (long)done : -ENOSPC;
 }
 
 /**

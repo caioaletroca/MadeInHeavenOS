@@ -17,14 +17,19 @@
 #define EXT2_DYNAMIC_REV 1  // revision 1: s_inode_size and the feature flags are valid
 #define EXT2_GOOD_OLD_INODE_SIZE 128
 
-#define EXT2_DIRECT_BLOCKS 12 // i_block[0..11]: direct
-#define EXT2_SINGLE_INDIRECT 12   // i_block[12]: one level of indirection
-#define EXT2_DOUBLE_INDIRECT 13  // i_block[13]: two
-#define EXT2_TRIPLE_INDIRECT 14  // i_block[14]: three
+#define EXT2_DIRECT_BLOCKS 12   // i_block[0..11]: direct
+#define EXT2_SINGLE_INDIRECT 12 // i_block[12]: one level of indirection
+#define EXT2_DOUBLE_INDIRECT 13 // i_block[13]: two
+#define EXT2_TRIPLE_INDIRECT 14 // i_block[14]: three
 #define EXT2_BLOCK_POINTERS 15
 
 // Incompatible features: a driver must refuse a disk with one it does not know
-#define EXT2_FEATURE_INCOMPAT_FILETYPE 0x0002 // directory entries carry the file type
+#define EXT2_FEATURE_INCOMPAT_FILETYPE 0x0002      // directory entries carry the file type
+
+// Read-only compatible features: an unknown one still allows reading, never writing
+#define EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER 0x0001 // superblock copies only in groups 0, 1 and powers of 3, 5 and 7
+#define EXT2_FEATURE_RO_COMPAT_LARGE_FILE 0x0002   // i_size_high holds a file's size above 4 GiB
+#define EXT2_FEATURE_RO_COMPAT_KNOWN (EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER | EXT2_FEATURE_RO_COMPAT_LARGE_FILE)
 
 // i_mode: the type in the top 4 bits (the S_IF* values), permissions in the low 12
 #define EXT2_S_IFMT 0xF000
@@ -90,25 +95,25 @@ typedef struct ext2_group
 
 typedef struct ext2_inode
 {
-    uint16_t i_mode;                 // 0: EXT2_S_IF* | permissions
-    uint16_t i_uid;                  // 2
-    uint32_t i_size;                 // 4: low 32 bits of the size
-    uint32_t i_atime;                // 8
-    uint32_t i_ctime;                // 12
-    uint32_t i_mtime;                // 16
-    uint32_t i_dtime;                // 20
-    uint16_t i_gid;                  // 24
-    uint16_t i_links_count;          // 26
-    uint32_t i_blocks;               // 28: 512-byte units, indirect blocks included
-    uint32_t i_flags;                // 32
-    uint32_t i_osd1;                 // 36
+    uint16_t i_mode;                       // 0: EXT2_S_IF* | permissions
+    uint16_t i_uid;                        // 2
+    uint32_t i_size;                       // 4: low 32 bits of the size
+    uint32_t i_atime;                      // 8
+    uint32_t i_ctime;                      // 12
+    uint32_t i_mtime;                      // 16
+    uint32_t i_dtime;                      // 20
+    uint16_t i_gid;                        // 24
+    uint16_t i_links_count;                // 26
+    uint32_t i_blocks;                     // 28: 512-byte units, indirect blocks included
+    uint32_t i_flags;                      // 32
+    uint32_t i_osd1;                       // 36
     uint32_t i_block[EXT2_BLOCK_POINTERS]; // 40: 12 direct, then single, double, triple indirect; 0 = hole
-    uint32_t i_generation;           // 100
-    uint32_t i_file_acl;             // 104
-    uint32_t i_size_high;            // 108: high 32 bits of a regular file's size (large_file)
-    uint32_t i_faddr;                // 112
-    uint8_t i_osd2[12];              // 116
-} ext2_inode_t;                      // 128: revision 1 inodes may be bigger; the rest is ignored
+    uint32_t i_generation;                 // 100
+    uint32_t i_file_acl;                   // 104
+    uint32_t i_size_high;                  // 108: high 32 bits of a regular file's size (large_file)
+    uint32_t i_faddr;                      // 112
+    uint8_t i_osd2[12];                    // 116
+} ext2_inode_t;                            // 128: revision 1 inodes may be bigger; the rest is ignored
 
 typedef struct ext2_dirent
 {
