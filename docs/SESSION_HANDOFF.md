@@ -50,9 +50,10 @@ Working x86-64 PC kernel with:
   byte offsets through `block_read_bytes`/`block_write_bytes`); a **block cache** (`block_cache_get`/`block_cache_put`: 64
   leased 4 KiB buffers, hash lookup, LRU eviction, write-back of dirty buffers on eviction and
   `block_cache_sync`, run at halt) under every disk read
-- **ext2, read-only:** the first ext2 disk mounted on `/mnt` at boot; directories, file reads
+- **ext2:** the first ext2 disk mounted on `/mnt` at boot; directories, file reads
   through direct and indirect blocks (holes read as zeros), real modes, times and link counts;
-  one cached node per inode, freed after the last reference
+  one cached node per inode, freed after the last reference; files overwritten in place (no
+  allocation yet: the end of a file and holes stop a write)
 - Intrusive `list.h` and an hlist `hashtable.h` (multiplicative `hash_64`) shared by kernel and libc
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
@@ -70,6 +71,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+d6b1056 test(fs): cover ext2 overwrites
+8d74a1f feat(fs): overwrite ext2 file data
+98a7a77 feat(fs): give ext2 nodes a lock
+1f35c29 docs(architecture): document writable block devices in handoff
 5c2e489 test: cover writing /dev/<disk>
 5ce0df4 fix(sys): count the bytes write returned
 7a8b286 feat(driver): write block devices through /dev
@@ -1122,7 +1127,7 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   product at 64, 1024 consecutive keys 48–80 per bucket of 16; `list_move_after` from the back
   and the middle (both link directions), and of the first item (no change).
 
-### ext2, read-only (`fs/ext2.c`, `fs/ext2_disk.h`, `include/fs/ext2.h`)
+### ext2 (`fs/ext2.c`, `fs/ext2_disk.h`, `include/fs/ext2.h`)
 
 ```text
 / (initrd) ─ mnt ── mounted ──▶ ext2 root (inode 2) ─ hello.txt (inode 20)
@@ -1140,18 +1145,26 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   `FILETYPE`, blocks over 4 KiB (they would straddle cache buffers), an inode size not a power of
   two in 128..block size → `-EINVAL` ("not ours"); zero blocks or inodes per group, the first
   data block past the end, more blocks than the disk, groups too few for `s_inodes_count` →
-  `-EIO` (inconsistent). Ro_compat and compat features are ignored (we never write: Linux's
-  three-tier rule). `ext2_read_groups` copies the descriptor table (from block
+  `-EIO` (inconsistent). Compat features are ignored; a `ro_compat` one other than
+  `SPARSE_SUPER`/`LARGE_FILE` (`EXT2_FEATURE_RO_COMPAT_KNOWN`), or a disk without a `write`
+  op (nothing could be written back), makes the volume `read_only` (Linux's three-tier rule). `ext2_read_groups` copies the descriptor table (from block
   `s_first_data_block + 1`, over as many blocks as needed) into a `kmalloc`'d array and checks
   every group's inode table lies inside the file system, so `ext2_node_get` trusts it. Then
   `mutex_init`, `vfs_dev_alloc`, and the root (`ext2_node_get(2)`; not a directory → `-EIO`).
   `ext2_volume_t` = the disk, `dev`, block size, block/inode counts, inodes per group, inode size,
-  groups, the group table, `lock` and the node hash (`nodes[64]`, `kzalloc`'d: empty).
+  groups, `read_only`, the group table, `lock` and the node hash (`nodes[64]`, `kzalloc`'d: empty).
 - **Disk access** (`ext2_block_get(volume, block, &lease, &data)`): the only way to the disk; block 0
   or past the end → `-EIO` (a corrupt pointer); otherwise `block_cache_get` of the cache block
   holding it and `data` = its first byte there (a block never straddles two cache buffers).
   Every caller puts the lease right after use; at most one is held at a time.
-- **Nodes** (`ext2_node_t` = `vfs_node_t` (as `base`) + `volume`, `ino`, a copy of `i_block[15]`, `cache_link`):
+  `ext2_block_write(volume, block, within, data, count)`: the same lease, `begin_write`, the
+  slice copied in, `end_write`, put (the pair in one place, so no caller holds a buffer's write
+  across another lease).
+- **Nodes** (`ext2_node_t` = `vfs_node_t` (as `base`) + `volume`, `ino`, a copy of `i_block[15]`,
+  `lock` (a mutex: `block[]` and `base.size`, held by `ext2_read` and `ext2_write`; lock order
+  `n->lock` → `volume->lock` → the cache's), `cache_link`; ops `ext2_ops`, or
+  `ext2_read_only_ops` (no `write`: the VFS refuses write opens with `-EROFS`) on a `read_only`
+  volume):
   `ext2_node_get(volume, ino, parent, &node)`, under `volume->lock` (a mutex: it may read the disk; taken
   before the cache's locks, never inside them): ino 0 or past `s_inodes_count` → `-EIO`; a cached
   node is returned only through `vfs_node_tryget` (at 0 it is dying: unhashed, and a fresh one is
@@ -1176,6 +1189,10 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   after the walk with no lease held; a match that is not a file or directory is `-ENOENT`.
 - **Read** (`ext2_read`): clamped to the size; per ext2 block: `ext2_file_block`, a hole → `memset` 0,
   else the slice copied from the leased block; errors are returned as is.
+- **Write** (`ext2_write`, under `n->lock`): 0 bytes → 0; at or past the size → `-ENOSPC`
+  (growing needs new blocks: W5); clamped to the size; per ext2 block `ext2_file_block`, a
+  hole → stop (W5 too), else `ext2_block_write`; returns the bytes written, or `-ENOSPC` if a
+  hole came first. Nothing but data blocks changes (no size, inode, bitmap or time).
 - **Boot mount** (`ext2_init`, after `block_cache_init`): for each `block_at(i)` (the block table in
   registration order) `ext2_mount`; `-EINVAL` skips quietly, other errors are logged; the first
   one is `vfs_mount`ed on `/mnt` (an empty directory of the initrd, `MOUNT_POINTS` in
@@ -1192,9 +1209,17 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   `docs` through `nested` and `deep`, putting it releases the chain. Reads: three small files
   exactly, `empty` 0 bytes, `big.txt` whole (every line) and seven pieces across direct /
   single / double-indirect boundaries and the end equal to it with a canary, 0 at and past the
-  end; `sparse`'s hole zeros; `EROFS`, a directory opens and reads `EISDIR`. Broken disks: an
+  end; `sparse`'s hole zeros; `hello.txt` opens `O_RDWR` with both flags, a directory opens and
+  reads `EISDIR`. Writes (`ext2_test_write`): six overwrites of `big.txt` (one byte, across
+  blocks 0–1, direct → single, one single-indirect block, single → double, inside double) read
+  back with the bytes around them unchanged; 100 bytes 5 before the end write 5, at the end and
+  `UINT64_MAX` `-ENOSPC`, 0 bytes 0; `sparse`: 100 bytes 4 before its hole write 4, inside it
+  `-ENOSPC`, blocks 0 and 16 written and read back, the hole still zeros; `empty` `-ENOSPC`
+  (0 bytes 0), `docs` `-EISDIR`; everything restored, sizes unchanged. Broken disks: an
   overlay block device reads the test disk through `block_read` and patches 1–4 bytes, one
-  device per case (the cache is keyed by device): unchanged mounts; no magic, revision 0, an
+  device per case (the cache is keyed by device): unchanged mounts, read-only (overlays have
+  no `write`); an unknown `ro_compat` bit (`0x400`) mounts and reads, `hello.txt` has no
+  `write` op and `vfs_write` gives `-EROFS`; no magic, revision 0, an
   unknown incompat feature, no `FILETYPE`, 8 KiB blocks, 200-byte inodes → `-EINVAL`; more
   blocks than the disk, no inodes per group, more inodes than the groups, an inode table at
   block 0 → `-EIO`; a regular-file root → `-EIO`; a zero / unaligned / too long `rec_len` and a
@@ -1206,7 +1231,10 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   21 bytes one link, a path through `..` the same inode, `big.txt` `0644` with its size,
   `fstat` byte-identical; reads of the small files, `empty`, all of `big.txt` through 256-byte
   `read`s, `lseek` to lines 0/127/128/1535/1536/34303/34304/38399 (both sides of each block-kind
-  boundary), `SEEK_END`, the last 5 bytes; `sparse`'s zeros; `EROFS` (`O_WRONLY`, `O_RDWR`),
+  boundary), `SEEK_END`, the last 5 bytes; `sparse`'s zeros; writes: `HELLO` over `hello.txt`
+  through `O_RDWR` (position 5), read back through a second fd, 9 bytes at 15 write 6, then
+  `ENOSPC`, 0 bytes 0, `st_size` unchanged, restored; `big.txt` `O_WRONLY` across lines
+  1535/1536 (direct → single), `read` on it `EBADF`, read back through another fd, restored;
   `ENOENT` (`link`, missing), `ENOTDIR` (`hello.txt/`, `opendir` of a file, `getdents` on a
   file), `EISDIR`, `EBADF` (write); fd 3 free at the end.
 
@@ -1700,8 +1728,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     without a `write` op), devfs block nodes writable, `sys_write` counting what was written;
     the block self-test's node writes and the `disks` test's writes. Decided: a disk's end is
     Linux's (cut short across it, `ENOSPC` at it, 0 bytes always 0).
-  - **W4 (next):** ext2 overwrites file data inside the size (no allocation).
-  - **W5:** allocation: bitmaps (bit `i` = block `i + s_first_data_block`, inode `i + 1`), free
+  - **W4 (done):** a node `lock` (reads and writes), `ext2_block_write`, `ext2_write` (stops
+    at the end and at holes: a short count or `-ENOSPC`), a volume `read_only` with an unknown
+    `ro_compat` feature or a disk that cannot write (`ext2_read_only_ops`); the ext2 self-test's
+    writes and overlay cases, the `ext2` test's writes.
+  - **W5 (next):** allocation: bitmaps (bit `i` = block `i + s_first_data_block`, inode `i + 1`), free
     counts, inode / group descriptor / superblock write-back, appending with new indirect
     blocks.
   - **W6:** `O_CREAT`/`O_TRUNC`/`O_EXCL`, `unlink`, `mkdir`, `rmdir`, directory entries
@@ -1911,8 +1942,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `getdents` fills at most a page per call; `d_type` is `DT_DIR`/`DT_REG`/`DT_CHR`/`DT_BLK`
   (no symlinks, FIFOs or sockets yet). The `dirs` test hard-codes the root's layout (`bin`, `dev`, `mnt`, `sbin`, `usr`).
 - ext2 (each item becomes work when something needs it):
-  - read-only: no writing at all (block and inode allocation, bitmaps, free counts, `s_state`,
-    mount counts), so `EROFS` for every write access;
+  - writing is overwriting only: no block or inode allocation, bitmaps, free counts, sizes,
+    `s_state` or mount counts, so a write stops at the end of a file and at holes (`ENOSPC`);
+    times are never updated (no clock); a read-only volume is decided at mount only;
+  - one node `lock` for reads and writes: two reads of a file wait for each other (an rwlock
+    would let them share);
   - symlinks, device files, FIFOs and sockets on the disk are not shown or found (no VFS node
     types for them; symlinks with `readlink` and path resolution in phase C);
   - revision 0 and disks without `FILETYPE` are refused (readdir would have to read each

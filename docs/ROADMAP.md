@@ -142,8 +142,8 @@ docs/                     # handoff, roadmap
    step (d) done: `stat`/`fstat`; `/dev` done: mounts, devfs, `/dev/null`, `/dev/zero`,
    `/dev/console`, `ioctl`; disks in progress: the block layer, an ATA PIO driver, block
    devices in `/dev`, the block cache and read-only ext2 on `/mnt` done; writing in progress
-   (W1, sector writes and flushes, W2, write-back in the cache, and W3, a writable
-   `/dev/hda`, done; next ext2 overwriting file data), then partitions and
+   (W1, sector writes and flushes, W2, write-back in the cache, W3, a writable `/dev/hda`,
+   and W4, ext2 overwriting file data, done; next ext2 allocation), then partitions and
    IRQ-driven reads, then the root on the disk).
 
 ## Reference projects
