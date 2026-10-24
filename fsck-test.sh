@@ -2,9 +2,9 @@
 #
 # Runs the tests on a copy of the test disk that the run may write (no
 # -snapshot), then checks the copy with e2fsck in the mihos-compiler image.
-# Exits 0 only if the tests passed and e2fsck found nothing to fix: the
-# kernel left a consistent ext2 behind (bitmaps, free counts, i_blocks, block
-# maps), after the halt's sync.
+# Exits 0 only if the tests passed, e2fsck found nothing to fix (the kernel
+# left a consistent ext2 behind: bitmaps, free counts, i_blocks, block maps)
+# and the volume says clean (the halt marked it so: while mounted it does not).
 #
 #   ./fsck-test.sh [iso [disk]]   defaults: mihos.iso, disk.img
 #
@@ -49,7 +49,17 @@ status=$?
 
 # e2fsck's exit status: 0 clean; 4 errors left uncorrected (with -n, any error); 8 and up: it could not run
 case $status in
-0) echo "fsck-test: ok (tests passed, e2fsck found nothing to fix)" ;;
+0) ;;
 4) echo "fsck-test: FAIL (e2fsck found errors in $copy)"; exit 1 ;;
 *) echo "fsck-test: e2fsck could not check $copy (status $status)" >&2; exit 2 ;;
 esac
+
+# The mount cleared s_state's clean bit (the self-test checks that); only the halt sets it again
+state=$(MSYS_NO_PATHCONV=1 docker run --rm -v "$build_dir:/disk" "$image" dumpe2fs -h /disk/fsck.img 2>/dev/null |
+    sed -n 's/^Filesystem state: *//p')
+if [ "$state" != "clean" ]; then
+    echo "fsck-test: FAIL (the volume says '$state' after the halt, not clean)"
+    exit 1
+fi
+
+echo "fsck-test: ok (tests passed, e2fsck found nothing to fix, the halt left the volume clean)"

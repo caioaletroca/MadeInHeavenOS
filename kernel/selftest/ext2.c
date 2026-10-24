@@ -42,6 +42,8 @@
 #define SB_FEATURE_INCOMPAT 96
 #define SB_FEATURE_RO_COMPAT 100
 #define SB_FREE_BLOCKS_COUNT 12
+#define SB_STATE 58
+#define EXT2_TEST_VALID_FS 0x0001 // s_state: cleanly unmounted
 #define BG_FREE_BLOCKS_COUNT 12
 #define EXT2_TEST_DIRECT 12 // i_block's direct pointers
 #define GROUP_TABLE (2 * BLOCK) // block 2 with 1 KiB blocks
@@ -802,6 +804,24 @@ static void ext2_test_grow(void)
     kfree(pattern);
 }
 
+/**
+ * The mounted test disk is writable, so on the disk itself (after a sync) its
+ * s_state says "not cleanly unmounted": the clean bit comes back only at the
+ * halt (fsck-test.sh checks that). A crash before it leaves the bit clear.
+ */
+static void ext2_test_state(void)
+{
+    block_device_t *disk = block_at(0);
+    if (disk == NULL)
+        panic("ext2 self-test: no disk\n");
+    if (block_cache_sync() != 0)
+        panic("ext2 self-test: sync failed\n");
+
+    uint32_t state = disk_u32(disk, SB + SB_STATE) & 0xFFFF;
+    if (state & EXT2_TEST_VALID_FS)
+        panic("ext2 self-test: the mounted volume's s_state (0x%x) still says clean\n", state);
+}
+
 void ext2_selftest(void)
 {
     memcpy(long_path, MNT "/", sizeof(MNT));
@@ -818,6 +838,7 @@ void ext2_selftest(void)
     ext2_test_write();
     ext2_test_inode_write();
     ext2_test_grow();
+    ext2_test_state();
     ext2_test_broken();
 
     if (mnt->refs != refs)
