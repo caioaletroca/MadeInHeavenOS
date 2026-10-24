@@ -41,9 +41,13 @@
 #define SB_INODE_SIZE 88
 #define SB_FEATURE_INCOMPAT 96
 #define SB_FEATURE_RO_COMPAT 100
+#define SB_FREE_BLOCKS_COUNT 12
+#define BG_FREE_BLOCKS_COUNT 12
+#define EXT2_TEST_DIRECT 12 // i_block's direct pointers
 #define GROUP_TABLE (2 * BLOCK) // block 2 with 1 KiB blocks
 #define BG_INODE_TABLE 8
 #define I_MODE 0
+#define I_SIZE 4
 #define I_BLOCKS 28
 #define I_BLOCK 40
 #define DIRENT_REC_LEN 4
@@ -677,6 +681,127 @@ static void ext2_test_inode_write(void)
     kfree(before);
 }
 
+// The free block counts on the disk itself (after a sync): the superblock's and group 0's
+static uint32_t disk_free_blocks(block_device_t *disk, uint32_t *group0)
+{
+    if (block_cache_sync() != 0)
+        panic("ext2 self-test: sync failed\n");
+    *group0 = disk_u32(disk, GROUP_TABLE + BG_FREE_BLOCKS_COUNT) & 0xFFFF;
+    return disk_u32(disk, SB + SB_FREE_BLOCKS_COUNT);
+}
+
+// A node's i_blocks and i_size as its inode on the disk holds them (after a sync)
+static void disk_inode_sizes(block_device_t *disk, vfs_node_t *node, uint32_t *blocks, uint32_t *size)
+{
+    if (block_cache_sync() != 0)
+        panic("ext2 self-test: sync failed\n");
+    uint32_t inode_size = disk_u32(disk, SB + SB_INODE_SIZE) & 0xFFFF;
+    uint64_t inode = (uint64_t)disk_u32(disk, GROUP_TABLE + BG_INODE_TABLE) * BLOCK + (node->ino - 1) * inode_size;
+    *blocks = disk_u32(disk, inode + I_BLOCKS);
+    *size = disk_u32(disk, inode + I_SIZE);
+}
+
+// After a write: the inode on the disk holds the node's size and `blocks`, and exactly
+// `used` blocks left the free counts (both of them) since *free / *group0; updates them
+static void grow_expect(block_device_t *disk, vfs_node_t *node, uint32_t blocks, uint32_t used, uint32_t *free,
+                        uint32_t *group0, const char *what)
+{
+    uint32_t disk_blocks, disk_size, now_group0;
+    disk_inode_sizes(disk, node, &disk_blocks, &disk_size);
+    uint32_t now = disk_free_blocks(disk, &now_group0);
+    if (disk_blocks != blocks || disk_size != (uint32_t)node->size)
+        panic("ext2 self-test: %s: the inode holds i_blocks %u and size %u, expected %u and %u\n", what, disk_blocks,
+              disk_size, blocks, (uint32_t)node->size);
+    if (*free - now != used || *group0 - now_group0 != used)
+        panic("ext2 self-test: %s: %u blocks left the superblock's count and %u the group's, expected %u\n", what,
+              *free - now, *group0 - now_group0, used);
+    *free = now;
+    *group0 = now_group0;
+}
+
+/**
+ * Growing files (the grow/ files of the test disk, which no other test reads):
+ * an append into a new direct block, holes filled directly and inside a
+ * single-indirect table, an empty file growing past its direct blocks (a new
+ * table), and an append far past the end needing a new second-level table.
+ * Each write is read back; on the disk, after a sync, the inode holds the new
+ * size and i_blocks (tables included, 2 per 1 KiB block) and exactly that many
+ * blocks left both free counts.
+ */
+static void ext2_test_grow(void)
+{
+    block_device_t *disk = block_at(0);
+    char *pattern = kmalloc(13 * BLOCK);
+    char *back = kmalloc(13 * BLOCK + 16);
+    if (disk == NULL || pattern == NULL || back == NULL)
+        panic("ext2 self-test: no disk, or out of memory\n");
+    for (uint32_t b = 0; b < 13 * BLOCK; b++)
+        pattern[b] = (char)('A' + b % 23);
+
+    uint32_t group0;
+    uint32_t free = disk_free_blocks(disk, &group0);
+
+    // small: 5 bytes in one block; 1100 more fill it and need one new block
+    vfs_node_t *small = ext2_expect(MNT "/grow/small", VFS_FILE);
+    ext2_write_or_panic(small, pattern, 1100, 5);
+    if (small->size != 1105 || vfs_read(small, back, 2000, 0) != 1105 || memcmp(back, "small", 5) != 0 ||
+        memcmp(back + 5, pattern, 1100) != 0)
+        panic("ext2 self-test: grow/small does not read back its append\n");
+    grow_expect(disk, small, 4, 1, &free, &group0, "an append into a new block");
+    vfs_node_put(small);
+
+    // holes: blocks 0 and 16 and the single-indirect table exist; logical 1 is a hole in the
+    // inode's own pointers, logical 13 a hole inside the table
+    vfs_node_t *holes = ext2_expect(MNT "/grow/holes", VFS_FILE);
+    ext2_write_or_panic(holes, "X", 1, 2000);
+    grow_expect(disk, holes, 8, 1, &free, &group0, "a hole in a direct pointer");
+    ext2_write_or_panic(holes, "Y", 1, 13 * BLOCK + 10);
+    grow_expect(disk, holes, 10, 1, &free, &group0, "a hole inside a single-indirect table");
+    if (holes->size != SPARSE_SIZE || vfs_read(holes, back, 2 * BLOCK, BLOCK) != 2 * BLOCK)
+        panic("ext2 self-test: grow/holes changed size or does not read\n");
+    for (uint32_t b = 0; b < 2 * BLOCK; b++)
+        if (back[b] != (b == 2000 - BLOCK ? 'X' : 0))
+            panic("ext2 self-test: byte %u of grow/holes is wrong after filling a hole\n", BLOCK + b);
+    if (vfs_read(holes, back, 12, 13 * BLOCK) != 12 || back[10] != 'Y' || back[9] != 0 || back[11] != 0)
+        panic("ext2 self-test: the hole filled inside grow/holes's table reads back wrong\n");
+    vfs_node_put(holes);
+
+    // empty: 13 KiB at once, 12 direct blocks, then the single-indirect table and its first block
+    vfs_node_t *empty = ext2_expect(MNT "/grow/empty", VFS_FILE);
+    ext2_write_or_panic(empty, pattern, 13 * BLOCK, 0);
+    if (empty->size != 13 * BLOCK || vfs_read(empty, back, 13 * BLOCK + 16, 0) != 13 * BLOCK ||
+        memcmp(back, pattern, 13 * BLOCK) != 0)
+        panic("ext2 self-test: grow/empty does not read back its 13 KiB\n");
+    grow_expect(disk, empty, 28, 14, &free, &group0, "13 KiB into an empty file");
+
+    // Past the largest file (16 GiB and a bit with 1 KiB blocks): -EFBIG, nothing allocated
+    uint64_t largest = (uint64_t)(EXT2_TEST_DIRECT + 256 + 256 * 256 + 256 * 256 * 256) * BLOCK;
+    if (vfs_write(empty, "x", 1, largest) != -EFBIG || empty->size != 13 * BLOCK)
+        panic("ext2 self-test: a write past the largest file did not return -EFBIG\n");
+    grow_expect(disk, empty, 28, 0, &free, &group0, "a write past the largest file");
+    vfs_node_put(empty);
+
+    // long: 300 blocks (direct, single, the first second-level table of the double); logical
+    // 524 is the first block of the second second-level table: a new table and a data block,
+    // the gap from the old end stays a hole
+    vfs_node_t *grown = ext2_expect(MNT "/grow/long", VFS_FILE);
+    ext2_write_or_panic(grown, "far away", 8, 524 * BLOCK);
+    if (grown->size != 524 * BLOCK + 8)
+        panic("ext2 self-test: grow/long did not grow to its new end\n");
+    if (vfs_read(grown, back, 16, 524 * BLOCK - 8) != 16 || memcmp(back, "\0\0\0\0\0\0\0\0far away", 16) != 0)
+        panic("ext2 self-test: grow/long's new end reads back wrong\n");
+    if (vfs_read(grown, back, 100, BIG_SIZE - 50) != 100 || !big_line_ok(back + 42, BIG_LINES - 1))
+        panic("ext2 self-test: grow/long's old last line changed\n");
+    for (uint32_t b = 50; b < 100; b++)
+        if (back[b] != 0)
+            panic("ext2 self-test: grow/long's gap after its old end is not zeros\n");
+    grow_expect(disk, grown, 606 + 4, 2, &free, &group0, "an append needing a new second-level table");
+    vfs_node_put(grown);
+
+    kfree(back);
+    kfree(pattern);
+}
+
 void ext2_selftest(void)
 {
     memcpy(long_path, MNT "/", sizeof(MNT));
@@ -692,6 +817,7 @@ void ext2_selftest(void)
     ext2_test_read();
     ext2_test_write();
     ext2_test_inode_write();
+    ext2_test_grow();
     ext2_test_broken();
 
     if (mnt->refs != refs)

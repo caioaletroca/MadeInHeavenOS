@@ -265,6 +265,48 @@ static void test_writes(void)
     close(fd);
 }
 
+/*
+ * Growing a file (grow/user: empty on the test disk, no other test reads it)
+ * through write(): one write() of 3000 bytes (several chunks and blocks), an
+ * append at SEEK_END, and a write far past the end leaving a hole of zeros.
+ */
+static void test_grow(void)
+{
+    static char data[3000], back[10100];
+    for (size_t i = 0; i < sizeof(data); i++)
+        data[i] = (char)('a' + i % 26);
+
+    int fd = open(MNT "/grow/user", O_RDWR);
+    CHECK(fd >= 0);
+    if (fd < 0)
+        return;
+
+    CHECK(write(fd, data, sizeof(data)) == (ssize_t)sizeof(data));
+    struct stat st;
+    CHECK(fstat(fd, &st) == 0 && st.st_size == (off_t)sizeof(data));
+
+    CHECK(lseek(fd, 0, SEEK_END) == (off_t)sizeof(data));
+    CHECK(write(fd, "end", 3) == 3);
+    CHECK(fstat(fd, &st) == 0 && st.st_size == (off_t)sizeof(data) + 3);
+
+    int other = open(MNT "/grow/user", O_RDONLY);
+    CHECK(other >= 0);
+    CHECK(read_full(other, back, sizeof(back)) == (ssize_t)sizeof(data) + 3);
+    CHECK(memcmp(back, data, sizeof(data)) == 0 && memcmp(back + sizeof(data), "end", 3) == 0);
+
+    // Far past the end: the file grows to it, the gap reads as zeros
+    CHECK(write_at(fd, "far", 3, 10000) == 3);
+    CHECK(fstat(fd, &st) == 0 && st.st_size == 10003);
+    CHECK(lseek(other, sizeof(data) + 3, SEEK_SET) == (off_t)sizeof(data) + 3);
+    CHECK(read_full(other, back, sizeof(back)) == 10003 - (ssize_t)sizeof(data) - 3);
+    int zeros = 1;
+    for (int i = 0; i < 10000 - (int)sizeof(data) - 3; i++)
+        zeros = zeros && back[i] == 0;
+    CHECK(zeros && memcmp(back + 10000 - sizeof(data) - 3, "far", 3) == 0);
+    close(other);
+    close(fd);
+}
+
 static void test_refusals(void)
 {
     char buffer[64];
@@ -302,6 +344,7 @@ int main(void)
     test_stat();
     test_reads();
     test_writes();
+    test_grow();
     test_refusals();
 
     // Every fd and stream was closed: the next open gets fd 3 again
