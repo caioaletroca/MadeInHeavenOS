@@ -71,6 +71,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+2778f7d test(fs): cover ext2 inode write-back
+38d3cf4 feat(fs): write ext2 inodes back
+998eef0 refactor(fs): find ext2 inodes with ext2_inode_byte
+f1a5f12 docs(architecture): document ext2 overwrites in handoff
 d6b1056 test(fs): cover ext2 overwrites
 8d74a1f feat(fs): overwrite ext2 file data
 98a7a77 feat(fs): give ext2 nodes a lock
@@ -1152,16 +1156,26 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   every group's inode table lies inside the file system, so `ext2_node_get` trusts it. Then
   `mutex_init`, `vfs_dev_alloc`, and the root (`ext2_node_get(2)`; not a directory → `-EIO`).
   `ext2_volume_t` = the disk, `dev`, block size, block/inode counts, inodes per group, inode size,
-  groups, `read_only`, the group table, `lock` and the node hash (`nodes[64]`, `kzalloc`'d: empty).
+  groups, `first_data_block`, `blocks_per_group`, `read_only`, the group table, `lock` and the node hash (`nodes[64]`, `kzalloc`'d: empty).
 - **Disk access** (`ext2_block_get(volume, block, &lease, &data)`): the only way to the disk; block 0
   or past the end → `-EIO` (a corrupt pointer); otherwise `block_cache_get` of the cache block
   holding it and `data` = its first byte there (a block never straddles two cache buffers).
   Every caller puts the lease right after use; at most one is held at a time.
   `ext2_block_write(volume, block, within, data, count)`: the same lease, `begin_write`, the
   slice copied in, `end_write`, put (the pair in one place, so no caller holds a buffer's write
-  across another lease).
+  across another lease). `ext2_disk_write(volume, byte, data, count)`: any byte range of the
+  file system through `block_write_bytes` (a short write → `-EIO`), for metadata outside the
+  data blocks or smaller than one (the superblock is in block 0 with 4 KiB blocks, which
+  `ext2_block_get` refuses; descriptors; inode fields).
+- **Inodes on the disk:** `ext2_inode_byte(volume, ino)` = the group's `bg_inode_table` ×
+  block size + slot × `inode_size`, the one formula for reads (`ext2_node_get` splits it into
+  block and place) and writes. `ext2_inode_store(n)` (caller holds `n->lock`) writes
+  `i_size`, `i_blocks`, `i_block` and, for regular files only, `i_size_high` (a directory's is
+  `i_dir_acl`), field by field through `ext2_disk_write`: nothing is read, and fields it does
+  not own (links, times) are never rewritten. `ext2_inode_write(node)` (public, `fs/ext2.h`)
+  takes the lock and calls it.
 - **Nodes** (`ext2_node_t` = `vfs_node_t` (as `base`) + `volume`, `ino`, a copy of `i_block[15]`,
-  `lock` (a mutex: `block[]` and `base.size`, held by `ext2_read` and `ext2_write`; lock order
+  `blocks` (`i_blocks`), `lock` (a mutex: `block[]`, `blocks` and `base.size`, held by `ext2_read` and `ext2_write`; lock order
   `n->lock` → `volume->lock` → the cache's), `cache_link`; ops `ext2_ops`, or
   `ext2_read_only_ops` (no `write`: the VFS refuses write opens with `-EROFS`) on a `read_only`
   volume):
@@ -1224,7 +1238,10 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   blocks than the disk, no inodes per group, more inodes than the groups, an inode table at
   block 0 → `-EIO`; a regular-file root → `-EIO`; a zero / unaligned / too long `rec_len` and a
   name longer than its record in the root directory → mount works, `readdir` and `lookup` give
-  `-EIO`. Mounted overlays stay allocated (no unmount).
+  `-EIO`. Mounted overlays stay allocated (no unmount). Inode write-back
+  (`ext2_test_inode_write`): `ext2_inode_write` of the unchanged `big.txt`, `sparse`,
+  `hello.txt`, `empty`, `docs` and root plus a sync leave every byte of each raw slot as it
+  was; `i_blocks` 606, 6, 2, 0, 2, 2 (what `mke2fs` wrote).
 - **`ext2` test** (`user/tests/ext2`): the listing with types and the dots as inode 2, `link`
   absent, `hello.txt`'s `d_ino` = `st_ino`, `docs/deep/nested` lists `file.txt`, `/mnt/..` lists
   `usr`; `stat`: `/mnt` `0755`, inode 2, `nlink` 4, `st_dev` unlike `/` and `/dev`, `hello.txt`
@@ -1732,7 +1749,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     at the end and at holes: a short count or `-ENOSPC`), a volume `read_only` with an unknown
     `ro_compat` feature or a disk that cannot write (`ext2_read_only_ops`); the ext2 self-test's
     writes and overlay cases, the `ext2` test's writes.
-  - **W5 (next):** allocation: bitmaps (bit `i` = block `i + s_first_data_block`, inode `i + 1`), free
+  - **W5 (in progress):** W5a (done): `first_data_block`/`blocks_per_group`, `n->blocks`,
+    `ext2_inode_byte`, `ext2_disk_write`, `ext2_inode_store`/`ext2_inode_write`, the inode
+    self-test. Next W5b, the block allocator (`ext2_block_alloc`/`free`, `allocation_lock`,
+    goal = after the previous block, new blocks zeroed, primary superblock/descriptors only),
+    then W5c (`ext2_file_block` creating blocks and tables; holes and appends), W5d
+    (`s_state`), and `./fsck-test.sh` (`e2fsck -fn` on a copy written without `-snapshot`). Overall: allocation: bitmaps (bit `i` = block `i + s_first_data_block`, inode `i + 1`), free
     counts, inode / group descriptor / superblock write-back, appending with new indirect
     blocks.
   - **W6:** `O_CREAT`/`O_TRUNC`/`O_EXCL`, `unlink`, `mkdir`, `rmdir`, directory entries
