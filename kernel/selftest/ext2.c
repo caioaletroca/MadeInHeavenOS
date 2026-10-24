@@ -3,6 +3,7 @@
 #include <fs/vfs.h>
 #include <fs/file.h>
 #include <driver/block.h>
+#include <driver/block_cache.h>
 #include <mm/kmalloc.h>
 #include <mihos/errno.h>
 #include <mihos/fcntl.h>
@@ -43,6 +44,7 @@
 #define GROUP_TABLE (2 * BLOCK) // block 2 with 1 KiB blocks
 #define BG_INODE_TABLE 8
 #define I_MODE 0
+#define I_BLOCKS 28
 #define I_BLOCK 40
 #define DIRENT_REC_LEN 4
 #define DIRENT_NAME_LEN 6
@@ -610,6 +612,72 @@ static void ext2_test_broken(void)
     }
 }
 
+/**
+ * Writing an unchanged inode back changes nothing on the disk: the raw slot
+ * (every byte of inode_size, not only the fields written) is the same after
+ * ext2_inode_write and a sync. Catches a wrong slot, a wrong field offset, or
+ * a directory's i_dir_acl overwritten as i_size_high. Each node's i_blocks
+ * copy is the one mke2fs wrote.
+ */
+static void ext2_test_inode_write(void)
+{
+    block_device_t *disk = block_at(0);
+    if (disk == NULL)
+        panic("ext2 self-test: no disk\n");
+    uint32_t inode_size = disk_u32(disk, SB + SB_INODE_SIZE) & 0xFFFF;
+    uint32_t inode_table = disk_u32(disk, GROUP_TABLE + BG_INODE_TABLE);
+    uint8_t *before = kmalloc(2 * BLOCK);
+    uint8_t *after = kmalloc(2 * BLOCK);
+    if (before == NULL || after == NULL)
+        panic("ext2 self-test: out of memory\n");
+
+    static const struct
+    {
+        const char *path;
+        uint32_t blocks; // i_blocks on disk.img
+    } inodes[] = {
+        {BIG, 606},              // 300 data blocks + single, double and one second-level table, 2 sectors each
+        {MNT "/sparse", 6},      // blocks 0 and 16 and the single-indirect table
+        {MNT "/hello.txt", 2},   // one block
+        {MNT "/empty", 0},       // none
+        {MNT "/docs", 2},        // a directory: one block, i_dir_acl kept
+        {MNT, 2},                // the root directory
+    };
+    for (size_t i = 0; i < sizeof(inodes) / sizeof(inodes[0]); i++)
+    {
+        vfs_node_t *node = NULL;
+        if (vfs_lookup(inodes[i].path, &node) != 0)
+            panic("ext2 self-test: lookup of '%s' failed\n", inodes[i].path);
+
+        // The inode's slot, read straight from the disk (two sectors cover any slot)
+        uint64_t byte = (uint64_t)inode_table * BLOCK + (node->ino - 1) * inode_size;
+        uint64_t sector = byte / BLOCK_SECTOR_SIZE;
+        size_t within = byte % BLOCK_SECTOR_SIZE;
+        if (block_read(disk, sector, 2, before) != 0)
+            panic("ext2 self-test: reading inode %u failed\n", (unsigned int)node->ino);
+
+        int ret = ext2_inode_write(node);
+        if (ret != 0)
+            panic("ext2 self-test: ext2_inode_write of '%s' failed: %d\n", inodes[i].path, ret);
+        if (block_cache_sync() != 0)
+            panic("ext2 self-test: sync failed\n");
+        if (block_read(disk, sector, 2, after) != 0)
+            panic("ext2 self-test: reading inode %u failed\n", (unsigned int)node->ino);
+
+        if (memcmp(before + within, after + within, inode_size) != 0)
+            panic("ext2 self-test: writing '%s''s unchanged inode changed it on the disk\n", inodes[i].path);
+        uint32_t blocks;
+        memcpy(&blocks, after + within + I_BLOCKS, sizeof(blocks));
+        if (blocks != inodes[i].blocks)
+            panic("ext2 self-test: '%s' has i_blocks %u, expected %u\n", inodes[i].path, blocks, inodes[i].blocks);
+
+        vfs_node_put(node);
+    }
+
+    kfree(after);
+    kfree(before);
+}
+
 void ext2_selftest(void)
 {
     memcpy(long_path, MNT "/", sizeof(MNT));
@@ -624,6 +692,7 @@ void ext2_selftest(void)
     ext2_test_nodes();
     ext2_test_read();
     ext2_test_write();
+    ext2_test_inode_write();
     ext2_test_broken();
 
     if (mnt->refs != refs)
