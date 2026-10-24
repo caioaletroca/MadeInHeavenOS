@@ -7,10 +7,11 @@
 #   ./run-tests.sh [iso [disk]]   defaults: mihos.iso, disk.img
 #
 # The disk (an ext2 image, make all builds it) is the IDE primary master, the
-# CD stays the secondary master. -snapshot: the run never writes to the image.
+# CD stays the secondary master. -snapshot: the run never writes to the image
+# (SNAPSHOT=0 lets it write, for fsck-test.sh's copy).
 #
 # Environment: QEMU (default qemu-system-x86_64), TIMEOUT in seconds (default
-# 120). The log stays in run-tests.log.
+# 120), SNAPSHOT (default 1). The log stays in run-tests.log.
 
 set -u
 
@@ -18,6 +19,8 @@ iso=${1:-mihos.iso}
 disk=${2:-disk.img}
 qemu=${QEMU:-qemu-system-x86_64}
 limit=${TIMEOUT:-120}
+snapshot=-snapshot
+[ "${SNAPSHOT:-1}" = 0 ] && snapshot=
 log=run-tests.log
 
 if [ ! -f "$iso" ]; then
@@ -46,7 +49,7 @@ fi
 rm -f "$log"
 start=$(date +%s)
 MSYS_NO_PATHCONV=1 timeout "$limit" "$qemu" -cdrom "$iso" -m 1024 -no-reboot \
-    -drive "file=$disk_arg,format=raw,if=ide,index=0,media=disk" -snapshot \
+    -drive "file=$disk_arg,format=raw,if=ide,index=0,media=disk" $snapshot \
     -display none -debugcon "file:$log_arg"
 qemu_status=$?
 elapsed=$(($(date +%s) - start))
