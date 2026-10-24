@@ -738,6 +738,10 @@ static int ext2_check_superblock(const ext2_super_t *superblock, const block_dev
     if ((uint64_t)superblock->s_blocks_count * block_size > disk->sector_count * BLOCK_SECTOR_SIZE)
         return -EIO;
 
+    // A group's bitmaps are one block each: never more blocks or inodes than it has bits
+    if (superblock->s_blocks_per_group > 8 * block_size || superblock->s_inodes_per_group > 8 * block_size)
+        return -EIO;
+
     // Groups cover the blocks after s_first_data_block (rounded up); together they must hold every inode
     uint32_t groups = (superblock->s_blocks_count - superblock->s_first_data_block + superblock->s_blocks_per_group - 1) / superblock->s_blocks_per_group;
     if ((uint64_t)groups * superblock->s_inodes_per_group < superblock->s_inodes_count)
