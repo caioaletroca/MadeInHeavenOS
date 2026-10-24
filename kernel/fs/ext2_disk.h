@@ -11,10 +11,12 @@
  */
 
 #define EXT2_SUPERBLOCK_OFFSET 1024 // bytes from the start of the disk, whatever the block size
-#define EXT2_MAGIC 0xEF53
-#define EXT2_ROOT_INO 2     // inode 1 holds bad blocks; the root directory is always 2
-#define EXT2_GOOD_OLD_REV 0 // revision 0: fixed 128-byte inodes, no feature flags
-#define EXT2_DYNAMIC_REV 1  // revision 1: s_inode_size and the feature flags are valid
+#define EXT2_MAGIC 0xEF53           // ext2 magic number
+#define EXT2_VALID_FS 0x0001        // filesystem is clean
+#define EXT2_ERROR_FS 0x0002        // errors were detected: fsck needed
+#define EXT2_ROOT_INO 2             // inode 1 holds bad blocks; the root directory is always 2
+#define EXT2_GOOD_OLD_REV 0         // revision 0: fixed 128-byte inodes, no feature flags
+#define EXT2_DYNAMIC_REV 1          // revision 1: s_inode_size and the feature flags are valid
 #define EXT2_GOOD_OLD_INODE_SIZE 128
 
 #define EXT2_DIRECT_BLOCKS 12   // i_block[0..11]: direct

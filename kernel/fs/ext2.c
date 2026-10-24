@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <kprintf.h>
+#include <power.h>
 #include <util.h>
 
 #define EXT2_NODE_HASH_BITS 6 // 64 buckets for cached nodes
@@ -28,6 +29,8 @@ typedef struct ext2_volume
     uint32_t inode_size; // bytes per inode in the table (128 or more)
     uint32_t groups;
     bool read_only;            // an unknown ro_compat feature: writing could damage the disk
+    uint16_t state;            // s_state as it is on the disk (EXT2_VALID_FS cleared while mounted writable)
+    halt_hook_t halt_hook;     // writable volumes: marks the volume clean before the power goes off
     uint64_t max_file_size;    // the largest file: what three levels of tables reach, or 2 GiB - 1 without LARGE_FILE
     ext2_group_t *group_table; // kmalloc'd copy of the group descriptors
     uint32_t free_blocks;      // s_free_blocks_count, under allocation_lock
@@ -1110,6 +1113,37 @@ static void ext2_volume_free(ext2_volume_t *volume)
     kfree(volume);
 }
 
+/**
+ * @brief Store the state of the ext2 filesystem on disk
+ *
+ * @param volume: The ext2 filesystem structure
+ * @param state: The state to store (EXT2_VALID_FS or EXT2_ERROR_FS)
+ * @return 0 on success, negative error code on failure
+ */
+static int ext2_state_store(ext2_volume_t *volume, uint16_t state)
+{
+    volume->state = state;
+
+    int ret = ext2_disk_write(volume, EXT2_SUPERBLOCK_OFFSET + offsetof(ext2_super_t, s_state), &state, sizeof(state));
+    if (ret < 0)
+        return ret;
+
+    return 0;
+}
+
+/**
+ * @brief Halt hook for ext2 volumes: marks the volume clean before power off
+ *
+ * @param hook: The halt hook structure
+ */
+static void ext2_halt(halt_hook_t *hook)
+{
+    ext2_volume_t *volume = list_container(hook, ext2_volume_t, halt_hook);
+    int ret = ext2_state_store(volume, volume->state | EXT2_VALID_FS);
+    if (ret < 0)
+        kprintf("ext2: %s: cannot mark the volume clean: %d\n", volume->disk->name, ret);
+}
+
 int ext2_mount(block_device_t *disk, vfs_node_t **root)
 {
     ext2_super_t superblock;
@@ -1149,6 +1183,27 @@ int ext2_mount(block_device_t *disk, vfs_node_t **root)
     {
         ext2_volume_free(volume);
         return ret;
+    }
+
+    volume->state = superblock.s_state;
+
+    // If the volume is not read-only, check its state and mark it as not cleanly unmounted if necessary
+    if (!volume->read_only)
+    {
+        if ((volume->state & EXT2_VALID_FS) == 0 || (volume->state & EXT2_ERROR_FS) != 0)
+            kprintf("ext2: %s was not cleanly unmounted or has errors: run e2fsck\n", disk->name);
+
+        // Mark the volume as not cleanly unmounted before continuing
+        ret = ext2_state_store(volume, volume->state & ~EXT2_VALID_FS);
+        if (ret < 0)
+        {
+            vfs_node_put(node);
+            ext2_volume_free(volume);
+            return ret;
+        }
+
+        volume->halt_hook.run = ext2_halt;
+        halt_hook_add(&volume->halt_hook);
     }
 
     *root = node;
