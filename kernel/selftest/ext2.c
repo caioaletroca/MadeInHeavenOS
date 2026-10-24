@@ -351,10 +351,11 @@ static void ext2_write_or_panic(vfs_node_t *node, const void *buffer, size_t cou
 }
 
 /**
- * Overwriting file data in place (no allocation yet): big.txt across every
- * kind of block boundary, read back through the node with its neighbours
- * unchanged; the end of a file and a hole stop a write (short, or -ENOSPC).
- * Everything is written back as it was; sizes never change.
+ * Overwriting file data in place: big.txt across every kind of block
+ * boundary, read back through the node with its neighbours unchanged, and
+ * sparse's two blocks. Everything is written back as it was and no size
+ * changes: the ext2 test reads these files after this (growing is
+ * ext2_test_grow's, on the grow/ files).
  */
 static void ext2_test_write(void)
 {
@@ -393,17 +394,18 @@ static void ext2_test_write(void)
         ext2_write_or_panic(big, data + offset, count, offset); // put the lines back
     }
 
-    // The end: a write across it is cut short; at it and past it nothing can be written
-    // without new blocks: -ENOSPC. 0 bytes is 0 anywhere
-    if (vfs_write(big, pattern, 100, BIG_SIZE - 5) != 5)
-        panic("ext2 self-test: a write across the end of big.txt was not cut to 5 bytes\n");
+    // The last 5 bytes, exactly up to the end (no growing); 0 bytes is 0 anywhere, even at the
+    // end; past the largest file the file system holds: -EFBIG, nothing written
+    for (uint32_t b = 0; b < 5; b++)
+        pattern[b] = (char)('a' + b);
+    ext2_write_or_panic(big, pattern, 5, BIG_SIZE - 5);
     if (vfs_read(big, back, 10, BIG_SIZE - 5) != 5 || memcmp(back, pattern, 5) != 0)
         panic("ext2 self-test: the last 5 bytes of big.txt read back wrong\n");
     ext2_write_or_panic(big, data + BIG_SIZE - 5, 5, BIG_SIZE - 5);
-    if (vfs_write(big, pattern, 1, BIG_SIZE) != -ENOSPC || vfs_write(big, pattern, 1, UINT64_MAX) != -ENOSPC)
-        panic("ext2 self-test: a write at or past the end of big.txt did not return -ENOSPC\n");
     if (vfs_write(big, pattern, 0, 1000) != 0 || vfs_write(big, pattern, 0, BIG_SIZE) != 0)
         panic("ext2 self-test: a 0-byte write to big.txt did not return 0\n");
+    if (vfs_write(big, pattern, 1, UINT64_MAX) != -EFBIG)
+        panic("ext2 self-test: a write at UINT64_MAX did not return -EFBIG\n");
 
     // Every line as it was, the size unchanged
     if (big->size != BIG_SIZE || vfs_read(big, data, BIG_SIZE, 0) != BIG_SIZE)
@@ -418,13 +420,10 @@ static void ext2_test_write(void)
     if (vfs_read(sparse, data, BLOCK, 0) != BLOCK)
         panic("ext2 self-test: reading the sparse file failed\n");
     ext2_write_or_panic(sparse, "START", 5, 0);
-    if (vfs_write(sparse, pattern, 100, BLOCK - 4) != 4)
-        panic("ext2 self-test: a write running into the sparse file's hole was not cut at the hole\n");
-    if (vfs_write(sparse, pattern, 10, 2 * BLOCK) != -ENOSPC)
-        panic("ext2 self-test: a write inside the sparse file's hole did not return -ENOSPC\n");
+    ext2_write_or_panic(sparse, "1234", 4, BLOCK - 4); // the end of block 0, up to the hole
     ext2_write_or_panic(sparse, "END", 3, 16384);
     if (vfs_read(sparse, back, 5, 0) != 5 || memcmp(back, "START", 5) != 0 ||
-        vfs_read(sparse, back, 4, BLOCK - 4) != 4 || memcmp(back, pattern, 4) != 0 ||
+        vfs_read(sparse, back, 4, BLOCK - 4) != 4 || memcmp(back, "1234", 4) != 0 ||
         vfs_read(sparse, back, 3, 16384) != 3 || memcmp(back, "END", 3) != 0)
         panic("ext2 self-test: the sparse file's written blocks read back wrong\n");
     if (vfs_read(sparse, back, 10, 2 * BLOCK) != 10 || memcmp(back, "\0\0\0\0\0\0\0\0\0\0", 10) != 0)
@@ -435,10 +434,10 @@ static void ext2_test_write(void)
         panic("ext2 self-test: the sparse file changed size\n");
     vfs_node_put(sparse);
 
-    // An empty file has nothing to overwrite; a directory is never written
+    // 0 bytes to an empty file is 0 and leaves it empty; a directory is never written
     vfs_node_t *empty = ext2_expect(MNT "/empty", VFS_FILE);
-    if (vfs_write(empty, "x", 1, 0) != -ENOSPC || vfs_write(empty, "x", 0, 0) != 0 || empty->size != 0)
-        panic("ext2 self-test: writing the empty file did not return -ENOSPC (or 0 for 0 bytes)\n");
+    if (vfs_write(empty, "x", 0, 0) != 0 || empty->size != 0)
+        panic("ext2 self-test: a 0-byte write to the empty file did not return 0\n");
     vfs_node_put(empty);
     vfs_node_t *docs = ext2_expect(MNT "/docs", VFS_DIRECTORY);
     if (vfs_write(docs, "x", 1, 0) != -EISDIR)

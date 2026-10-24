@@ -213,9 +213,9 @@ static ssize_t write_at(int fd, const void *buffer, size_t count, off_t offset)
 
 /*
  * Overwriting a file in place: hello.txt changed through one fd and read back
- * through another, big.txt across the first single-indirect block; the end of
- * a file stops a write (short, then ENOSPC: growing files comes later). All
- * restored, sizes unchanged.
+ * through another, up to its end exactly, big.txt across the first
+ * single-indirect block. All restored, sizes unchanged (growing is
+ * test_grow's, on grow/user).
  */
 static void test_writes(void)
 {
@@ -236,10 +236,9 @@ static void test_writes(void)
     CHECK(memcmp(buffer, "HELLO from the disk!\n", strlen(text)) == 0);
     close(other);
 
-    // Across the end: only what fits; at the end ENOSPC; 0 bytes 0
-    CHECK(write_at(fd, "DISK!\nxyz", 9, 15) == 6);
-    errno = 0;
-    CHECK(write(fd, "x", 1) == -1 && errno == ENOSPC);
+    // Up to the end exactly (nothing past it: hello.txt must keep its size); 0 bytes 0
+    CHECK(write_at(fd, "DISK!\n", 6, 15) == 6);
+    CHECK(lseek(fd, 0, SEEK_CUR) == (off_t)strlen(text));
     CHECK(write(fd, "x", 0) == 0);
 
     struct stat st;

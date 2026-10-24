@@ -28,6 +28,7 @@ typedef struct ext2_volume
     uint32_t inode_size; // bytes per inode in the table (128 or more)
     uint32_t groups;
     bool read_only;            // an unknown ro_compat feature: writing could damage the disk
+    uint64_t max_file_size;    // the largest file: what three levels of tables reach, or 2 GiB - 1 without LARGE_FILE
     ext2_group_t *group_table; // kmalloc'd copy of the group descriptors
     uint32_t free_blocks;      // s_free_blocks_count, under allocation_lock
     uint32_t free_inodes;      // s_free_inodes_count, under allocation_lock (for W6)
@@ -105,7 +106,7 @@ static int ext2_block_get(ext2_volume_t *volume, uint32_t block, block_cache_buf
  * @param count: How many (within + count must not pass the block's end)
  * @return 0 on success, negative error code on failure
  */
-static int ext2_block_write(ext2_volume_t *volume, uint32_t block, size_t within, const uint8_t *data, size_t count)
+static int ext2_block_write(ext2_volume_t *volume, uint32_t block, size_t within, const void *data, size_t count)
 {
     block_cache_buf_t *lease;
     const uint8_t *start;
@@ -510,25 +511,84 @@ static void ext2_release(vfs_node_t *node)
 // ---- File blocks: a file's logical block number to its block on the disk, through the tables ----
 
 /**
- * @brief Map a logical block number to a physical block number in an ext2 file
+ * @brief The block a pointer slot holds, or with create a new (zeroed) one if it holds 0
  *
+ * A slot is n->block[index] when table is 0, else entry index of the table block `table`.
+ * A new block is linked into its slot at once and counted in n->blocks; the caller
+ * stores the inode afterwards.
+ *
+ * @param volume: The ext2 filesystem
+ * @param n: The node (its lock held when create is set)
+ * @param table: The table block holding the slot, or 0 for the inode's own pointers
+ * @param index: The slot's index
+ * @param goal: Where to look for a new block; moved past every block seen (NULL: not tracked)
+ * @param create: Allocate a block for an empty slot
+ * @param out: Receives the block, 0 for a hole (create not set)
+ * @return 0 on success, negative error code on failure
+ */
+static int ext2_slot(ext2_volume_t *volume, ext2_node_t *node, uint32_t table, uint32_t index, uint32_t *goal, bool create, uint32_t *out)
+{
+    uint32_t block;
+    if (table == 0)
+        block = node->block[index];
+    else
+    {
+        block_cache_buf_t *lease;
+        const uint8_t *data;
+        int ret = ext2_block_get(volume, table, &lease, &data);
+        if (ret < 0)
+            return ret;
+
+        block = ((const uint32_t *)data)[index];
+        block_cache_put(lease);
+    }
+
+    if (block == 0 && create)
+    {
+        int ret = ext2_block_alloc(volume, goal != NULL ? *goal : 0, &block);
+        if (ret < 0)
+            return ret;
+
+        if (table == 0)
+            node->block[index] = block;
+        else
+        {
+            ret = ext2_block_write(volume, table, index * sizeof(uint32_t), &block, sizeof(block));
+            if (ret < 0)
+            {
+                ext2_block_free(volume, block);
+                return ret;
+            }
+        }
+        node->blocks += volume->block_size / 512;
+    }
+
+    if (goal != NULL && block != 0)
+        *goal = block + 1;
+
+    *out = block;
+    return 0;
+}
+
+/**
+ * @brief Map a logical block number to a physical block number in an ext2 file
  * @param volume: The ext2 filesystem structure
- * @param n: The ext2 node
+ * @param node: The ext2 node
  * @param logical: The logical block number
+ * @param goal: The preferred physical block to allocate (if creating)
+ * @param create: Whether to create the block if it doesn't exist
  * @param out: The resulting physical block number
  * @return 0 on success, negative error code on failure
  */
-static int ext2_file_block(ext2_volume_t *volume, const ext2_node_t *n, uint64_t logical, uint32_t *out)
+static int ext2_file_block(ext2_volume_t *volume, ext2_node_t *node, uint64_t logical, uint32_t *goal, bool create, uint32_t *out)
 {
     if (logical < EXT2_DIRECT_BLOCKS)
-    {
-        *out = n->block[logical];
-        return 0;
-    }
+        return ext2_slot(volume, node, 0, (uint32_t)logical, goal, create, out);
+
     logical -= EXT2_DIRECT_BLOCKS;
 
-    uint64_t per_block = volume->block_size / sizeof(uint32_t); // number of block pointers per indirect block
-    uint64_t span = per_block;                                  // number of blocks spanned by a single indirect block
+    uint64_t per_block = volume->block_size / sizeof(uint32_t);
+    uint64_t span = per_block;
 
     for (int levels = 1; levels <= 3; levels++, span *= per_block)
     {
@@ -538,29 +598,27 @@ static int ext2_file_block(ext2_volume_t *volume, const ext2_node_t *n, uint64_t
             continue;
         }
 
-        // Walk down: at each level, which entry, and what is left below it
-        uint32_t block = n->block[EXT2_DIRECT_BLOCKS + levels - 1];
+        uint32_t block;
+        int ret = ext2_slot(volume, node, 0, EXT2_DIRECT_BLOCKS + levels - 1, goal, create, &block);
+        if (ret < 0)
+            return ret;
+
         for (uint64_t below = span / per_block; block != 0; below /= per_block)
         {
-            block_cache_buf_t *lease;
-            const uint8_t *data;
-            int ret = ext2_block_get(volume, block, &lease, &data);
+            ret = ext2_slot(volume, node, block, (uint32_t)(logical / below), goal, create, &block);
             if (ret < 0)
                 return ret;
 
-            block = ((const uint32_t *)data)[logical / below];
-            block_cache_put(lease);
-
             logical %= below;
             if (below == 1)
-                break; // that was the last level: block is the data block
+                break;
         }
 
         *out = block;
         return 0;
     }
 
-    return -EIO; // logical block number out of range
+    return -EFBIG;
 }
 
 // ---- Directories: walking the records of a directory's blocks ----
@@ -611,7 +669,7 @@ static int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context)
     for (uint64_t i = 0; i < blocks; i++)
     {
         uint32_t block;
-        int ret = ext2_file_block(volume, dir, i, &block);
+        int ret = ext2_file_block(volume, dir, i, NULL, false, &block);
         if (ret < 0)
             return ret;
         if (block == 0)
@@ -810,7 +868,7 @@ static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t off
         size_t chunk = MIN(volume->block_size - within, count - done);
 
         uint32_t block;
-        int ret = ext2_file_block(volume, n, logical, &block);
+        int ret = ext2_file_block(volume, n, logical, NULL, false, &block);
         if (ret < 0)
             return ret;
 
@@ -850,15 +908,30 @@ static long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint6
 
     guard(mutex, &n->lock);
 
+    uint64_t old_size = file->size;
+    uint32_t old_blocks = n->blocks;
+
     if (count == 0)
         return 0;
-    if (offset >= file->size)
-        return -ENOSPC; // growing the file needs new blocks (W5)
+    if (offset >= volume->max_file_size)
+        return -EFBIG; // past the largest file this file system can hold
 
-    count = MIN(count, file->size - offset);
+    count = MIN(count, volume->max_file_size - offset);
+
+    // Look for new blocks after the one before the write, else at the start of the inode's group
+    uint32_t group = (n->ino - 1) / volume->inodes_per_group;
+    uint32_t goal = volume->first_data_block + group * volume->blocks_per_group;
+    uint64_t first = offset / volume->block_size;
+    if (first > 0)
+    {
+        uint32_t previous;
+        if (ext2_file_block(volume, n, first - 1, NULL, false, &previous) == 0 && previous != 0)
+            goal = previous + 1;
+    }
 
     const uint8_t *in = buffer;
     size_t done = 0;
+    int ret = 0;
     while (done < count)
     {
         uint64_t position = offset + done;
@@ -867,21 +940,32 @@ static long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint6
         size_t chunk = MIN(volume->block_size - within, count - done);
 
         uint32_t block;
-        int ret = ext2_file_block(volume, n, logical, &block);
+        ret = ext2_file_block(volume, n, logical, &goal, true, &block);
+        if (ret == 0 && block == 0)
+            ret = -EIO; // create never leaves a hole
         if (ret < 0)
-            return ret;
-
-        if (block == 0)
-            break; // a hole: writing it needs a new block (W5)
+            break;
 
         ret = ext2_block_write(volume, block, within, in + done, chunk);
         if (ret < 0)
-            return ret;
+            break;
 
         done += chunk;
     }
 
-    return done > 0 ? (long)done : -ENOSPC;
+    // What was written stays written: the size covers it, and blocks linked before an
+    // error are in the inode (counted and consistent, only maybe unused)
+    uint64_t end = offset + done;
+    if (end > file->size)
+        file->size = end;
+    if (file->size != old_size || n->blocks != old_blocks)
+    {
+        int stored = ext2_inode_store(n);
+        if (ret == 0)
+            ret = stored;
+    }
+
+    return done > 0 ? (long)done : ret;
 }
 
 // ---- Mounting: the superblock and the group table, checked; the root node; the boot mount ----
@@ -962,6 +1046,13 @@ static int ext2_check_superblock(const ext2_super_t *superblock, const block_dev
     volume->groups = groups;
     volume->read_only = (superblock->s_feature_ro_compat & ~EXT2_FEATURE_RO_COMPAT_KNOWN) != 0 ||
                         disk->ops->write == NULL;
+
+    uint64_t pointers = block_size / sizeof(uint32_t);
+    uint64_t reach = (EXT2_DIRECT_BLOCKS + pointers + pointers * pointers + pointers * pointers * pointers) * block_size;
+    if (superblock->s_feature_ro_compat & EXT2_FEATURE_RO_COMPAT_LARGE_FILE)
+        volume->max_file_size = MIN(reach, (uint64_t)1 << 40);
+    else
+        volume->max_file_size = MIN(reach, ((uint64_t)1 << 31) - 1);
 
     return 0;
 }
