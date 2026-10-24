@@ -25,6 +25,9 @@ all: grub $(DISK_IMAGE)
 #   sparse    "start", a hole up to 16 KiB, "end": no blocks for the middle
 #   aaa...a   a 255-character name, the longest ext2 allows
 #   link      a symlink to hello.txt (the VFS has no symlinks yet: skipped)
+#   grow/     files the tests grow (no truncate yet: other tests' files stay
+#             as they are): small (5 bytes), empty, holes (sparse's layout),
+#             long (big.txt's content, 300 blocks), user (the ext2 test's own)
 $(DISK_IMAGE): $(DISK_FILES) Makefile
 	rm -rf $@ $(DISK_STAGING)
 	mkdir -p $(DISK_STAGING)
@@ -35,6 +38,11 @@ $(DISK_IMAGE): $(DISK_FILES) Makefile
 	printf 'end' >> $(DISK_STAGING)/sparse
 	echo 'The longest name.' > "$(DISK_STAGING)/$$(printf 'a%.0s' $$(seq 255))"
 	ln -s hello.txt $(DISK_STAGING)/link
+	mkdir -p $(DISK_STAGING)/grow
+	printf 'small' > $(DISK_STAGING)/grow/small
+	touch $(DISK_STAGING)/grow/empty $(DISK_STAGING)/grow/user
+	cp $(DISK_STAGING)/sparse $(DISK_STAGING)/grow/holes
+	cp $(DISK_STAGING)/big.txt $(DISK_STAGING)/grow/long
 	mke2fs -q -F -t ext2 -b 1024 -L mihos-test -E root_owner=0:0 -d $(DISK_STAGING) $@ $(DISK_SIZE)
 
 # The kernel/user contract (<mihos/...>) first: libc and user programs include it

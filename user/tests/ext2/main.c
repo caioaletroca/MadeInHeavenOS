@@ -68,8 +68,8 @@ static void expect_text(const char *path, const char *text)
 static void test_listing(void)
 {
     static const char *const names[] = {".", "..", "lost+found", long_name, "big.txt",
-                                         "docs", "empty", "hello.txt", "sparse"};
-    static const unsigned char types[] = {DT_DIR, DT_DIR, DT_DIR, DT_REG, DT_REG, DT_DIR, DT_REG, DT_REG, DT_REG};
+                                         "docs", "empty", "grow", "hello.txt", "sparse"};
+    static const unsigned char types[] = {DT_DIR, DT_DIR, DT_DIR, DT_REG, DT_REG, DT_DIR, DT_REG, DT_DIR, DT_REG, DT_REG};
     const int count = sizeof(names) / sizeof(names[0]);
 
     DIR *dir = opendir(MNT);
@@ -131,7 +131,7 @@ static void test_stat(void)
     CHECK(stat(MNT, &mnt) == 0 && stat("/", &root) == 0 && stat("/dev", &dev) == 0);
     CHECK(S_ISDIR(mnt.st_mode) && (mnt.st_mode & 07777) == 0755);
     CHECK(mnt.st_ino == 2);
-    CHECK(mnt.st_nlink == 4); // ".", the entry in its parent, and ".." of lost+found and docs
+    CHECK(mnt.st_nlink == 5); // ".", the entry in its parent, and ".." of lost+found, docs and grow
     CHECK(mnt.st_dev != root.st_dev && mnt.st_dev != dev.st_dev && mnt.st_dev != 0);
     CHECK(mnt.st_mtime >= 1700000000);
 

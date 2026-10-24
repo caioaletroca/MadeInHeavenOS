@@ -129,8 +129,8 @@ static void ext2_test_root(void)
         vfs_node_type_t type;
     } listing[] = {
         {".", VFS_DIRECTORY}, {"..", VFS_DIRECTORY}, {"lost+found", VFS_DIRECTORY}, {NULL, VFS_FILE}, // the long name
-        {"big.txt", VFS_FILE}, {"docs", VFS_DIRECTORY}, {"empty", VFS_FILE},  {"hello.txt", VFS_FILE},
-        {"sparse", VFS_FILE},
+        {"big.txt", VFS_FILE}, {"docs", VFS_DIRECTORY}, {"empty", VFS_FILE},  {"grow", VFS_DIRECTORY},
+        {"hello.txt", VFS_FILE}, {"sparse", VFS_FILE},
     };
     size_t count = sizeof(listing) / sizeof(listing[0]);
     uint32_t subdirectories = 0;
