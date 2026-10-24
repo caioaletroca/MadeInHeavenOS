@@ -29,6 +29,9 @@ typedef struct ext2_volume
     uint32_t groups;
     bool read_only;            // an unknown ro_compat feature: writing could damage the disk
     ext2_group_t *group_table; // kmalloc'd copy of the group descriptors
+    uint32_t free_blocks;      // s_free_blocks_count, under allocation_lock
+    uint32_t free_inodes;      // s_free_inodes_count, under allocation_lock (for W6)
+    mutex_t allocation_lock;   // the bitmaps, the group table's counters, free_blocks and free_inodes
     mutex_t lock;              // the node cache: nodes[] and every node's hash link
     hlist_head_t nodes[HASH_BUCKETS(EXT2_NODE_HASH_BITS)];
 } ext2_volume_t;
@@ -118,6 +121,28 @@ static int ext2_block_write(ext2_volume_t *volume, uint32_t block, size_t within
 }
 
 /**
+ * @brief Zero out a block on disk
+ *
+ * @param volume: The ext2 volume
+ * @param block: The block number to zero
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_block_zero(ext2_volume_t *volume, uint32_t block)
+{
+    block_cache_buf_t *lease;
+    const uint8_t *start;
+    int ret = ext2_block_get(volume, block, &lease, &start);
+    if (ret < 0)
+        return ret;
+
+    block_cache_begin_write(lease);
+    memset(lease->data + (start - lease->data), 0, volume->block_size);
+    block_cache_end_write(lease);
+    block_cache_put(lease);
+    return 0;
+}
+
+/**
  * @brief Write bytes anywhere in the file system, through the block cache
  *
  * For metadata that is not a whole block or lies outside the data blocks: the
@@ -138,6 +163,186 @@ static int ext2_disk_write(ext2_volume_t *volume, uint64_t byte, const void *dat
     if (ret != (long)count)
         return -EIO;
     return 0;
+}
+
+// ---- Block allocation: the groups' block bitmaps and the free counts, under allocation_lock ----
+
+/**
+ * @brief Find a free bit in a bitmap
+ *
+ * @param volume: The ext2 volume
+ * @param bitmap: The block number of the bitmap
+ * @param from: The starting bit to search from
+ * @param bits: The group's size: bits at and after it are not searched
+ * @return long: The index of the first free bit, or negative error code if none found
+ */
+static long ext2_bitmap_find(ext2_volume_t *volume, uint32_t bitmap, uint32_t from, uint32_t bits)
+{
+    block_cache_buf_t *lease;
+    const uint8_t *data;
+    int ret = ext2_block_get(volume, bitmap, &lease, &data);
+    if (ret < 0)
+        return ret;
+
+    long found = -ENOSPC;
+    for (uint32_t bit = from; bit < bits; bit++)
+    {
+        if ((data[bit / 8] & (1u << (bit % 8))) == 0)
+        {
+            found = bit;
+            break;
+        }
+    }
+
+    block_cache_put(lease);
+    return found;
+}
+
+/**
+ * @brief Set or clear a bit in a bitmap
+ *
+ * @param volume: The ext2 volume
+ * @param bitmap: The block number of the bitmap
+ * @param bit: The bit index to set or clear
+ * @param used: True to set the bit, false to clear it
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_bitmap_set(ext2_volume_t *volume, uint32_t bitmap, uint32_t bit, bool used)
+{
+    block_cache_buf_t *lease;
+    const uint8_t *data;
+    int ret = ext2_block_get(volume, bitmap, &lease, &data);
+    if (ret < 0)
+        return ret;
+
+    uint8_t byte = data[bit / 8];
+    block_cache_put(lease);
+
+    uint8_t mask = (uint8_t)(1u << (bit % 8));
+    if (((byte & mask) != 0) == used)
+        return -EIO;
+
+    byte = used ? (byte | mask) : (byte & ~mask);
+    return ext2_block_write(volume, bitmap, bit / 8, &byte, 1);
+}
+
+/**
+ * @brief Store a group descriptor to disk
+ *
+ * @param volume: The ext2 volume
+ * @param group: The group index
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_group_store(ext2_volume_t *volume, uint32_t group)
+{
+    uint64_t table = (uint64_t)(volume->first_data_block + 1) * volume->block_size;
+    return ext2_disk_write(volume, table + (uint64_t)group * sizeof(ext2_group_t), &volume->group_table[group], sizeof(ext2_group_t));
+}
+
+/**
+ * @brief Store the free block and inode counts to the superblock
+ *
+ * @param volume: The ext2 volume
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_super_store_counts(ext2_volume_t *volume)
+{
+    uint32_t counts[2] = {volume->free_blocks, volume->free_inodes};
+    return ext2_disk_write(volume, EXT2_SUPERBLOCK_OFFSET + offsetof(ext2_super_t, s_free_blocks_count), counts, sizeof(counts));
+}
+
+/**
+ * @brief Allocate a free block
+ *
+ * @param volume: The ext2 volume
+ * @param goal: The preferred block number
+ * @param out: Pointer to store the allocated block number
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_block_alloc(ext2_volume_t *volume, uint32_t goal, uint32_t *out)
+{
+    guard(mutex, &volume->allocation_lock);
+
+    if (volume->free_blocks == 0)
+        return -ENOSPC;
+
+    if (goal < volume->first_data_block || goal >= volume->blocks_count)
+        goal = volume->first_data_block;
+
+    uint32_t start_group = (goal - volume->first_data_block) / volume->blocks_per_group;
+    uint32_t start_bit = (goal - volume->first_data_block) % volume->blocks_per_group;
+
+    for (uint32_t i = 0; i <= volume->groups; i++)
+    {
+        uint32_t block;
+        uint32_t g = (start_group + i) % volume->groups;
+        uint32_t from = i == 0 ? start_bit : 0;
+
+        if (volume->group_table[g].bg_free_blocks_count == 0)
+            continue;
+
+        uint32_t bits = MIN(volume->blocks_per_group, volume->blocks_count - volume->first_data_block - g * volume->blocks_per_group);
+
+        long bit = ext2_bitmap_find(volume, volume->group_table[g].bg_block_bitmap, from, bits);
+        if (bit == -ENOSPC)
+            continue;
+        else if (bit < 0)
+            return bit;
+
+        int ret = ext2_bitmap_set(volume, volume->group_table[g].bg_block_bitmap, bit, true);
+        if (ret == 0)
+        {
+            volume->group_table[g].bg_free_blocks_count--;
+            volume->free_blocks--;
+        }
+        if (ret == 0)
+            ret = ext2_group_store(volume, g);
+        if (ret == 0)
+            ret = ext2_super_store_counts(volume);
+        if (ret == 0)
+        {
+            block = volume->first_data_block + g * volume->blocks_per_group + bit;
+            ret = ext2_block_zero(volume, block);
+        }
+
+        if (ret < 0)
+            return ret;
+
+        *out = block;
+        return 0;
+    }
+
+    return -EIO;
+}
+
+/**
+ * @brief Free a block
+ *
+ * @param volume: The ext2 volume
+ * @param block: The block number to free
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_block_free(ext2_volume_t *volume, uint32_t block)
+{
+    guard(mutex, &volume->allocation_lock);
+
+    if (block < volume->first_data_block || block >= volume->blocks_count)
+        return -EIO;
+
+    uint32_t g = (block - volume->first_data_block) / volume->blocks_per_group;
+    uint32_t bit = (block - volume->first_data_block) % volume->blocks_per_group;
+
+    int ret = ext2_bitmap_set(volume, volume->group_table[g].bg_block_bitmap, bit, false);
+    if (ret == 0)
+    {
+        volume->group_table[g].bg_free_blocks_count++;
+        volume->free_blocks++;
+        ret = ext2_group_store(volume, g);
+    }
+    if (ret == 0)
+        ret = ext2_super_store_counts(volume);
+
+    return ret;
 }
 
 // ---- Inodes and nodes: where an inode lives, reading it into a node, writing it back ----
@@ -836,7 +1041,10 @@ int ext2_mount(block_device_t *disk, vfs_node_t **root)
         return ret;
     }
 
+    mutex_init(&volume->allocation_lock);
     mutex_init(&volume->lock);
+    volume->free_blocks = superblock.s_free_blocks_count;
+    volume->free_inodes = superblock.s_free_inodes_count;
     volume->dev = vfs_dev_alloc();
 
     vfs_node_t *node;
