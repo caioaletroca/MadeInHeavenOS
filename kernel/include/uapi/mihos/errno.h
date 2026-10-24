@@ -18,6 +18,7 @@
 #define EINVAL 22       // invalid argument: waitpid options
 #define EMFILE 24       // too many open files
 #define ENOTTY 25       // not a terminal: isatty on a file
+#define EFBIG 27        // file too large: a write past the largest file the file system holds
 #define ENOSPC 28       // no space left on device: a write at the end of a disk
 #define ESPIPE 29       // illegal seek
 #define EROFS 30        // read-only file system
