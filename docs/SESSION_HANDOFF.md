@@ -52,8 +52,9 @@ Working x86-64 PC kernel with:
   `block_cache_sync`, run at halt) under every disk read
 - **ext2:** the first ext2 disk mounted on `/mnt` at boot; directories, file reads
   through direct and indirect blocks (holes read as zeros), real modes, times and link counts;
-  one cached node per inode, freed after the last reference; files overwritten in place (no
-  allocation yet: the end of a file and holes stop a write)
+  one cached node per inode, freed after the last reference; files written anywhere: holes
+  filled and files grown through a block allocator (bitmaps, free counts, new indirect
+  tables), checked by `e2fsck` (`./fsck-test.sh`); no creating or deleting files yet
 - Intrusive `list.h` and an hlist `hashtable.h` (multiplicative `hash_64`) shared by kernel and libc
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
@@ -71,6 +72,16 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+230fc2a build: make fsck-test.sh executable
+5ba9c1c test: run e2fsck on a disk the tests wrote
+4496112 test(fs): cover ext2 allocation
+6bf5dba feat(fs): grow ext2 files
+743813a build: add files for the tests to grow to the test disk
+2bf9e6d feat(libc): add EFBIG
+0284433 feat(fs): allocate and free ext2 blocks
+18913d0 feat(fs): check ext2 groups fit their bitmaps
+8412aa3 refactor(fs): order ext2.c bottom-up, in sections
+04b28bd docs(architecture): document ext2 inode write-back in handoff
 2778f7d test(fs): cover ext2 inode write-back
 38d3cf4 feat(fs): write ext2 inodes back
 998eef0 refactor(fs): find ext2 inodes with ext2_inode_byte
@@ -1085,7 +1096,10 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   `.gitattributes` keeps them byte-exact, `-text`) plus generated files: `big.txt` (300 KiB of
   `"%07d\n"` lines holding their own number: direct, single and double indirect blocks),
   `sparse` (`"start"`, a hole to 16384, `"end"`: holes in `i_block[1..11]` and inside the
-  single-indirect block), a 255-character name, `link` (a symlink). What `mke2fs` makes of
+  single-indirect block), a 255-character name, `link` (a symlink), and `grow/` (files only
+  the growth tests touch, since nothing can shrink a file back yet: `small` 5 bytes, `empty`,
+  `holes` with `sparse`'s layout, `long` with `big.txt`'s content, `user` for the `ext2`
+  test). What `mke2fs` makes of
   it: revision 1, 256-byte inodes, incompat `FILETYPE` only, compat `0x38`, ro_compat
   `0x3`, one group, root directory in block 276. QEMU (`run-tests.sh`, and `run.bat` for
   interactive runs): IDE primary master (`hda`), `-snapshot`. Bochs (local `.bochsrc`):
@@ -1151,12 +1165,22 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   data block past the end, more blocks than the disk, groups too few for `s_inodes_count` →
   `-EIO` (inconsistent). Compat features are ignored; a `ro_compat` one other than
   `SPARSE_SUPER`/`LARGE_FILE` (`EXT2_FEATURE_RO_COMPAT_KNOWN`), or a disk without a `write`
-  op (nothing could be written back), makes the volume `read_only` (Linux's three-tier rule). `ext2_read_groups` copies the descriptor table (from block
+  op (nothing could be written back), makes the volume `read_only` (Linux's three-tier rule).
+  A group with more blocks or inodes per group than its one-block bitmap has bits → `-EIO`.
+  `max_file_size`: what 12 + p + p² + p³ blocks hold (p = block size / 4; 16 GiB with 1 KiB
+  blocks), under 1 TiB (`i_blocks` is 32-bit 512-byte units), under 2 GiB without
+  `LARGE_FILE`. `ext2_read_groups` copies the descriptor table (from block
   `s_first_data_block + 1`, over as many blocks as needed) into a `kmalloc`'d array and checks
   every group's inode table lies inside the file system, so `ext2_node_get` trusts it. Then
-  `mutex_init`, `vfs_dev_alloc`, and the root (`ext2_node_get(2)`; not a directory → `-EIO`).
+  `mutex_init` of both locks, the free counts from the superblock, `vfs_dev_alloc`, and the
+  root (`ext2_node_get(2)`; not a directory → `-EIO`).
   `ext2_volume_t` = the disk, `dev`, block size, block/inode counts, inodes per group, inode size,
-  groups, `first_data_block`, `blocks_per_group`, `read_only`, the group table, `lock` and the node hash (`nodes[64]`, `kzalloc`'d: empty).
+  groups, `first_data_block`, `blocks_per_group`, `read_only`, `max_file_size`, the group
+  table, `free_blocks`/`free_inodes` and `allocation_lock` (the bitmaps, the group table's
+  counters and those two), `lock` (the node cache) and the node hash (`nodes[64]`, `kzalloc`'d:
+  empty). `ext2.c` is in sections, every function after what it calls: disk access, block
+  allocation, inodes and nodes, file blocks, directories, file data, mounting; only the ops'
+  prototypes come first (lookup → `ext2_node_get` → the ops tables → lookup).
 - **Disk access** (`ext2_block_get(volume, block, &lease, &data)`): the only way to the disk; block 0
   or past the end → `-EIO` (a corrupt pointer); otherwise `block_cache_get` of the cache block
   holding it and `data` = its first byte there (a block never straddles two cache buffers).
@@ -1166,7 +1190,23 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   across another lease). `ext2_disk_write(volume, byte, data, count)`: any byte range of the
   file system through `block_write_bytes` (a short write → `-EIO`), for metadata outside the
   data blocks or smaller than one (the superblock is in block 0 with 4 KiB blocks, which
-  `ext2_block_get` refuses; descriptors; inode fields).
+  `ext2_block_get` refuses; descriptors; inode fields). `ext2_block_zero`: a whole block
+  zeroed in its buffer (no 4 KiB zero buffer on the stack).
+- **Block allocation** (under `allocation_lock`): `ext2_bitmap_find(bitmap, from, bits)` (the
+  first clear bit in `[from, bits)`, bit 0 = the lowest bit of byte 0, `-ENOSPC` if none),
+  `ext2_bitmap_set(bitmap, bit, used)` (the byte read, the lease put, the byte written back;
+  a bit already as wanted → `-EIO`), `ext2_group_store` (the descriptor from the in-memory
+  table into the primary table at block `first_data_block + 1`), `ext2_super_store_counts`
+  (`s_free_blocks_count` and `s_free_inodes_count`, adjacent, into the primary superblock).
+  `ext2_block_alloc(volume, goal, &block)`: no free blocks → `-ENOSPC`; a goal outside the
+  data area → the first data block; `groups + 1` rounds from the goal's group (the goal's
+  group from the goal, the others from 0, the goal's group again from 0: a block before the
+  goal is found last instead of never), groups with no free blocks skipped, the last group's
+  real size; found → the bit set, both counters −1, descriptor and counts written, the block
+  zeroed; nothing found despite the counters → `-EIO`. Block = `first_data_block` + group ×
+  `blocks_per_group` + bit. `ext2_block_free(volume, block)`: outside the data area or already
+  free → `-EIO`; the bit cleared, both counters +1, both written. Only the primary superblock
+  and descriptors (the `sparse_super` backups go stale, as on Linux).
 - **Inodes on the disk:** `ext2_inode_byte(volume, ino)` = the group's `bg_inode_table` ×
   block size + slot × `inode_size`, the one formula for reads (`ext2_node_get` splits it into
   block and place) and writes. `ext2_inode_store(n)` (caller holds `n->lock`) writes
@@ -1189,9 +1229,16 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   large_file), `parent` (the directory it was found in, with a reference, so `..` stays valid;
   the root is its own parent). **Release:** unhash under the lock if still linked, `kfree`, then
   put the parent after the lock (that may release it in turn: a chain of releases up the tree).
-- **`ext2_file_block(volume, node, logical, &block)`:** 12 direct pointers, then `i_block[12..14]` with
-  1, 2, 3 levels of tables of `block_size / 4` entries (256 with 1 KiB blocks: +256 KiB, +64 MiB,
-  +16 GiB); walks down one leased block per level like a page table; 0 anywhere is a hole.
+- **`ext2_slot(volume, n, table, index, goal, create, &block)`:** one block pointer: `n->block[index]`
+  (table 0) or entry `index` of table block `table`. With `create` and a 0 there:
+  `ext2_block_alloc(*goal)`, linked at once (in `n->block[]`, or written into the table; if that
+  write fails the block is freed again), `n->blocks += block_size / 512` (tables count, as in
+  `i_blocks`). `*goal` moves past every block seen (NULL: not tracked; readers).
+- **`ext2_file_block(volume, n, logical, goal, create, &block)`:** 12 direct pointers, then
+  `i_block[12..14]` with 1, 2, 3 levels of tables of `block_size / 4` entries (256 with 1 KiB
+  blocks: +256 KiB, +64 MiB, +16 GiB); walks down one slot per level like a page table; without
+  `create` 0 anywhere is a hole, with it every missing table and the data block are created on
+  the way down; past the triple range `-EFBIG`.
 - **Directories:** `ext2_dir_walk(dir, visit, context)` runs `visit(entry, context)` (a function
   pointer plus a context struct: a closure by hand) for every used entry, block by block, while
   the block is leased; 0 goes on, 1 stops (the walk returns 1), -errno fails. Each record is
@@ -1203,10 +1250,13 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   after the walk with no lease held; a match that is not a file or directory is `-ENOENT`.
 - **Read** (`ext2_read`): clamped to the size; per ext2 block: `ext2_file_block`, a hole → `memset` 0,
   else the slice copied from the leased block; errors are returned as is.
-- **Write** (`ext2_write`, under `n->lock`): 0 bytes → 0; at or past the size → `-ENOSPC`
-  (growing needs new blocks: W5); clamped to the size; per ext2 block `ext2_file_block`, a
-  hole → stop (W5 too), else `ext2_block_write`; returns the bytes written, or `-ENOSPC` if a
-  hole came first. Nothing but data blocks changes (no size, inode, bitmap or time).
+- **Write** (`ext2_write`, under `n->lock`): 0 bytes → 0; at or past `max_file_size` → `-EFBIG`,
+  cut to it; the goal starts after the block before `offset` (else at the inode's group's first
+  block); per ext2 block `ext2_file_block` with create (a 0 block with success → `-EIO`), then
+  `ext2_block_write`. Errors leave the loop instead of returning: the size grows to what was
+  written, and if the size or `blocks` changed the inode is stored (`ext2_inode_store`), so
+  blocks linked before an error are in the inode (consistent, maybe unused); returns the bytes
+  written, or the error if none were. No times (no clock).
 - **Boot mount** (`ext2_init`, after `block_cache_init`): for each `block_at(i)` (the block table in
   registration order) `ext2_mount`; `-EINVAL` skips quietly, other errors are logged; the first
   one is `vfs_mount`ed on `/mnt` (an empty directory of the initrd, `MOUNT_POINTS` in
@@ -1215,7 +1265,7 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
 - **ext2 self-test** (`selftest/ext2.c`, after the block one, whose exact cache counts it
   would disturb): `/mnt` is inode 2, a mount, on its own `st_dev`, `0755`, plausible mtime,
   `..` is `/`; the listing in disk order (`.`, `..`, `lost+found`, the 255-character name,
-  `big.txt`, `docs`, `empty`, `hello.txt`, `sparse`; `link` not shown) and `nlink` = 2 +
+  `big.txt`, `docs`, `empty`, `grow`, `hello.txt`, `sparse`; `link` not shown) and `nlink` = 2 +
   subdirectories; readdir's inode = lookup's. Lookups: `link`, a prefix, a longer name, other
   case → `ENOENT`, 256 characters → `ENAMETOOLONG`, `..` inside the file system reaching the
   same nodes. Nodes: two lookups one node (`refs` 2, parent `/mnt`, `/mnt` +1); the last put
@@ -1226,10 +1276,10 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   end; `sparse`'s hole zeros; `hello.txt` opens `O_RDWR` with both flags, a directory opens and
   reads `EISDIR`. Writes (`ext2_test_write`): six overwrites of `big.txt` (one byte, across
   blocks 0–1, direct → single, one single-indirect block, single → double, inside double) read
-  back with the bytes around them unchanged; 100 bytes 5 before the end write 5, at the end and
-  `UINT64_MAX` `-ENOSPC`, 0 bytes 0; `sparse`: 100 bytes 4 before its hole write 4, inside it
-  `-ENOSPC`, blocks 0 and 16 written and read back, the hole still zeros; `empty` `-ENOSPC`
-  (0 bytes 0), `docs` `-EISDIR`; everything restored, sizes unchanged. Broken disks: an
+  back with the bytes around them unchanged; the last 5 bytes exactly, 0 bytes 0 (also at the
+  end), `UINT64_MAX` `-EFBIG`; `sparse`'s blocks 0 and 16 overwritten up to its hole, the hole
+  still zeros; `empty` 0 bytes 0, `docs` `-EISDIR`; everything restored, no size changes (the
+  `ext2` test reads these files later). Broken disks: an
   overlay block device reads the test disk through `block_read` and patches 1–4 bytes, one
   device per case (the cache is keyed by device): unchanged mounts, read-only (overlays have
   no `write`); an unknown `ro_compat` bit (`0x400`) mounts and reads, `hello.txt` has no
@@ -1241,17 +1291,26 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   `-EIO`. Mounted overlays stay allocated (no unmount). Inode write-back
   (`ext2_test_inode_write`): `ext2_inode_write` of the unchanged `big.txt`, `sparse`,
   `hello.txt`, `empty`, `docs` and root plus a sync leave every byte of each raw slot as it
-  was; `i_blocks` 606, 6, 2, 0, 2, 2 (what `mke2fs` wrote).
+  was; `i_blocks` 606, 6, 2, 0, 2, 2 (what `mke2fs` wrote). Growth (`ext2_test_grow`, on
+  `grow/`; after each write a sync, then the raw inode's `i_size`/`i_blocks` and both free
+  counts, the superblock's and group 0's): `small` +1100 bytes at 5 (`i_blocks` 4, 1 block);
+  `holes` at 2000 (a direct hole: 8, 1) and at logical 13 (inside the table: 10, 1), the rest
+  still zeros; `empty` 13 KiB at once (12 direct, the table and one more: 28, 14); 1 byte at
+  the largest file's size `-EFBIG` (0 blocks); `long` 8 bytes at logical 524 (a new
+  second-level table and its block: 610, 2), the gap after its old end zeros, its old last line
+  intact.
 - **`ext2` test** (`user/tests/ext2`): the listing with types and the dots as inode 2, `link`
   absent, `hello.txt`'s `d_ino` = `st_ino`, `docs/deep/nested` lists `file.txt`, `/mnt/..` lists
-  `usr`; `stat`: `/mnt` `0755`, inode 2, `nlink` 4, `st_dev` unlike `/` and `/dev`, `hello.txt`
+  `usr`; `stat`: `/mnt` `0755`, inode 2, `nlink` 5, `st_dev` unlike `/` and `/dev`, `hello.txt`
   21 bytes one link, a path through `..` the same inode, `big.txt` `0644` with its size,
   `fstat` byte-identical; reads of the small files, `empty`, all of `big.txt` through 256-byte
   `read`s, `lseek` to lines 0/127/128/1535/1536/34303/34304/38399 (both sides of each block-kind
   boundary), `SEEK_END`, the last 5 bytes; `sparse`'s zeros; writes: `HELLO` over `hello.txt`
-  through `O_RDWR` (position 5), read back through a second fd, 9 bytes at 15 write 6, then
-  `ENOSPC`, 0 bytes 0, `st_size` unchanged, restored; `big.txt` `O_WRONLY` across lines
+  through `O_RDWR` (position 5), read back through a second fd, 6 bytes at 15 (up to the end
+  exactly), 0 bytes 0, `st_size` unchanged, restored; `big.txt` `O_WRONLY` across lines
   1535/1536 (direct → single), `read` on it `EBADF`, read back through another fd, restored;
+  growth on `grow/user`: one 3000-byte `write`, `fstat` 3000, an append at `SEEK_END`, read back
+  through a second fd, 3 bytes at 10000 (size 10003, the gap zeros);
   `ENOENT` (`link`, missing), `ENOTDIR` (`hello.txt/`, `opendir` of a file, `getdents` on a
   file), `EISDIR`, `EBADF` (write); fd 3 free at the end.
 
@@ -1751,14 +1810,17 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     writes and overlay cases, the `ext2` test's writes.
   - **W5 (in progress):** W5a (done): `first_data_block`/`blocks_per_group`, `n->blocks`,
     `ext2_inode_byte`, `ext2_disk_write`, `ext2_inode_store`/`ext2_inode_write`, the inode
-    self-test. Next W5b, the block allocator (`ext2_block_alloc`/`free`, `allocation_lock`,
-    goal = after the previous block, new blocks zeroed, primary superblock/descriptors only),
-    then W5c (`ext2_file_block` creating blocks and tables; holes and appends), W5d
-    (`s_state`), and `./fsck-test.sh` (`e2fsck -fn` on a copy written without `-snapshot`). Overall: allocation: bitmaps (bit `i` = block `i + s_first_data_block`, inode `i + 1`), free
-    counts, inode / group descriptor / superblock write-back, appending with new indirect
-    blocks.
-  - **W6:** `O_CREAT`/`O_TRUNC`/`O_EXCL`, `unlink`, `mkdir`, `rmdir`, directory entries
-    inserted in a record's slack and removed by growing the previous `rec_len`.
+    self-test. W5b (done): the groups-fit-their-bitmaps mount check, `ext2_block_alloc`/`free`
+    under `allocation_lock`. W5c (done): `ext2_slot`, `ext2_file_block` creating blocks and
+    tables, `ext2_write` filling holes and growing files, `max_file_size`/`EFBIG`; `ext2.c`
+    reordered bottom-up in sections; `grow/` on the test disk; the growth tests;
+    `./fsck-test.sh` (clean on the first run). Next W5d: `s_state` not clean while a writable
+    volume is mounted, clean at halt before the cache sync.
+  - **W6:** inode allocation (the inode bitmap, `free_inodes`, `bg_used_dirs_count`),
+    `O_CREAT`/`O_TRUNC`/`O_EXCL`, `unlink`, `mkdir`, `rmdir`, directory entries inserted in a
+    record's slack and removed by growing the previous `rec_len`, truncate (frees blocks: the
+    tests can clean up), `O_APPEND`, a full-disk `ENOSPC` test. Then: split `ext2.c` along its
+    sections (Linux's `balloc.c`, `inode.c`, `dir.c`, `file.c`, `super.c` + a private header).
 - **After writing (pick an order):** partitions (MBR/GPT → `hda1` on the reserved minors,
   mounting a partition); IRQ-driven ATA (sleep instead of polling); the root on the disk.
   Phase C (the process model) can also start: none of these block it.
@@ -1964,9 +2026,16 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `getdents` fills at most a page per call; `d_type` is `DT_DIR`/`DT_REG`/`DT_CHR`/`DT_BLK`
   (no symlinks, FIFOs or sockets yet). The `dirs` test hard-codes the root's layout (`bin`, `dev`, `mnt`, `sbin`, `usr`).
 - ext2 (each item becomes work when something needs it):
-  - writing is overwriting only: no block or inode allocation, bitmaps, free counts, sizes,
-    `s_state` or mount counts, so a write stops at the end of a file and at holes (`ENOSPC`);
-    times are never updated (no clock); a read-only volume is decided at mount only;
+  - no creating, deleting or truncating files (no inode allocation, no directory entry
+    changes: W6), so files only grow; times are never updated (no clock); `s_state` and
+    `s_mnt_count`/`s_mtime` are not written; a read-only volume is decided at mount only;
+  - allocation: a linear first-fit bitmap scan per call (no preallocation or reservation
+    windows, so two files growing at once interleave their blocks); `s_r_blocks_count`
+    (reserved for root) ignored; only the primary superblock and descriptors are updated; a
+    write error after the bitmap bit is set (descriptor or counts) loses that block until
+    `e2fsck`; no ordering of metadata writes (consistent only after a sync, ext2's model); a
+    new data block is zeroed even when the write fills all of it; no full-disk test yet
+    (nothing could free the space for the tests after it);
   - one node `lock` for reads and writes: two reads of a file wait for each other (an rwlock
     would let them share);
   - symlinks, device files, FIFOs and sockets on the disk are not shown or found (no VFS node
@@ -2032,6 +2101,14 @@ Automatic test run, no window (about 10 s; exits 0 only after a clean power off 
 
 ```sh
 ./run-tests.sh
+```
+
+The `e2fsck` check: the same tests on `build/fsck.img`, a copy of `disk.img` the run may write
+(`SNAPSHOT=0 ./run-tests.sh`), then `e2fsck -fn` in the `mihos-compiler` image; passes only if
+both are clean. `build/fsck.img` stays for `debugfs` after a failure:
+
+```sh
+./fsck-test.sh
 ```
 
 The same by hand (on Windows the log path must be a Windows path):

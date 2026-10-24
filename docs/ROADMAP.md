@@ -143,8 +143,9 @@ docs/                     # handoff, roadmap
    `/dev/console`, `ioctl`; disks in progress: the block layer, an ATA PIO driver, block
    devices in `/dev`, the block cache and read-only ext2 on `/mnt` done; writing in progress
    (W1, sector writes and flushes, W2, write-back in the cache, W3, a writable `/dev/hda`,
-   and W4, ext2 overwriting file data, done; ext2 allocation in progress: inode write-back
-   done, next the block allocator), then partitions and
+   and W4, ext2 overwriting file data, done; ext2 allocation in progress: inode write-back,
+   the block allocator and growing files done, checked by e2fsck; next `s_state`, then creating
+   and deleting files), then partitions and
    IRQ-driven reads, then the root on the disk).
 
 ## Reference projects
