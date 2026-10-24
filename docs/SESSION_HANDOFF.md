@@ -72,6 +72,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+35df6cc test(fs): cover ext2's s_state
+782c837 feat(fs): mark ext2 volumes not clean while mounted writable
+cf8373c feat(sys): add halt hooks
+56e5bf3 docs(architecture): document ext2 allocation and fsck-test.sh in handoff
 230fc2a build: make fsck-test.sh executable
 5ba9c1c test: run e2fsck on a disk the tests wrote
 4496112 test(fs): cover ext2 allocation
@@ -499,8 +503,13 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   status (`signal`, or `(exit_status & 0xFF) << 8`) if `status != 0` (`-EFAULT` after reaping on a
   bad pointer) and `process_release`s it.
 - **`reboot(command)`**: only pid 1, else `-EPERM` (checked before the command); `REBOOT_HALT`
-  (uapi `<mihos/syscall.h>`) → `system_halt()` (`sys/power.c`: IRQs off, `system halted`,
-  `platform_power_off()`, `cpu_halt` if that returned), anything else `-EINVAL`. libc:
+  (uapi `<mihos/syscall.h>`) → `system_halt()` (`sys/power.c`: the halt hooks, the block
+  cache synced, IRQs off, `system halted`, `platform_power_off()`, `cpu_halt` if that
+  returned), anything else `-EINVAL`. **Halt hooks** (`<power.h>`, Linux's reboot notifiers):
+  a `halt_hook_t` (`run`, `link`) embedded in its owner, found back with `list_container`;
+  `halt_hook_add` puts it at the front of a static list (boot and mount time only, no lock,
+  never removed); `system_halt` runs them newest first, before the cache sync, so what they
+  write goes out with it. libc:
   `<sys/reboot.h>`, `reboot(RB_HALT_SYSTEM)`.
 - **`getpid()`** → the caller's pid (no lock: it never changes). **`getppid()`** → the parent's pid
   read under `process_tree_lock` (`process_parent_pid`), 0 without one (init, like Linux).
@@ -1262,6 +1271,12 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   one is `vfs_mount`ed on `/mnt` (an empty directory of the initrd, `MOUNT_POINTS` in
   `grub/Makefile`), its reference put (the mount keeps one), and logged (`ext2: hda mounted on
   /mnt`); none: `ext2: no disk to mount`.
+- **`s_state`:** `ext2_mount` of a writable volume, as its last step: a clear `EXT2_VALID_FS` or
+  a set `EXT2_ERROR_FS` prints `ext2: hda was not cleanly unmounted or has errors: run e2fsck`
+  (it mounts anyway, like Linux); `ext2_state_store` clears `EXT2_VALID_FS` on the disk (a
+  failure puts the root and frees the volume); the volume's `halt_hook` (`ext2_halt`, which
+  sets the bit again) is added only then, when nothing can fail. A crash or panic leaves the
+  bit clear. Read-only volumes leave `s_state` alone. `volume->state` keeps the value.
 - **ext2 self-test** (`selftest/ext2.c`, after the block one, whose exact cache counts it
   would disturb): `/mnt` is inode 2, a mount, on its own `st_dev`, `0755`, plausible mtime,
   `..` is `/`; the listing in disk order (`.`, `..`, `lost+found`, the 255-character name,
@@ -1814,8 +1829,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     under `allocation_lock`. W5c (done): `ext2_slot`, `ext2_file_block` creating blocks and
     tables, `ext2_write` filling holes and growing files, `max_file_size`/`EFBIG`; `ext2.c`
     reordered bottom-up in sections; `grow/` on the test disk; the growth tests;
-    `./fsck-test.sh` (clean on the first run). Next W5d: `s_state` not clean while a writable
-    volume is mounted, clean at halt before the cache sync.
+    `./fsck-test.sh` (clean on the first run). W5d (done): halt hooks, `s_state` not clean while
+    mounted writable and clean again at halt; the self-test reads it, `fsck-test.sh` asks
+    `dumpe2fs` for `clean`. **W5 is complete.**
   - **W6:** inode allocation (the inode bitmap, `free_inodes`, `bg_used_dirs_count`),
     `O_CREAT`/`O_TRUNC`/`O_EXCL`, `unlink`, `mkdir`, `rmdir`, directory entries inserted in a
     record's slack and removed by growing the previous `rec_len`, truncate (frees blocks: the
@@ -2027,8 +2043,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   (no symlinks, FIFOs or sockets yet). The `dirs` test hard-codes the root's layout (`bin`, `dev`, `mnt`, `sbin`, `usr`).
 - ext2 (each item becomes work when something needs it):
   - no creating, deleting or truncating files (no inode allocation, no directory entry
-    changes: W6), so files only grow; times are never updated (no clock); `s_state` and
-    `s_mnt_count`/`s_mtime` are not written; a read-only volume is decided at mount only;
+    changes: W6), so files only grow; times are never updated (no clock); `s_mnt_count`,
+    `s_mtime` and `s_wtime` are not written; a not-clean or erroneous volume only warns; the
+    halt hook marks the volume clean before the cache sync, and the sync may sleep (a mutex),
+    so another process could still write between the two (nothing stops other processes at
+    halt yet); a read-only volume is decided at mount only;
   - allocation: a linear first-fit bitmap scan per call (no preallocation or reservation
     windows, so two files growing at once interleave their blocks); `s_r_blocks_count`
     (reserved for root) ignored; only the primary superblock and descriptors are updated; a
