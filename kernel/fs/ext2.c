@@ -1,11 +1,13 @@
 #include <fs/ext2.h>
 #include "ext2_disk.h"
+#include <driver/block.h>
 #include <driver/block_cache.h>
 #include <sched/sync.h>
 #include <sys/hashtable.h>
 #include <mihos/errno.h>
 #include <mm/kmalloc.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 #include <string.h>
 #include <kprintf.h>
@@ -16,9 +18,11 @@
 typedef struct ext2_volume
 {
     block_device_t *disk;
-    uint64_t dev;          // st_dev (vfs_dev_alloc)
-    uint32_t block_size;   // 1024, 2048 or 4096
-    uint32_t blocks_count; // valid block numbers: 1 .. blocks_count - 1
+    uint64_t dev;              // st_dev (vfs_dev_alloc)
+    uint32_t block_size;       // 1024, 2048 or 4096
+    uint32_t blocks_count;     // valid block numbers: 1 .. blocks_count - 1
+    uint32_t first_data_block; // s_first_data_block: 1 with 1 KiB blocks, else 0; bit i of a group's bitmap is block first_data_block + group * blocks_per_group + i
+    uint32_t blocks_per_group;
     uint32_t inodes_count;
     uint32_t inodes_per_group;
     uint32_t inode_size; // bytes per inode in the table (128 or more)
@@ -35,7 +39,8 @@ typedef struct ext2_node
     ext2_volume_t *volume;
     uint32_t ino;
     uint32_t block[EXT2_BLOCK_POINTERS]; // copy of the inode's i_block
-    mutex_t lock;                        // block[] and base.size: held by reads and writes of the file
+    uint32_t blocks;                     // i_blocks: 512-byte units the file owns, indirect tables included
+    mutex_t lock;                        // block[], blocks and base.size: held by reads and writes of the file
     hlist_node_t cache_link;             // in volume->nodes, under volume->lock
 } ext2_node_t;
 
@@ -111,6 +116,29 @@ static int ext2_block_write(ext2_volume_t *volume, uint32_t block, size_t within
 }
 
 /**
+ * @brief Write bytes anywhere in the file system, through the block cache
+ *
+ * For metadata that is not a whole block or lies outside the data blocks: the
+ * superblock (in block 0 when blocks are 4 KiB, which ext2_block_get refuses),
+ * group descriptors, inode fields.
+ *
+ * @param volume: The ext2 filesystem
+ * @param byte: The byte offset on the disk
+ * @param data: The bytes to write
+ * @param count: How many
+ * @return 0 on success, negative error code on failure
+ */
+static int ext2_disk_write(ext2_volume_t *volume, uint64_t byte, const void *data, size_t count)
+{
+    long ret = block_write_bytes(volume->disk, data, count, byte);
+    if (ret < 0)
+        return ret;
+    if (ret != (long)count)
+        return -EIO;
+    return 0;
+}
+
+/**
  * @brief Read the superblock from the ext2 filesystem
  *
  * @param disk: The block device representing the ext2 filesystem
@@ -174,6 +202,8 @@ static int ext2_check_superblock(const ext2_super_t *superblock, const block_dev
 
     volume->block_size = block_size;
     volume->blocks_count = superblock->s_blocks_count;
+    volume->first_data_block = superblock->s_first_data_block;
+    volume->blocks_per_group = superblock->s_blocks_per_group;
     volume->inodes_count = superblock->s_inodes_count;
     volume->inodes_per_group = superblock->s_inodes_per_group;
     volume->inode_size = inode_size;
@@ -334,6 +364,7 @@ static int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent
 
     n->volume = volume;
     n->ino = ino;
+    n->blocks = inode.i_blocks;
     memcpy(n->block, inode.i_block, sizeof(n->block));
     mutex_init(&n->lock);
     hlist_insert(bucket, &n->cache_link);
@@ -775,6 +806,38 @@ static void ext2_release(vfs_node_t *node)
 
     if (parent != NULL)
         vfs_node_put(parent);
+}
+
+/**
+ * @brief Store an ext2 node's size and block map (i_size, i_size_high, i_block, i_blocks)
+ * back into its inode on disk.
+ *
+ * @param n: The ext2 node to store
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_inode_store(ext2_node_t *n)
+{
+    ext2_volume_t *volume = n->volume;
+    uint64_t byte = ext2_inode_byte(n->volume, n->ino);
+    uint32_t size = (uint32_t)n->base.size;
+    uint32_t size_high = (uint32_t)(n->base.size >> 32);
+
+    int ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_size), &size, sizeof(size));
+    if (ret == 0)
+        ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_blocks), &n->blocks, sizeof(n->blocks));
+    if (ret == 0)
+        ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_block), &n->block, sizeof(n->block));
+    if (ret == 0 && n->base.type == VFS_FILE)
+        ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_size_high), &size_high, sizeof(size_high));
+
+    return ret;
+}
+
+int ext2_inode_write(vfs_node_t *node)
+{
+    ext2_node_t *n = EXT2_NODE(node);
+    guard(mutex, &n->lock);
+    return ext2_inode_store(n);
 }
 
 void ext2_init(void)
