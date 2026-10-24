@@ -24,7 +24,7 @@
 #define EXT2_BLOCK_POINTERS 15
 
 // Incompatible features: a driver must refuse a disk with one it does not know
-#define EXT2_FEATURE_INCOMPAT_FILETYPE 0x0002      // directory entries carry the file type
+#define EXT2_FEATURE_INCOMPAT_FILETYPE 0x0002 // directory entries carry the file type
 
 // Read-only compatible features: an unknown one still allows reading, never writing
 #define EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER 0x0001 // superblock copies only in groups 0, 1 and powers of 3, 5 and 7

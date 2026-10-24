@@ -67,6 +67,8 @@ static const vfs_node_ops_t ext2_read_only_ops = {
     .release = ext2_release,
 };
 
+// ---- Disk access: every read and write of the file system's blocks goes through these ----
+
 /**
  * @brief Get a block from the ext2 filesystem
  *
@@ -138,134 +140,7 @@ static int ext2_disk_write(ext2_volume_t *volume, uint64_t byte, const void *dat
     return 0;
 }
 
-/**
- * @brief Read the superblock from the ext2 filesystem
- *
- * @param disk: The block device representing the ext2 filesystem
- * @param superblock: Pointer to store the superblock
- * @return 0 on success, negative error code on failure
- */
-static int ext2_read_superblock(block_device_t *disk, ext2_super_t *superblock)
-{
-    block_cache_buf_t *lease;
-    int ret = block_cache_get(disk, 0, &lease);
-    if (ret < 0)
-        return ret;
-
-    memcpy(superblock, lease->data + EXT2_SUPERBLOCK_OFFSET, sizeof(ext2_super_t));
-    block_cache_put(lease);
-    return 0;
-}
-
-/**
- * @brief Check the validity of the ext2 superblock and initialize the filesystem structure
- *
- * @param superblock: The ext2 superblock
- * @param disk: The block device representing the ext2 filesystem
- * @param volume: The ext2 filesystem structure to initialize
- * @return 0 on success, negative error code on failure
- */
-static int ext2_check_superblock(const ext2_super_t *superblock, const block_device_t *disk, ext2_volume_t *volume)
-{
-    if (superblock->s_magic != EXT2_MAGIC)
-        return -EINVAL;
-
-    // Revision 0 has no feature flags, so no FILETYPE: readdir would have to read every inode (debt)
-    if (superblock->s_rev_level != EXT2_DYNAMIC_REV)
-        return -EINVAL;
-
-    // Unknown incompat features change how the disk must be read: refuse. Unknown ro_compat
-    // ones only matter for writing (read_only below), and compat ones never do (Linux's rule)
-    if ((superblock->s_feature_incompat & ~EXT2_FEATURE_INCOMPAT_FILETYPE) != 0 ||
-        (superblock->s_feature_incompat & EXT2_FEATURE_INCOMPAT_FILETYPE) == 0)
-        return -EINVAL;
-
-    // Bigger blocks would straddle two cache buffers
-    if (superblock->s_log_block_size > 2)
-        return -EINVAL;
-
-    uint32_t block_size = 1024u << superblock->s_log_block_size;
-    uint32_t inode_size = superblock->s_inode_size;
-
-    if (inode_size < sizeof(ext2_inode_t) || (inode_size & (inode_size - 1)) != 0 || inode_size > block_size)
-        return -EINVAL;
-
-    if (superblock->s_blocks_per_group == 0 || superblock->s_inodes_per_group == 0 || superblock->s_first_data_block >= superblock->s_blocks_count)
-        return -EIO;
-    if ((uint64_t)superblock->s_blocks_count * block_size > disk->sector_count * BLOCK_SECTOR_SIZE)
-        return -EIO;
-
-    // Groups cover the blocks after s_first_data_block (rounded up); together they must hold every inode
-    uint32_t groups = (superblock->s_blocks_count - superblock->s_first_data_block + superblock->s_blocks_per_group - 1) / superblock->s_blocks_per_group;
-    if ((uint64_t)groups * superblock->s_inodes_per_group < superblock->s_inodes_count)
-        return -EIO;
-
-    volume->block_size = block_size;
-    volume->blocks_count = superblock->s_blocks_count;
-    volume->first_data_block = superblock->s_first_data_block;
-    volume->blocks_per_group = superblock->s_blocks_per_group;
-    volume->inodes_count = superblock->s_inodes_count;
-    volume->inodes_per_group = superblock->s_inodes_per_group;
-    volume->inode_size = inode_size;
-    volume->groups = groups;
-    volume->read_only = (superblock->s_feature_ro_compat & ~EXT2_FEATURE_RO_COMPAT_KNOWN) != 0 ||
-                        disk->ops->write == NULL;
-
-    return 0;
-}
-
-/**
- * @brief Read the group descriptors from the disk and initialize the group table
- *
- * @param volume: The ext2 filesystem structure
- * @param first_data_block: The first data block of the filesystem
- * @return 0 on success, negative error code on failure
- */
-static int ext2_read_groups(ext2_volume_t *volume, uint32_t first_data_block)
-{
-    size_t size = (size_t)volume->groups * sizeof(ext2_group_t);
-    volume->group_table = kmalloc(size);
-    if (volume->group_table == NULL)
-        return -ENOMEM;
-
-    uint8_t *out = (uint8_t *)volume->group_table;
-    uint32_t block = first_data_block + 1;
-    for (size_t done = 0; done < size; block++)
-    {
-        block_cache_buf_t *lease;
-        const uint8_t *data;
-        int ret = ext2_block_get(volume, block, &lease, &data);
-        if (ret < 0)
-            return ret;
-
-        size_t chunk = MIN((size_t)volume->block_size, size - done);
-        memcpy(out + done, data, chunk);
-        block_cache_put(lease);
-        done += chunk;
-    }
-
-    // Every group's part of the inode table must lie inside the file system: ext2_node_get trusts these numbers
-    uint64_t table_blocks = ((uint64_t)volume->inodes_per_group * volume->inode_size + volume->block_size - 1) / volume->block_size;
-    for (uint32_t i = 0; i < volume->groups; i++)
-    {
-        uint32_t table = volume->group_table[i].bg_inode_table;
-        if (table == 0 || table + table_blocks > volume->blocks_count)
-            return -EIO;
-    }
-
-    return 0;
-}
-
-/**
- * @brief Free the memory allocated for the ext2 filesystem structure
- *
- * @param volume: The ext2 filesystem structure to free
- */
-static void ext2_volume_free(ext2_volume_t *volume)
-{
-    kfree(volume->group_table);
-    kfree(volume);
-}
+// ---- Inodes and nodes: where an inode lives, reading it into a node, writing it back ----
 
 /**
  * @brief Where an inode is on the disk: its group's part of the inode table, then its slot
@@ -279,6 +154,31 @@ static uint64_t ext2_inode_byte(const ext2_volume_t *volume, uint32_t ino)
     uint32_t group = (ino - 1) / volume->inodes_per_group;
     uint64_t slot = (ino - 1) % volume->inodes_per_group;
     return (uint64_t)volume->group_table[group].bg_inode_table * volume->block_size + slot * volume->inode_size;
+}
+
+/**
+ * @brief Store an ext2 node's size and block map (i_size, i_size_high, i_block, i_blocks)
+ * back into its inode on disk.
+ *
+ * @param n: The ext2 node to store
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_inode_store(ext2_node_t *n)
+{
+    ext2_volume_t *volume = n->volume;
+    uint64_t byte = ext2_inode_byte(n->volume, n->ino);
+    uint32_t size = (uint32_t)n->base.size;
+    uint32_t size_high = (uint32_t)(n->base.size >> 32);
+
+    int ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_size), &size, sizeof(size));
+    if (ret == 0)
+        ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_blocks), &n->blocks, sizeof(n->blocks));
+    if (ret == 0)
+        ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_block), &n->block, sizeof(n->block));
+    if (ret == 0 && n->base.type == VFS_FILE)
+        ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_size_high), &size_high, sizeof(size_high));
+
+    return ret;
 }
 
 /**
@@ -373,47 +273,36 @@ static int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent
     return 0;
 }
 
-int ext2_mount(block_device_t *disk, vfs_node_t **root)
+int ext2_inode_write(vfs_node_t *node)
 {
-    ext2_super_t superblock;
-    int ret = ext2_read_superblock(disk, &superblock);
-    if (ret < 0)
-        return ret;
-
-    ext2_volume_t *volume = kzalloc(sizeof(ext2_volume_t));
-    if (volume == NULL)
-        return -ENOMEM;
-
-    volume->disk = disk;
-
-    ret = ext2_check_superblock(&superblock, disk, volume);
-    if (ret == 0)
-        ret = ext2_read_groups(volume, superblock.s_first_data_block);
-    if (ret < 0)
-    {
-        ext2_volume_free(volume);
-        return ret;
-    }
-
-    mutex_init(&volume->lock);
-    volume->dev = vfs_dev_alloc();
-
-    vfs_node_t *node;
-    ret = ext2_node_get(volume, EXT2_ROOT_INO, NULL, &node);
-    if (ret == 0 && node->type != VFS_DIRECTORY)
-    {
-        vfs_node_put(node);
-        ret = -EIO;
-    }
-    if (ret < 0)
-    {
-        ext2_volume_free(volume);
-        return ret;
-    }
-
-    *root = node;
-    return 0;
+    ext2_node_t *n = EXT2_NODE(node);
+    guard(mutex, &n->lock);
+    return ext2_inode_store(n);
 }
+
+/**
+ * @brief Release an ext2 node
+ *
+ * @param node: The VFS node to release
+ */
+static void ext2_release(vfs_node_t *node)
+{
+    ext2_node_t *n = EXT2_NODE(node);
+
+    scoped_guard(mutex, &n->volume->lock)
+    {
+        if (hlist_linked(&n->cache_link))
+            hlist_remove(&n->cache_link);
+    }
+
+    vfs_node_t *parent = node->parent != node ? node->parent : NULL;
+    kfree(n);
+
+    if (parent != NULL)
+        vfs_node_put(parent);
+}
+
+// ---- File blocks: a file's logical block number to its block on the disk, through the tables ----
 
 /**
  * @brief Map a logical block number to a physical block number in an ext2 file
@@ -468,6 +357,8 @@ static int ext2_file_block(ext2_volume_t *volume, const ext2_node_t *n, uint64_t
 
     return -EIO; // logical block number out of range
 }
+
+// ---- Directories: walking the records of a directory's blocks ----
 
 /**
  * @brief Convert an ext2 directory entry type to a VFS node type
@@ -604,6 +495,23 @@ static int ext2_readdir_visit(const ext2_dirent_t *e, void *context)
 }
 
 /**
+ * @brief Read a directory entry by index
+ *
+ * @param dir: The directory VFS node
+ * @param index: The index of the entry to read
+ * @param entry: Pointer to store the resulting directory entry
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
+{
+    ext2_readdir_context_t ctx = {
+        .index = index,
+        .count = 0,
+        .entry = entry};
+    return ext2_dir_walk(EXT2_NODE(dir), ext2_readdir_visit, &ctx);
+}
+
+/**
  * @brief Context for looking up a directory entry by name
  */
 typedef struct ext2_lookup_context
@@ -663,6 +571,8 @@ static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_nod
     // After the walk, with no lease held: ext2_node_get takes volume->lock and may read the disk
     return ext2_node_get(EXT2_NODE(dir)->volume, ctx.ino, dir, child);
 }
+
+// ---- File data ----
 
 /**
  * @brief Read data from an ext2 file
@@ -769,75 +679,177 @@ static long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint6
     return done > 0 ? (long)done : -ENOSPC;
 }
 
+// ---- Mounting: the superblock and the group table, checked; the root node; the boot mount ----
+
 /**
- * @brief Read a directory entry by index
+ * @brief Read the superblock from the ext2 filesystem
  *
- * @param dir: The directory VFS node
- * @param index: The index of the entry to read
- * @param entry: Pointer to store the resulting directory entry
- * @return int: 0 on success, negative error code on failure
+ * @param disk: The block device representing the ext2 filesystem
+ * @param superblock: Pointer to store the superblock
+ * @return 0 on success, negative error code on failure
  */
-static int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
+static int ext2_read_superblock(block_device_t *disk, ext2_super_t *superblock)
 {
-    ext2_readdir_context_t ctx = {
-        .index = index,
-        .count = 0,
-        .entry = entry};
-    return ext2_dir_walk(EXT2_NODE(dir), ext2_readdir_visit, &ctx);
+    block_cache_buf_t *lease;
+    int ret = block_cache_get(disk, 0, &lease);
+    if (ret < 0)
+        return ret;
+
+    memcpy(superblock, lease->data + EXT2_SUPERBLOCK_OFFSET, sizeof(ext2_super_t));
+    block_cache_put(lease);
+    return 0;
 }
 
 /**
- * @brief Release an ext2 node
+ * @brief Check the validity of the ext2 superblock and initialize the filesystem structure
  *
- * @param node: The VFS node to release
+ * @param superblock: The ext2 superblock
+ * @param disk: The block device representing the ext2 filesystem
+ * @param volume: The ext2 filesystem structure to initialize
+ * @return 0 on success, negative error code on failure
  */
-static void ext2_release(vfs_node_t *node)
+static int ext2_check_superblock(const ext2_super_t *superblock, const block_device_t *disk, ext2_volume_t *volume)
 {
-    ext2_node_t *n = EXT2_NODE(node);
+    if (superblock->s_magic != EXT2_MAGIC)
+        return -EINVAL;
 
-    scoped_guard(mutex, &n->volume->lock)
+    // Revision 0 has no feature flags, so no FILETYPE: readdir would have to read every inode (debt)
+    if (superblock->s_rev_level != EXT2_DYNAMIC_REV)
+        return -EINVAL;
+
+    // Unknown incompat features change how the disk must be read: refuse. Unknown ro_compat
+    // ones only matter for writing (read_only below), and compat ones never do (Linux's rule)
+    if ((superblock->s_feature_incompat & ~EXT2_FEATURE_INCOMPAT_FILETYPE) != 0 ||
+        (superblock->s_feature_incompat & EXT2_FEATURE_INCOMPAT_FILETYPE) == 0)
+        return -EINVAL;
+
+    // Bigger blocks would straddle two cache buffers
+    if (superblock->s_log_block_size > 2)
+        return -EINVAL;
+
+    uint32_t block_size = 1024u << superblock->s_log_block_size;
+    uint32_t inode_size = superblock->s_inode_size;
+
+    if (inode_size < sizeof(ext2_inode_t) || (inode_size & (inode_size - 1)) != 0 || inode_size > block_size)
+        return -EINVAL;
+
+    if (superblock->s_blocks_per_group == 0 || superblock->s_inodes_per_group == 0 || superblock->s_first_data_block >= superblock->s_blocks_count)
+        return -EIO;
+    if ((uint64_t)superblock->s_blocks_count * block_size > disk->sector_count * BLOCK_SECTOR_SIZE)
+        return -EIO;
+
+    // Groups cover the blocks after s_first_data_block (rounded up); together they must hold every inode
+    uint32_t groups = (superblock->s_blocks_count - superblock->s_first_data_block + superblock->s_blocks_per_group - 1) / superblock->s_blocks_per_group;
+    if ((uint64_t)groups * superblock->s_inodes_per_group < superblock->s_inodes_count)
+        return -EIO;
+
+    volume->block_size = block_size;
+    volume->blocks_count = superblock->s_blocks_count;
+    volume->first_data_block = superblock->s_first_data_block;
+    volume->blocks_per_group = superblock->s_blocks_per_group;
+    volume->inodes_count = superblock->s_inodes_count;
+    volume->inodes_per_group = superblock->s_inodes_per_group;
+    volume->inode_size = inode_size;
+    volume->groups = groups;
+    volume->read_only = (superblock->s_feature_ro_compat & ~EXT2_FEATURE_RO_COMPAT_KNOWN) != 0 ||
+                        disk->ops->write == NULL;
+
+    return 0;
+}
+
+/**
+ * @brief Read the group descriptors from the disk and initialize the group table
+ *
+ * @param volume: The ext2 filesystem structure
+ * @param first_data_block: The first data block of the filesystem
+ * @return 0 on success, negative error code on failure
+ */
+static int ext2_read_groups(ext2_volume_t *volume, uint32_t first_data_block)
+{
+    size_t size = (size_t)volume->groups * sizeof(ext2_group_t);
+    volume->group_table = kmalloc(size);
+    if (volume->group_table == NULL)
+        return -ENOMEM;
+
+    uint8_t *out = (uint8_t *)volume->group_table;
+    uint32_t block = first_data_block + 1;
+    for (size_t done = 0; done < size; block++)
     {
-        if (hlist_linked(&n->cache_link))
-            hlist_remove(&n->cache_link);
+        block_cache_buf_t *lease;
+        const uint8_t *data;
+        int ret = ext2_block_get(volume, block, &lease, &data);
+        if (ret < 0)
+            return ret;
+
+        size_t chunk = MIN((size_t)volume->block_size, size - done);
+        memcpy(out + done, data, chunk);
+        block_cache_put(lease);
+        done += chunk;
     }
 
-    vfs_node_t *parent = node->parent != node ? node->parent : NULL;
-    kfree(n);
+    // Every group's part of the inode table must lie inside the file system: ext2_node_get trusts these numbers
+    uint64_t table_blocks = ((uint64_t)volume->inodes_per_group * volume->inode_size + volume->block_size - 1) / volume->block_size;
+    for (uint32_t i = 0; i < volume->groups; i++)
+    {
+        uint32_t table = volume->group_table[i].bg_inode_table;
+        if (table == 0 || table + table_blocks > volume->blocks_count)
+            return -EIO;
+    }
 
-    if (parent != NULL)
-        vfs_node_put(parent);
+    return 0;
 }
 
 /**
- * @brief Store an ext2 node's size and block map (i_size, i_size_high, i_block, i_blocks)
- * back into its inode on disk.
+ * @brief Free the memory allocated for the ext2 filesystem structure
  *
- * @param n: The ext2 node to store
- * @return int: 0 on success, negative error code on failure
+ * @param volume: The ext2 filesystem structure to free
  */
-static int ext2_inode_store(ext2_node_t *n)
+static void ext2_volume_free(ext2_volume_t *volume)
 {
-    ext2_volume_t *volume = n->volume;
-    uint64_t byte = ext2_inode_byte(n->volume, n->ino);
-    uint32_t size = (uint32_t)n->base.size;
-    uint32_t size_high = (uint32_t)(n->base.size >> 32);
-
-    int ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_size), &size, sizeof(size));
-    if (ret == 0)
-        ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_blocks), &n->blocks, sizeof(n->blocks));
-    if (ret == 0)
-        ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_block), &n->block, sizeof(n->block));
-    if (ret == 0 && n->base.type == VFS_FILE)
-        ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_size_high), &size_high, sizeof(size_high));
-
-    return ret;
+    kfree(volume->group_table);
+    kfree(volume);
 }
 
-int ext2_inode_write(vfs_node_t *node)
+int ext2_mount(block_device_t *disk, vfs_node_t **root)
 {
-    ext2_node_t *n = EXT2_NODE(node);
-    guard(mutex, &n->lock);
-    return ext2_inode_store(n);
+    ext2_super_t superblock;
+    int ret = ext2_read_superblock(disk, &superblock);
+    if (ret < 0)
+        return ret;
+
+    ext2_volume_t *volume = kzalloc(sizeof(ext2_volume_t));
+    if (volume == NULL)
+        return -ENOMEM;
+
+    volume->disk = disk;
+
+    ret = ext2_check_superblock(&superblock, disk, volume);
+    if (ret == 0)
+        ret = ext2_read_groups(volume, superblock.s_first_data_block);
+    if (ret < 0)
+    {
+        ext2_volume_free(volume);
+        return ret;
+    }
+
+    mutex_init(&volume->lock);
+    volume->dev = vfs_dev_alloc();
+
+    vfs_node_t *node;
+    ret = ext2_node_get(volume, EXT2_ROOT_INO, NULL, &node);
+    if (ret == 0 && node->type != VFS_DIRECTORY)
+    {
+        vfs_node_put(node);
+        ret = -EIO;
+    }
+    if (ret < 0)
+    {
+        ext2_volume_free(volume);
+        return ret;
+    }
+
+    *root = node;
+    return 0;
 }
 
 void ext2_init(void)
