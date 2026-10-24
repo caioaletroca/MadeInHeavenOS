@@ -238,6 +238,20 @@ static void ext2_volume_free(ext2_volume_t *volume)
 }
 
 /**
+ * @brief Where an inode is on the disk: its group's part of the inode table, then its slot
+ *
+ * @param volume: The ext2 filesystem
+ * @param ino: The inode number (1-based, already checked)
+ * @return The byte offset of the inode on the disk
+ */
+static uint64_t ext2_inode_byte(const ext2_volume_t *volume, uint32_t ino)
+{
+    uint32_t group = (ino - 1) / volume->inodes_per_group;
+    uint64_t slot = (ino - 1) % volume->inodes_per_group;
+    return (uint64_t)volume->group_table[group].bg_inode_table * volume->block_size + slot * volume->inode_size;
+}
+
+/**
  * @brief Get an inode from the ext2 filesystem
  *
  * @param volume: The ext2 filesystem structure
@@ -272,10 +286,9 @@ static int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent
         break;
     }
 
-    // Where the inode is: its group's part of the inode table, then the slot in it
-    uint32_t group = (ino - 1) / volume->inodes_per_group;
-    uint64_t offset = (uint64_t)((ino - 1) % volume->inodes_per_group) * volume->inode_size;
-    uint32_t block = volume->group_table[group].bg_inode_table + (uint32_t)(offset / volume->block_size);
+    // Where the inode is (ext2_inode_byte): the ext2 block holding it, then its place in that block
+    uint64_t byte = ext2_inode_byte(volume, ino);
+    uint32_t block = (uint32_t)(byte / volume->block_size);
 
     block_cache_buf_t *lease;
     const uint8_t *data;
@@ -284,7 +297,7 @@ static int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent
         return ret;
 
     ext2_inode_t inode;
-    memcpy(&inode, data + offset % volume->block_size, sizeof(inode));
+    memcpy(&inode, data + byte % volume->block_size, sizeof(inode));
     block_cache_put(lease);
 
     vfs_node_type_t type;
