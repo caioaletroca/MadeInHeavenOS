@@ -72,6 +72,12 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+be350f9 test: cover truncate
+d516063 feat(libc): add ftruncate and truncate
+484ec54 feat(sys): add ftruncate and truncate
+bc6e544 feat(fs): truncate ext2 files
+8fb1dd9 feat(fs): add truncate to the VFS and O_TRUNC
+856b1c7 docs(architecture): document halt hooks and ext2's s_state in handoff
 35df6cc test(fs): cover ext2's s_state
 782c837 feat(fs): mark ext2 volumes not clean while mounted writable
 cf8373c feat(sys): add halt hooks
@@ -484,7 +490,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
-  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20 (3, 4, 7–9 reserved). Read and write
+  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20, `SYS_FTRUNCATE` 21, `SYS_TRUNCATE` 22 (3, 4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
   or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`. Generic `sys/syscall.c` →
   `syscall_dispatch`; x86 `syscall.c` unpacks the frame. User pointers are `uintptr_t` in every
@@ -626,7 +632,15 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   `file->node`. `vfs_file_ops`: `read` = `vfs_read` at `offset`, `write` = `vfs_write` at
   `offset` (`vfs_file_write`, the same `position_lock`), each advancing it by what it moved; no
   `release` (`file_put` puts the node). `vfs_write`: a directory → `-EISDIR`, no `write` op →
-  `-EROFS`; the op returns the count written (fewer at the end of a disk) or `-errno`. Directories open (listed with
+  `-EROFS`; the op returns the count written (fewer at the end of a disk) or `-errno`.
+  **`O_TRUNC`** (`0x200`): accepted by `vfs_open`; after the file is made (and holds the node),
+  a regular file opened with write access is `vfs_truncate`d to 0 (a failure `file_put`s it);
+  ignored without write access and on devices. **`vfs_truncate(node, size)`**: a directory →
+  `-EISDIR`, a character or block device → `-EINVAL` (its size is the device's), no `truncate`
+  op → `-EROFS`, else the op. **`ftruncate(fd, length)`** (`sys_ftruncate`): `-EBADF`; not open
+  for writing, no node or a negative length → `-EINVAL` (Linux); the offset never moves.
+  **`truncate(path, length)`**: a negative length `-EINVAL`, `user_path_copy`, `vfs_lookup`,
+  `vfs_truncate`. libc: `ftruncate`/`truncate` in `<unistd.h>`. Directories open (listed with
   `getdents`); reading one gives `-EISDIR`. `vfs_read`: a directory → `-EISDIR`, a node without
   a `read` op (character devices, read through their `file_ops`) → `-EINVAL`. A block device is
   read like a file: `lseek` works on it, since only `VFS_CHARDEV` is refused.
@@ -1266,6 +1280,18 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   written, and if the size or `blocks` changed the inode is stored (`ext2_inode_store`), so
   blocks linked before an error are in the inode (consistent, maybe unused); returns the bytes
   written, or the error if none were. No times (no clock).
+- **Truncate** (`ext2_truncate`, under `n->lock`): past `max_file_size` `-EFBIG`; growing or
+  the same size only sets the size (a hole) and stores the inode. Shrinking: the new last
+  block's bytes past the new end are zeroed (`ext2_block_zero` takes a range), so they read
+  as zeros if the file grows again; `keep` = the blocks that stay (`ceil(size / block size)`);
+  the direct pointers from `keep` on and each tree go through `ext2_truncate_branch(volume,
+  n, &slot, depth, span, from)`: a depth-0 slot is a data block (freed), a table's entries
+  are walked (read through `ext2_slot` without create), each subtree from its relative cut
+  (`from - start`, or 0 when entirely past it), an entry written back only when it became 0,
+  and a table left with no pointers freed too (children before their table). A freed block's
+  pointer is cleared and `blocks` counted down whether the free succeeded or not (a leak is
+  mended by `e2fsck`, a block with two owners loses data). The size is set and the inode
+  stored whatever happened; the first error is returned.
 - **Boot mount** (`ext2_init`, after `block_cache_init`): for each `block_at(i)` (the block table in
   registration order) `ext2_mount`; `-EINVAL` skips quietly, other errors are logged; the first
   one is `vfs_mount`ed on `/mnt` (an empty directory of the initrd, `MOUNT_POINTS` in
@@ -1313,7 +1339,13 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   still zeros; `empty` 13 KiB at once (12 direct, the table and one more: 28, 14); 1 byte at
   the largest file's size `-EFBIG` (0 blocks); `long` 8 bytes at logical 524 (a new
   second-level table and its block: 610, 2), the gap after its old end zeros, its old last line
-  intact.
+  intact. Truncate (`ext2_test_truncate`, the same checks, blocks coming back): `long` to 300 KiB
+  (606, 2 back), to 13 KiB + 100 (30, 288 back: 254 single-indirect blocks, the double tree's
+  32 and its 2 tables; the single table kept), up to 14 KiB + 50 (a hole, 0 blocks; the cut
+  block's tail and the hole read as zeros), to 0 (15 back); `small` to 5 and a write at 1100
+  (5..1099 read as zeros), to 5 again; `holes` to 1 KiB (4 back) and its `end` written again;
+  `empty` to 0 (14 back); the free count at the end = before the growth test + `long`'s 303;
+  `-EFBIG`, `-EISDIR`, `-EINVAL` for `/dev/hda`.
 - **`ext2` test** (`user/tests/ext2`): the listing with types and the dots as inode 2, `link`
   absent, `hello.txt`'s `d_ino` = `st_ino`, `docs/deep/nested` lists `file.txt`, `/mnt/..` lists
   `usr`; `stat`: `/mnt` `0755`, inode 2, `nlink` 5, `st_dev` unlike `/` and `/dev`, `hello.txt`
@@ -1325,7 +1357,10 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   exactly), 0 bytes 0, `st_size` unchanged, restored; `big.txt` `O_WRONLY` across lines
   1535/1536 (direct → single), `read` on it `EBADF`, read back through another fd, restored;
   growth on `grow/user`: one 3000-byte `write`, `fstat` 3000, an append at `SEEK_END`, read back
-  through a second fd, 3 bytes at 10000 (size 10003, the gap zeros);
+  through a second fd, 3 bytes at 10000 (size 10003, the gap zeros); truncate on `grow/user`:
+  `ftruncate` to 3003 (the kept bytes) and up to 5000 (zeros, the offset unmoved), `truncate`
+  to 100, `O_RDONLY | O_TRUNC` ignored, `O_WRONLY | O_TRUNC` empties; `EINVAL` (a read-only
+  fd, a negative length, `/dev/null`), `EISDIR`, `EROFS` (the initrd), `ENOENT`;
   `ENOENT` (`link`, missing), `ENOTDIR` (`hello.txt/`, `opendir` of a file, `getdents` on a
   file), `EISDIR`, `EBADF` (write); fd 3 free at the end.
 
@@ -1832,7 +1867,15 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     `./fsck-test.sh` (clean on the first run). W5d (done): halt hooks, `s_state` not clean while
     mounted writable and clean again at halt; the self-test reads it, `fsck-test.sh` asks
     `dumpe2fs` for `clean`. **W5 is complete.**
-  - **W6:** inode allocation (the inode bitmap, `free_inodes`, `bg_used_dirs_count`),
+  - **W6 (in progress).** Decided: sub-steps W6a truncate, W6b the inode allocator, W6c
+    directory entries + `O_CREAT`/`O_EXCL`, W6d `unlink` (freed at the last node put when
+    the link count is 0) + `O_APPEND`, W6e `mkdir`/`rmdir`, W6f a full-disk test, then the
+    split of `ext2.c`; no clock (new inodes get the parent's `mtime`, a deleted one `i_dtime`
+    1); permissions stored, never checked; a directory with `EXT2_INDEX_FL` is `-EROFS` for
+    changes; names 1–255 bytes, `.`/`..` never created or removed; new 256-byte inodes get
+    `s_want_extra_isize`; syscalls numbered from 21. W6a (done): `ext2_truncate`,
+    `vfs_truncate`, `O_TRUNC`, `ftruncate`/`truncate`; the truncate tests. Next W6b.
+    Overall: inode allocation (the inode bitmap, `free_inodes`, `bg_used_dirs_count`),
     `O_CREAT`/`O_TRUNC`/`O_EXCL`, `unlink`, `mkdir`, `rmdir`, directory entries inserted in a
     record's slack and removed by growing the previous `rec_len`, truncate (frees blocks: the
     tests can clean up), `O_APPEND`, a full-disk `ENOSPC` test. Then: split `ext2.c` along its
@@ -2054,7 +2097,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
     write error after the bitmap bit is set (descriptor or counts) loses that block until
     `e2fsck`; no ordering of metadata writes (consistent only after a sync, ext2's model); a
     new data block is zeroed even when the write fills all of it; no full-disk test yet
-    (nothing could free the space for the tests after it);
+    (W6f); truncate frees block by block (one bitmap write and two counter writes each, no
+    batching) and walks every entry of a table it enters;
   - one node `lock` for reads and writes: two reads of a file wait for each other (an rwlock
     would let them share);
   - symlinks, device files, FIFOs and sockets on the disk are not shown or found (no VFS node
