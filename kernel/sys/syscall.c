@@ -566,6 +566,60 @@ static long sys_ioctl(unsigned long fd, unsigned long request, uintptr_t arg)
     return ret;
 }
 
+/**
+ * Truncate an open file to a specified length.
+ *
+ * @param fd The file descriptor of the open file.
+ * @param length The new length of the file.
+ * @return 0 on success, or a negative error code on failure.
+ */
+static long sys_ftruncate(unsigned long fd, long length)
+{
+    file_t *file = sys_file(fd);
+    if (file == NULL)
+        return -EBADF;
+
+    if (!(file->flags & FILE_WRITE))
+        return -EINVAL;
+
+    if (file->node == NULL)
+        return -EINVAL;
+
+    if (length < 0)
+        return -EINVAL;
+
+    return vfs_truncate(file->node, (uint64_t)length);
+}
+
+/**
+ * Truncate a file specified by its path to a given length.
+ *
+ * @param path The path to the file.
+ * @param length The new length of the file.
+ * @return 0 on success, or a negative error code on failure.
+ */
+static long sys_truncate(uintptr_t path, long length)
+{
+    if (length < 0)
+        return -EINVAL;
+
+    long error;
+    char *kernel_path = user_path_copy(path, &error);
+    if (kernel_path == NULL)
+        return error;
+
+    vfs_node_t *node;
+    int ret = vfs_lookup(kernel_path, &node);
+    kfree(kernel_path);
+    if (ret < 0)
+        return ret;
+
+    ret = vfs_truncate(node, (uint64_t)length);
+    vfs_node_put(node);
+
+    return ret;
+}
+
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {
     (void)arg3;
@@ -606,6 +660,10 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_fstat((unsigned long)arg0, (uintptr_t)arg1);
     case SYS_IOCTL:
         return sys_ioctl((unsigned long)arg0, (unsigned long)arg1, (uintptr_t)arg2);
+    case SYS_FTRUNCATE:
+        return sys_ftruncate((unsigned long)arg0, (long)arg1);
+    case SYS_TRUNCATE:
+        return sys_truncate(arg0, (long)arg1);
     default:
         return -ENOSYS;
     }
