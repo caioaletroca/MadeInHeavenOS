@@ -73,6 +73,9 @@ typedef struct vfs_node_ops
     // File or disk: copies count bytes in at offset; returns the count written (fewer at the end of a disk) or -errno
     long (*write)(vfs_node_t *file, const void *buffer, size_t count, uint64_t offset);
 
+    // File: sets the size; shrinking frees what is past it, growing leaves a hole. 0 or -errno
+    int (*truncate)(vfs_node_t *file, uint64_t size);
+
     // Directory: entry number index into *entry; 1 if there is one, 0 past the last, or -errno
     int (*readdir)(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
 
@@ -176,6 +179,15 @@ long vfs_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset);
  * @return The number of bytes written on success, -errno on failure.
  */
 long vfs_write(vfs_node_t *node, const void *buffer, size_t count, uint64_t offset);
+
+/**
+ * @brief Truncate a file to the specified size.
+ *
+ * @param file The file to truncate.
+ * @param size The new size of the file.
+ * @return 0 on success, -errno on failure.
+ */
+int vfs_truncate(vfs_node_t *file, uint64_t size);
 
 /**
  * @brief Read a directory entry at a given index.

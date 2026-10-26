@@ -234,6 +234,18 @@ long vfs_write(vfs_node_t *node, const void *buffer, size_t count, uint64_t offs
     return node->ops->write(node, buffer, count, offset);
 }
 
+int vfs_truncate(vfs_node_t *file, uint64_t size)
+{
+    if (file->type == VFS_DIRECTORY)
+        return -EISDIR;
+    if (file->type == VFS_CHARDEV || file->type == VFS_BLOCKDEV)
+        return -EINVAL; // a device's size is the device's
+    if (file->ops->truncate == NULL)
+        return -EROFS; // read-only file system
+
+    return file->ops->truncate(file, size);
+}
+
 int vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
 {
     if (dir->type != VFS_DIRECTORY)
@@ -381,7 +393,7 @@ static const file_ops_t vfs_file_ops = {
 
 int vfs_open(const char *path, int flags, file_t **out)
 {
-    if (flags & ~(O_ACCMODE | O_DIRECTORY))
+    if (flags & ~(O_ACCMODE | O_DIRECTORY | O_TRUNC))
         return -EINVAL;
 
     vfs_node_t *node;
@@ -441,6 +453,17 @@ int vfs_open(const char *path, int flags, file_t **out)
     {
         vfs_node_put(node);
         return -ENOMEM;
+    }
+
+    // O_TRUNC: a regular file opened for writing starts empty (ignored without write access, and on devices)
+    if ((flags & O_TRUNC) && (access & FILE_WRITE) && node->type == VFS_FILE)
+    {
+        int ret = vfs_truncate(node, 0);
+        if (ret < 0)
+        {
+            file_put(file);
+            return ret;
+        }
     }
 
     file->node = node;
