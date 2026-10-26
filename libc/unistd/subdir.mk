@@ -10,4 +10,6 @@ reboot.c \
 getpid.c \
 getppid.c \
 isatty.c \
+ftruncate.c \
+truncate.c \
 _exit.c

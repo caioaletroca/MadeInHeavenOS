@@ -56,6 +56,24 @@ off_t lseek(int fd, off_t offset, int whence);
 ssize_t write(int fd, const void *buf, size_t count);
 
 /**
+ * Truncate an open file to a specified length.
+ *
+ * @param fd The file descriptor of the open file.
+ * @param length The new length of the file.
+ * @return 0 on success, or -1 on error.
+ */
+int ftruncate(int fd, off_t length);
+
+/**
+ * Truncate a file specified by its path to a given length.
+ *
+ * @param path The path to the file.
+ * @param length The new length of the file.
+ * @return 0 on success, or -1 on error.
+ */
+int truncate(const char *path, off_t length);
+
+/**
  * Read data from a file descriptor.
  *
  * @param fd The file descriptor to read from.
