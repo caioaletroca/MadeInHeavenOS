@@ -349,6 +349,13 @@ static void ext2_test_read(void)
     file_put(file);
 }
 
+static void ext2_truncate_or_panic(vfs_node_t *node, uint64_t size)
+{
+    int ret = vfs_truncate(node, size);
+    if (ret != 0)
+        panic("ext2 self-test: truncating to %u failed: %d\n", (unsigned int)size, ret);
+}
+
 static void ext2_write_or_panic(vfs_node_t *node, const void *buffer, size_t count, uint64_t offset)
 {
     long n = vfs_write(node, buffer, count, offset);
@@ -703,9 +710,10 @@ static void disk_inode_sizes(block_device_t *disk, vfs_node_t *node, uint32_t *b
     *size = disk_u32(disk, inode + I_SIZE);
 }
 
-// After a write: the inode on the disk holds the node's size and `blocks`, and exactly
-// `used` blocks left the free counts (both of them) since *free / *group0; updates them
-static void grow_expect(block_device_t *disk, vfs_node_t *node, uint32_t blocks, uint32_t used, uint32_t *free,
+// After a write or a truncate: the inode on the disk holds the node's size and `blocks`, and
+// exactly `used` blocks left the free counts (both of them; negative: came back) since *free /
+// *group0; updates them
+static void grow_expect(block_device_t *disk, vfs_node_t *node, uint32_t blocks, int32_t used, uint32_t *free,
                         uint32_t *group0, const char *what)
 {
     uint32_t disk_blocks, disk_size, now_group0;
@@ -714,9 +722,9 @@ static void grow_expect(block_device_t *disk, vfs_node_t *node, uint32_t blocks,
     if (disk_blocks != blocks || disk_size != (uint32_t)node->size)
         panic("ext2 self-test: %s: the inode holds i_blocks %u and size %u, expected %u and %u\n", what, disk_blocks,
               disk_size, blocks, (uint32_t)node->size);
-    if (*free - now != used || *group0 - now_group0 != used)
-        panic("ext2 self-test: %s: %u blocks left the superblock's count and %u the group's, expected %u\n", what,
-              *free - now, *group0 - now_group0, used);
+    if ((int32_t)(*free - now) != used || (int32_t)(*group0 - now_group0) != used)
+        panic("ext2 self-test: %s: %d blocks left the superblock's count and %d the group's, expected %d\n", what,
+              (int32_t)(*free - now), (int32_t)(*group0 - now_group0), used);
     *free = now;
     *group0 = now_group0;
 }
@@ -730,6 +738,8 @@ static void grow_expect(block_device_t *disk, vfs_node_t *node, uint32_t blocks,
  * size and i_blocks (tables included, 2 per 1 KiB block) and exactly that many
  * blocks left both free counts.
  */
+static uint32_t grow_free_before; // free blocks before ext2_test_grow, for ext2_test_truncate
+
 static void ext2_test_grow(void)
 {
     block_device_t *disk = block_at(0);
@@ -742,6 +752,7 @@ static void ext2_test_grow(void)
 
     uint32_t group0;
     uint32_t free = disk_free_blocks(disk, &group0);
+    grow_free_before = free;
 
     // small: 5 bytes in one block; 1100 more fill it and need one new block
     vfs_node_t *small = ext2_expect(MNT "/grow/small", VFS_FILE);
@@ -822,6 +833,102 @@ static void ext2_test_state(void)
         panic("ext2 self-test: the mounted volume's s_state (0x%x) still says clean\n", state);
 }
 
+/**
+ * Truncating the grow/ files ext2_test_grow left behind: every block past the
+ * new end and every table left empty go back to both free counts (checked on
+ * the disk after each step), the tail of the new last block reads as zeros
+ * when the file grows again, and truncating up leaves a hole. In the end the
+ * four files hold what the test disk gave them, block for block: small 1,
+ * holes 3, empty 0, and long none instead of its 303 (it ends empty).
+ */
+static void ext2_test_truncate(void)
+{
+    block_device_t *disk = block_at(0);
+    char *back = kmalloc(2 * BLOCK);
+    if (disk == NULL || back == NULL)
+        panic("ext2 self-test: no disk, or out of memory\n");
+    uint32_t group0;
+    uint32_t free = disk_free_blocks(disk, &group0);
+
+    // long (610: 300 data + the 524 append's block, single, double and two second-level tables)
+    vfs_node_t *grown = ext2_expect(MNT "/grow/long", VFS_FILE);
+    ext2_truncate_or_panic(grown, BIG_SIZE);
+    grow_expect(disk, grown, 606, -2, &free, &group0, "truncating the 524 append away");
+    if (vfs_read(grown, back, 16, BIG_SIZE - 8) != 8 || !big_line_ok(back, BIG_LINES - 1))
+        panic("ext2 self-test: grow/long's last line changed in a truncate\n");
+
+    // To 13 KiB + 100: 14 blocks stay (12 direct, 2 in the single table, the second one partly);
+    // 254 single-indirect blocks go, and the whole double tree (32 blocks and 2 tables)
+    ext2_truncate_or_panic(grown, 13 * BLOCK + 100);
+    grow_expect(disk, grown, 30, -288, &free, &group0, "truncating into the single-indirect range");
+    if (vfs_read(grown, back, 108, 13 * BLOCK - 4) != 104 || !big_line_ok(back + 4, (13 * BLOCK) / 8))
+        panic("ext2 self-test: grow/long's kept bytes changed in a truncate\n");
+
+    // Up again by truncate: a hole, no blocks; the cut block's tail and the hole read as zeros
+    ext2_truncate_or_panic(grown, 14 * BLOCK + 50);
+    grow_expect(disk, grown, 30, 0, &free, &group0, "truncating up");
+    if (vfs_read(grown, back, 2 * BLOCK, 13 * BLOCK + 100) != BLOCK - 50)
+        panic("ext2 self-test: grow/long does not read up to its new end\n");
+    for (uint32_t b = 0; b < BLOCK - 50; b++)
+        if (back[b] != 0)
+            panic("ext2 self-test: byte %u of grow/long is not zero after truncating down and up\n",
+                  13 * BLOCK + 100 + b);
+
+    ext2_truncate_or_panic(grown, 0);
+    grow_expect(disk, grown, 0, -15, &free, &group0, "truncating to 0");
+    vfs_node_put(grown);
+
+    // small (1105 bytes, 2 blocks) back to 5: then a write at 1100 needs a new block, and 5..1099 are zeros
+    vfs_node_t *small = ext2_expect(MNT "/grow/small", VFS_FILE);
+    ext2_truncate_or_panic(small, 5);
+    grow_expect(disk, small, 2, -1, &free, &group0, "truncating small to 5");
+    ext2_write_or_panic(small, "Z", 1, 1100);
+    grow_expect(disk, small, 4, 1, &free, &group0, "growing small again");
+    if (vfs_read(small, back, 1101, 0) != 1101 || memcmp(back, "small", 5) != 0 || back[1100] != 'Z')
+        panic("ext2 self-test: grow/small reads back wrong after a truncate and a write\n");
+    for (uint32_t b = 5; b < 1100; b++)
+        if (back[b] != 0)
+            panic("ext2 self-test: byte %u of grow/small came back after a truncate\n", b);
+    ext2_truncate_or_panic(small, 5);
+    grow_expect(disk, small, 2, -1, &free, &group0, "truncating small to 5 again");
+    vfs_node_put(small);
+
+    // holes (blocks 0, 1, 13, 16 and the table) to 1 KiB: only block 0 stays; then "end" at
+    // 16384 as on the test disk (block 16 and a new table)
+    vfs_node_t *holes = ext2_expect(MNT "/grow/holes", VFS_FILE);
+    ext2_truncate_or_panic(holes, BLOCK);
+    grow_expect(disk, holes, 2, -4, &free, &group0, "truncating holes to its first block");
+    ext2_write_or_panic(holes, "end", 3, 16384);
+    grow_expect(disk, holes, 6, 2, &free, &group0, "writing holes's end again");
+    vfs_node_put(holes);
+
+    vfs_node_t *empty = ext2_expect(MNT "/grow/empty", VFS_FILE);
+    ext2_truncate_or_panic(empty, 0);
+    grow_expect(disk, empty, 0, -14, &free, &group0, "truncating empty to 0");
+
+    // Refusals: past the largest file, a directory, a disk
+    if (vfs_truncate(empty, (uint64_t)1 << 62) != -EFBIG)
+        panic("ext2 self-test: a truncate past the largest file did not return -EFBIG\n");
+    vfs_node_put(empty);
+    vfs_node_t *docs = ext2_expect(MNT "/docs", VFS_DIRECTORY);
+    if (vfs_truncate(docs, 0) != -EISDIR)
+        panic("ext2 self-test: truncating a directory did not return -EISDIR\n");
+    vfs_node_put(docs);
+    char path[sizeof("/dev/") + BLOCK_NAME_MAX];
+    memcpy(path, "/dev/", 5);
+    strlcpy(path + 5, disk->name, BLOCK_NAME_MAX);
+    vfs_node_t *device = NULL;
+    if (vfs_lookup(path, &device) != 0 || vfs_truncate(device, 0) != -EINVAL)
+        panic("ext2 self-test: truncating %s did not return -EINVAL\n", path);
+    vfs_node_put(device);
+
+    // Everything ext2_test_grow took is back, and long's 303 blocks on top
+    if (free != grow_free_before + 303)
+        panic("ext2 self-test: %u blocks free after the truncates, expected %u\n", free, grow_free_before + 303);
+
+    kfree(back);
+}
+
 void ext2_selftest(void)
 {
     memcpy(long_path, MNT "/", sizeof(MNT));
@@ -838,6 +945,7 @@ void ext2_selftest(void)
     ext2_test_write();
     ext2_test_inode_write();
     ext2_test_grow();
+    ext2_test_truncate();
     ext2_test_state();
     ext2_test_broken();
 

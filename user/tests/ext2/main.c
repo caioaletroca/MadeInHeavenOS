@@ -307,6 +307,62 @@ static void test_grow(void)
     close(fd);
 }
 
+/*
+ * Truncating (grow/user, 10003 bytes after test_grow): ftruncate down and up
+ * (a hole), truncate by path, O_TRUNC (ignored without write access), and
+ * what is refused: a read-only fd and a negative length (EINVAL), a directory
+ * (EISDIR), a device (EINVAL), the initrd (EROFS), a missing path (ENOENT).
+ */
+static void test_truncate(void)
+{
+    static char back[5100];
+    struct stat st;
+
+    int fd = open(MNT "/grow/user", O_RDWR);
+    CHECK(fd >= 0);
+    if (fd < 0)
+        return;
+
+    CHECK(ftruncate(fd, 3003) == 0);
+    CHECK(fstat(fd, &st) == 0 && st.st_size == 3003);
+    CHECK(lseek(fd, 2990, SEEK_SET) == 2990 && read_full(fd, back, 100) == 13);
+    CHECK(memcmp(back + 10, "end", 3) == 0);
+
+    // Up: the new part reads as zeros; the offset never moves
+    CHECK(lseek(fd, 7, SEEK_SET) == 7);
+    CHECK(ftruncate(fd, 5000) == 0 && lseek(fd, 0, SEEK_CUR) == 7);
+    CHECK(lseek(fd, 3003, SEEK_SET) == 3003 && read_full(fd, back, sizeof(back)) == 5000 - 3003);
+    int zeros = 1;
+    for (int i = 0; i < 5000 - 3003; i++)
+        zeros = zeros && back[i] == 0;
+    CHECK(zeros);
+
+    CHECK(truncate(MNT "/grow/user", 100) == 0);
+    CHECK(stat(MNT "/grow/user", &st) == 0 && st.st_size == 100);
+    close(fd);
+
+    // O_TRUNC: empties a file opened for writing, is ignored for one opened read-only
+    fd = open(MNT "/grow/user", O_RDONLY | O_TRUNC);
+    CHECK(fd >= 0 && fstat(fd, &st) == 0 && st.st_size == 100);
+    errno = 0;
+    CHECK(ftruncate(fd, 0) == -1 && errno == EINVAL); // not open for writing
+    close(fd);
+    fd = open(MNT "/grow/user", O_WRONLY | O_TRUNC);
+    CHECK(fd >= 0 && fstat(fd, &st) == 0 && st.st_size == 0);
+    errno = 0;
+    CHECK(ftruncate(fd, -1) == -1 && errno == EINVAL);
+    close(fd);
+
+    errno = 0;
+    CHECK(truncate(MNT "/docs", 0) == -1 && errno == EISDIR);
+    errno = 0;
+    CHECK(truncate("/dev/null", 0) == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK(truncate("/usr/tests/ext2", 0) == -1 && errno == EROFS);
+    errno = 0;
+    CHECK(truncate(MNT "/nope", 0) == -1 && errno == ENOENT);
+}
+
 static void test_refusals(void)
 {
     char buffer[64];
@@ -345,6 +401,7 @@ int main(void)
     test_reads();
     test_writes();
     test_grow();
+    test_truncate();
     test_refusals();
 
     // Every fd and stream was closed: the next open gets fd 3 again
