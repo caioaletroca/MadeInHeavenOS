@@ -56,6 +56,7 @@ typedef struct ext2_node
 static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
 static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
 static long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint64_t offset);
+static int ext2_truncate(vfs_node_t *file, uint64_t size);
 static int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
 static void ext2_release(vfs_node_t *node);
 
@@ -64,6 +65,7 @@ static const vfs_node_ops_t ext2_ops = {
     .read = ext2_read,
     .write = ext2_write,
     .readdir = ext2_readdir,
+    .truncate = ext2_truncate,
     .release = ext2_release,
 };
 
@@ -129,9 +131,11 @@ static int ext2_block_write(ext2_volume_t *volume, uint32_t block, size_t within
  *
  * @param volume: The ext2 volume
  * @param block: The block number to zero
+ * @param within: The starting offset within the block
+ * @param count: The number of bytes to zero within the block
  * @return int: 0 on success, negative error code on failure
  */
-static int ext2_block_zero(ext2_volume_t *volume, uint32_t block)
+static int ext2_block_zero(ext2_volume_t *volume, uint32_t block, size_t within, size_t count)
 {
     block_cache_buf_t *lease;
     const uint8_t *start;
@@ -140,7 +144,7 @@ static int ext2_block_zero(ext2_volume_t *volume, uint32_t block)
         return ret;
 
     block_cache_begin_write(lease);
-    memset(lease->data + (start - lease->data), 0, volume->block_size);
+    memset(lease->data + (start - lease->data) + within, 0, count);
     block_cache_end_write(lease);
     block_cache_put(lease);
     return 0;
@@ -278,7 +282,7 @@ static int ext2_block_alloc(ext2_volume_t *volume, uint32_t goal, uint32_t *out)
 
     for (uint32_t i = 0; i <= volume->groups; i++)
     {
-        uint32_t block;
+        uint32_t block = 0;
         uint32_t g = (start_group + i) % volume->groups;
         uint32_t from = i == 0 ? start_bit : 0;
 
@@ -306,7 +310,7 @@ static int ext2_block_alloc(ext2_volume_t *volume, uint32_t goal, uint32_t *out)
         if (ret == 0)
         {
             block = volume->first_data_block + g * volume->blocks_per_group + bit;
-            ret = ext2_block_zero(volume, block);
+            ret = ext2_block_zero(volume, block, 0, volume->block_size);
         }
 
         if (ret < 0)
@@ -622,6 +626,80 @@ static int ext2_file_block(ext2_volume_t *volume, ext2_node_t *node, uint64_t lo
     }
 
     return -EFBIG;
+}
+
+/**
+ * @brief Truncate a branch of an ext2 file's block tree.
+ *
+ * The tree hangs from *slot: a data block when depth is 0, else a table `depth` levels
+ * above the data blocks. It covers `span` logical blocks, counted from its own start.
+ * Every data block from `from` on is freed, and every table left with no pointers (a
+ * table whose blocks are all past the cut) is freed too, its *slot set to 0. *slot is
+ * the caller's copy: n->block[i], or a table entry the caller writes back.
+ *
+ *
+ * @param volume: The ext2 filesystem structure
+ * @param node: The ext2 node
+ * @param slot: Pointer to the block slot to truncate
+ * @param depth: The depth of the branch (0 for direct blocks)
+ * @param span: The number of logical blocks covered by this branch
+ * @param from: The logical block number from which to start truncating
+ * @return 0 on success, negative error code on failure
+ */
+static int ext2_truncate_branch(ext2_volume_t *volume, ext2_node_t *node, uint32_t *slot, int depth, uint64_t span, uint64_t from)
+{
+    int ret;
+
+    if (*slot == 0 || from >= span)
+        return 0;
+
+    uint32_t sectors = volume->block_size / 512;
+    if (depth == 0)
+    {
+        ret = ext2_block_free(volume, *slot);
+        *slot = 0;
+        node->blocks -= sectors;
+        return ret;
+    }
+
+    uint64_t per_block = volume->block_size / sizeof(uint32_t);
+    uint64_t below = span / per_block;
+    bool used = false;
+    for (uint64_t i = 0; i < per_block; i++)
+    {
+        uint32_t entry;
+        ret = ext2_slot(volume, node, *slot, (uint32_t)i, NULL, false, &entry);
+        if (ret < 0)
+            return ret;
+
+        // Skip entries that are entirely before the truncation point
+        uint64_t start = i * below;
+        if (entry != 0 && from < start + below)
+        {
+            uint32_t before = entry;
+            ret = ext2_truncate_branch(volume, node, &entry, depth - 1, below, from > start ? from - start : 0);
+            if (entry != before)
+            {
+                int stored = ext2_block_write(volume, *slot, i * sizeof(uint32_t), &entry, sizeof(uint32_t));
+                if (ret == 0)
+                    ret = stored;
+            }
+
+            if (ret < 0)
+                return ret;
+        }
+
+        used = used || entry != 0;
+    }
+
+    if (used)
+        return 0;
+
+    // Every pointer is 0 now: the table holds nothing, free it too
+    ret = ext2_block_free(volume, *slot);
+    *slot = 0;
+    node->blocks -= sectors;
+    return ret;
 }
 
 // ---- Directories: walking the records of a directory's blocks ----
@@ -969,6 +1047,67 @@ static long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint6
     }
 
     return done > 0 ? (long)done : ret;
+}
+
+/**
+ * Truncate a file to the specified size.
+ * @param file The file to truncate.
+ * @param size The new size of the file.
+ * @return 0 on success, or a negative error code on failure.
+ */
+static int ext2_truncate(vfs_node_t *file, uint64_t size)
+{
+    ext2_node_t *node = EXT2_NODE(file);
+    ext2_volume_t *volume = node->volume;
+
+    guard(mutex, &node->lock);
+
+    // Check if the requested size exceeds the maximum file size
+    if (size > volume->max_file_size)
+        return -EFBIG;
+
+    // If the new size is equal to the current size, nothing needs to be done.
+    if (size == file->size)
+        return 0;
+    // If the new size is greater than the current size, extend the file.
+    else if (size > file->size)
+    {
+        file->size = size;
+        return ext2_inode_store(node);
+    }
+
+    // The block that will hold the new end keeps its first bytes: the rest must read as
+    // zeros if the file grows again, not as what was there
+    int ret = 0;
+    size_t within = size % volume->block_size;
+    if (within != 0)
+    {
+        uint32_t block;
+        ret = ext2_file_block(volume, node, size / volume->block_size, NULL, false, &block);
+        if (ret == 0 && block != 0)
+            ret = ext2_block_zero(volume, block, within, volume->block_size - within);
+    }
+
+    // Free everything from the first block past the new end: direct pointers, then each tree
+    uint64_t keep = (size + volume->block_size - 1) / volume->block_size;
+    for (uint64_t i = keep; ret == 0 && i < EXT2_DIRECT_BLOCKS; i++)
+        ret = ext2_truncate_branch(volume, node, &node->block[i], 0, 1, 0);
+
+    uint64_t per_block = volume->block_size / sizeof(uint32_t);
+    uint64_t start = EXT2_DIRECT_BLOCKS;
+    uint64_t span = per_block;
+    for (int levels = 1; ret == 0 && levels <= 3; levels++, span *= per_block)
+    {
+        uint64_t from = keep > start ? keep - start : 0;
+        ret = ext2_truncate_branch(volume, node, &node->block[EXT2_DIRECT_BLOCKS + levels - 1], levels, span, from);
+        start += span;
+    }
+
+    // Whatever happened, the inode must say what is freed: a block freed but still in i_block
+    // would have two owners once it is allocated again
+    file->size = size;
+    int stored = ext2_inode_store(node);
+    return ret != 0 ? ret : stored;
 }
 
 // ---- Mounting: the superblock and the group table, checked; the root node; the boot mount ----
