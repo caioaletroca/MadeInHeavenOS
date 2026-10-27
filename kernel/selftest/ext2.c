@@ -42,16 +42,24 @@
 #define SB_FEATURE_INCOMPAT 96
 #define SB_FEATURE_RO_COMPAT 100
 #define SB_FREE_BLOCKS_COUNT 12
+#define SB_FREE_INODES_COUNT 16
 #define SB_STATE 58
 #define EXT2_TEST_VALID_FS 0x0001 // s_state: cleanly unmounted
+#define BG_INODE_BITMAP 4
 #define BG_FREE_BLOCKS_COUNT 12
+#define BG_FREE_INODES_COUNT 14
+#define BG_USED_DIRS_COUNT 16
 #define EXT2_TEST_DIRECT 12 // i_block's direct pointers
 #define GROUP_TABLE (2 * BLOCK) // block 2 with 1 KiB blocks
 #define BG_INODE_TABLE 8
 #define I_MODE 0
 #define I_SIZE 4
+#define I_MTIME 16
+#define I_DTIME 20
+#define I_LINKS_COUNT 26
 #define I_BLOCKS 28
 #define I_BLOCK 40
+#define I_EXTRA_ISIZE 128 // large inodes
 #define DIRENT_REC_LEN 4
 #define DIRENT_NAME_LEN 6
 
@@ -929,6 +937,173 @@ static void ext2_test_truncate(void)
     kfree(back);
 }
 
+// The free inode counts on the disk itself (after a sync): the superblock's and group 0's
+static uint32_t disk_free_inodes(block_device_t *disk, uint32_t *group0)
+{
+    if (block_cache_sync() != 0)
+        panic("ext2 self-test: sync failed\n");
+    *group0 = disk_u32(disk, GROUP_TABLE + BG_FREE_INODES_COUNT) & 0xFFFF;
+    return disk_u32(disk, SB + SB_FREE_INODES_COUNT);
+}
+
+// vfs_open of path returns `error`, or (0) a file that is put again at once
+static void open_expect(const char *path, int flags, int error)
+{
+    struct file *file = NULL;
+    int ret = vfs_open(path, flags, 0644, &file);
+    if (ret != error)
+        panic("ext2 self-test: opening '%s' (flags 0x%x) returned %d instead of %d\n", path, flags, ret, error);
+    if (ret == 0)
+        file_put(file);
+}
+
+/**
+ * Creating files in grow/ (no listing test reads it): an O_CREAT | O_EXCL open
+ * takes the first free inode (29 on the test disk) and prepares its slot (on the
+ * disk: the mode, one link, the parent's mtime, no blocks, no i_dtime, i_extra_isize
+ * 32 and zeros after it), its bitmap bit and one inode from both counts, no
+ * directory counted; the name's record fits in the directory's first block. A
+ * second O_EXCL open is -EEXIST, a plain O_CREAT one opens the same file. 90 more
+ * names need more than the block: the directory gets a second one (its size and
+ * i_blocks on the disk), every name looks up to its inode. Then the refusals,
+ * from the path (EISDIR, ENOENT, ENOTDIR, ENAMETOOLONG), the file system (EROFS
+ * on the initrd and devfs) and the symlink's name (taken: ENOENT, EEXIST with
+ * O_EXCL). e2fsck checks the result (fsck-test.sh).
+ */
+static void ext2_test_create(void)
+{
+    block_device_t *disk = block_at(0);
+    if (disk == NULL)
+        panic("ext2 self-test: no disk\n");
+    uint32_t inode_size = disk_u32(disk, SB + SB_INODE_SIZE) & 0xFFFF;
+    uint32_t inode_table = disk_u32(disk, GROUP_TABLE + BG_INODE_TABLE);
+    uint32_t inode_bitmap = disk_u32(disk, GROUP_TABLE + BG_INODE_BITMAP);
+    uint32_t used_dirs = disk_u32(disk, GROUP_TABLE + BG_USED_DIRS_COUNT) & 0xFFFF;
+    uint32_t group0, blocks_group0;
+    uint32_t free = disk_free_inodes(disk, &group0);
+    uint32_t free_blocks = disk_free_blocks(disk, &blocks_group0);
+
+    vfs_node_t *grow = ext2_expect(MNT "/grow", VFS_DIRECTORY);
+    if (grow->size != BLOCK)
+        panic("ext2 self-test: grow/ is not one block before the creates\n");
+
+    // A new file: the first free inode, prepared on the disk
+    struct file *file = NULL;
+    int ret = vfs_open(MNT "/grow/new", O_RDWR | O_CREAT | O_EXCL, 0640, &file);
+    if (ret != 0)
+        panic("ext2 self-test: creating grow/new failed: %d\n", ret);
+    vfs_node_t *created = file->node;
+    if (created->type != VFS_FILE || created->ino != 29 || created->size != 0 || created->mode != 0640 ||
+        created->nlink != 1 || created->mtime != grow->mtime || created->dev != grow->dev)
+        panic("ext2 self-test: grow/new is not an empty file in inode 29 with mode 0640\n");
+
+    uint32_t now_group0;
+    uint32_t now = disk_free_inodes(disk, &now_group0);
+    if (free - now != 1 || group0 - now_group0 != 1)
+        panic("ext2 self-test: creating a file took %u inodes from the superblock's count and %u from the group's\n",
+              free - now, group0 - now_group0);
+    if ((disk_u32(disk, (uint64_t)inode_bitmap * BLOCK + 28 / 8) >> (28 % 8) & 1) == 0)
+        panic("ext2 self-test: inode 29's bitmap bit is not set\n");
+    if ((disk_u32(disk, GROUP_TABLE + BG_USED_DIRS_COUNT) & 0xFFFF) != used_dirs)
+        panic("ext2 self-test: creating a file counted a directory\n");
+
+    uint8_t *slot = kmalloc(2 * BLOCK);
+    if (slot == NULL)
+        panic("ext2 self-test: out of memory\n");
+    uint64_t byte = (uint64_t)inode_table * BLOCK + 28 * inode_size;
+    if (block_read(disk, byte / BLOCK_SECTOR_SIZE, 2, slot) != 0)
+        panic("ext2 self-test: reading inode 29 failed\n");
+    uint8_t *inode = slot + byte % BLOCK_SECTOR_SIZE;
+    uint16_t mode, links, extra;
+    uint32_t mtime, dtime, size, blocks;
+    memcpy(&mode, inode + I_MODE, 2);
+    memcpy(&size, inode + I_SIZE, 4);
+    memcpy(&mtime, inode + I_MTIME, 4);
+    memcpy(&dtime, inode + I_DTIME, 4);
+    memcpy(&links, inode + I_LINKS_COUNT, 2);
+    memcpy(&blocks, inode + I_BLOCKS, 4);
+    memcpy(&extra, inode + I_EXTRA_ISIZE, 2);
+    if (mode != (0x8000 | 0640) || size != 0 || mtime != (uint32_t)grow->mtime || dtime != 0 || links != 1 ||
+        blocks != 0)
+        panic("ext2 self-test: inode 29 on the disk is not the new file\n");
+    for (uint32_t b = I_BLOCK; b < 128; b++)
+        if (inode[b] != 0 && (b < I_MTIME || b >= I_MTIME + 4))
+            panic("ext2 self-test: byte %u of inode 29 is not zero\n", b);
+    if (inode_size > 128)
+    {
+        if (extra != 32)
+            panic("ext2 self-test: inode 29's i_extra_isize is %u, expected 32\n", extra);
+        for (uint32_t b = I_EXTRA_ISIZE + 2; b < inode_size; b++)
+            if (inode[b] != 0)
+                panic("ext2 self-test: byte %u of inode 29's extra area is not zero\n", b);
+    }
+    kfree(slot);
+
+    // It reads and writes like any file; the name is found again, and an O_EXCL open is refused
+    if (vfs_write(created, "created", 7, 0) != 7)
+        panic("ext2 self-test: writing grow/new failed\n");
+    file_put(file);
+    ext2_expect_text(MNT "/grow/new", "created");
+    open_expect(MNT "/grow/new", O_WRONLY | O_CREAT | O_EXCL, -EEXIST);
+    if (vfs_open(MNT "/grow/new", O_RDONLY | O_CREAT, 0, &file) != 0 || file->node->ino != 29 ||
+        file->node->size != 7)
+        panic("ext2 self-test: an O_CREAT open of an existing file did not open it\n");
+    file_put(file);
+
+    // The first block is full after these: the directory gets its second one
+    uint32_t dir_blocks, dir_size;
+    for (uint32_t i = 0; i < 90; i++)
+    {
+        char path[] = MNT "/grow/f000";
+        path[sizeof(path) - 4] = (char)('0' + i / 100);
+        path[sizeof(path) - 3] = (char)('0' + i / 10 % 10);
+        path[sizeof(path) - 2] = (char)('0' + i % 10);
+        open_expect(path, O_WRONLY | O_CREAT | O_EXCL, 0);
+    }
+    disk_inode_sizes(disk, grow, &dir_blocks, &dir_size);
+    if (grow->size != 2 * BLOCK || dir_size != 2 * BLOCK || dir_blocks != 4)
+        panic("ext2 self-test: grow/ did not get a second block (size %u, i_blocks %u)\n", dir_size, dir_blocks);
+    for (uint32_t i = 0; i < 90; i++)
+    {
+        char path[] = MNT "/grow/f000";
+        path[sizeof(path) - 4] = (char)('0' + i / 100);
+        path[sizeof(path) - 3] = (char)('0' + i / 10 % 10);
+        path[sizeof(path) - 2] = (char)('0' + i % 10);
+        vfs_node_t *node = ext2_expect(path, VFS_FILE);
+        if (node->ino != 30 + i || node->size != 0)
+            panic("ext2 self-test: %s is not the empty inode %u\n", path, 30 + i);
+        vfs_node_put(node);
+    }
+    now = disk_free_inodes(disk, &now_group0);
+    if (free - now != 91 || group0 - now_group0 != 91)
+        panic("ext2 self-test: 91 creates took %u inodes from the superblock's count and %u from the group's\n",
+              free - now, group0 - now_group0);
+    uint32_t now_blocks = disk_free_blocks(disk, &now_group0);
+    if (free_blocks - now_blocks != 2 || blocks_group0 - now_group0 != 2)
+        panic("ext2 self-test: the creates took %u blocks, expected 2 (grow/new's data and grow/'s second block)\n",
+              free_blocks - now_blocks);
+    vfs_node_put(grow);
+
+    // Refusals
+    open_expect(MNT "/grow/dir/", O_WRONLY | O_CREAT, -EISDIR);
+    open_expect(MNT "/nope/new", O_WRONLY | O_CREAT, -ENOENT);
+    open_expect(MNT "/hello.txt/new", O_WRONLY | O_CREAT, -ENOTDIR);
+    open_expect("/usr/new", O_WRONLY | O_CREAT, -EROFS);
+    open_expect("/dev/new", O_WRONLY | O_CREAT, -EROFS);
+    open_expect(MNT "/link", O_WRONLY | O_CREAT, -ENOENT);
+    open_expect(MNT "/link", O_WRONLY | O_CREAT | O_EXCL, -EEXIST);
+    open_expect(MNT "/docs", O_RDONLY | O_CREAT, 0);
+    open_expect(MNT "/docs", O_WRONLY | O_CREAT, -EISDIR);
+    char too_long[sizeof(MNT "/grow/") + LONG_NAME_LENGTH + 1];
+    memcpy(too_long, MNT "/grow/", sizeof(MNT "/grow/") - 1);
+    memset(too_long + sizeof(MNT "/grow/") - 1, 'b', LONG_NAME_LENGTH + 1);
+    too_long[sizeof(too_long) - 1] = '\0';
+    open_expect(too_long, O_WRONLY | O_CREAT, -ENAMETOOLONG);
+    now = disk_free_inodes(disk, &now_group0);
+    if (free - now != 91)
+        panic("ext2 self-test: a refused create took an inode\n");
+}
+
 void ext2_selftest(void)
 {
     memcpy(long_path, MNT "/", sizeof(MNT));
@@ -946,6 +1121,7 @@ void ext2_selftest(void)
     ext2_test_inode_write();
     ext2_test_grow();
     ext2_test_truncate();
+    ext2_test_create();
     ext2_test_state();
     ext2_test_broken();
 

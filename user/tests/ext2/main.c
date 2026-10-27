@@ -363,6 +363,42 @@ static void test_truncate(void)
     CHECK(truncate(MNT "/nope", 0) == -1 && errno == ENOENT);
 }
 
+/*
+ * Creating from user space (in grow/, after the kernel's creates): open with
+ * O_CREAT | O_EXCL and a mode, stat of the new file, EEXIST for a second O_EXCL,
+ * creat emptying an existing file without changing its mode, and the refusals:
+ * EISDIR (a trailing '/'), ENOENT (a missing parent, the symlink's name), EROFS.
+ */
+static void test_create(void)
+{
+    struct stat st;
+    int fd = open(MNT "/grow/made", O_WRONLY | O_CREAT | O_EXCL, 0600);
+    CHECK(fd >= 0);
+    CHECK(write(fd, "made in user space\n", 19) == 19);
+    close(fd);
+    CHECK(stat(MNT "/grow/made", &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & 07777) == 0600);
+    CHECK(st.st_size == 19 && st.st_nlink == 1);
+    expect_text(MNT "/grow/made", "made in user space\n");
+
+    errno = 0;
+    CHECK(open(MNT "/grow/made", O_RDWR | O_CREAT | O_EXCL, 0600) == -1 && errno == EEXIST);
+
+    fd = creat(MNT "/grow/made", 0644);
+    CHECK(fd >= 0 && fstat(fd, &st) == 0 && st.st_size == 0 && (st.st_mode & 07777) == 0600);
+    close(fd);
+
+    errno = 0;
+    CHECK(open(MNT "/grow/made/", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOTDIR);
+    errno = 0;
+    CHECK(open(MNT "/grow/newdir/", O_WRONLY | O_CREAT, 0644) == -1 && errno == EISDIR);
+    errno = 0;
+    CHECK(open(MNT "/nope/made", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(open(MNT "/link", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(creat("/usr/tests/made", 0644) == -1 && errno == EROFS);
+}
+
 static void test_refusals(void)
 {
     char buffer[64];
@@ -402,6 +438,7 @@ int main(void)
     test_writes();
     test_grow();
     test_truncate();
+    test_create();
     test_refusals();
 
     // Every fd and stream was closed: the next open gets fd 3 again
