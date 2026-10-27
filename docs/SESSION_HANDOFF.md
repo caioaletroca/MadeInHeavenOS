@@ -42,7 +42,7 @@ Working x86-64 PC kernel with:
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
   layer, `errno`, `write`/`read`/`close`/`_exit`/`brk`/`sbrk`, `exit`/`abort`; buffered stdio over
   fds with `printf`, `fgetc`/`fgets`/`ungetc`; `malloc`/`free`/`calloc`/`realloc` on `sbrk`;
-  `atexit`; `open`/`lseek`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
+  `atexit`; `open` (with a mode)/`creat`/`lseek`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
   runtime (global constructors and destructors, `operator new`)
 - **Disks:** a block layer (`block_read`/`block_write` with range checks, `block_flush`) and an
   ATA PIO driver (polling, 28-bit LBA, reads, writes and cache flushes) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators;
@@ -54,7 +54,8 @@ Working x86-64 PC kernel with:
   through direct and indirect blocks (holes read as zeros), real modes, times and link counts;
   one cached node per inode, freed after the last reference; files written anywhere: holes
   filled and files grown through a block allocator (bitmaps, free counts, new indirect
-  tables), checked by `e2fsck` (`./fsck-test.sh`); no creating or deleting files yet
+  tables), truncated, and created (`O_CREAT`: an inode allocator, names added to
+  directories), checked by `e2fsck` (`./fsck-test.sh`); no deleting files yet
 - Intrusive `list.h` and an hlist `hashtable.h` (multiplicative `hash_64`) shared by kernel and libc
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
@@ -72,6 +73,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+812e84c test: cover creating files
+301e8c9 feat(libc): read open's mode and add creat
+20896e9 feat(fs): create ext2 files
+d4b8431 feat(fs): add create to the VFS and O_CREAT/O_EXCL
+1ceb91f docs(architecture): document truncate in handoff
 be350f9 test: cover truncate
 d516063 feat(libc): add ftruncate and truncate
 484ec54 feat(sys): add ftruncate and truncate
@@ -640,11 +646,24 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   op → `-EROFS`, else the op. **`ftruncate(fd, length)`** (`sys_ftruncate`): `-EBADF`; not open
   for writing, no node or a negative length → `-EINVAL` (Linux); the offset never moves.
   **`truncate(path, length)`**: a negative length `-EINVAL`, `user_path_copy`, `vfs_lookup`,
-  `vfs_truncate`. libc: `ftruncate`/`truncate` in `<unistd.h>`. Directories open (listed with
+  `vfs_truncate`. libc: `ftruncate`/`truncate` in `<unistd.h>`. **`O_CREAT`** (`0x40`) /
+  **`O_EXCL`** (`0x80`), Linux's values: `vfs_open(path, flags, mode, &file)` takes the
+  permissions of a created file. A lookup giving `-ENOENT` with `O_CREAT` → `vfs_create(path,
+  mode)`: a trailing `/` → `-EISDIR`; the last component is the name (a pointer into the path
+  and a length, over `VFS_NAME_MAX` → `-ENAMETOOLONG`), the rest (its `/` kept) is copied into
+  a `kmalloc`'d string and looked up (through mounts); not a directory → `-ENOTDIR`, no
+  `create` node op → `-EROFS` (initrd, devfs), else `create(dir, name, length, mode & 07777,
+  &node)`. A create giving `-EEXIST` without `O_EXCL` (made meanwhile) is retried as a lookup
+  once: a name the VFS cannot show (a symlink) is `-EEXIST` to create and `-ENOENT` to look up,
+  so a loop would never end. An existing file with `O_CREAT | O_EXCL` → `-EEXIST`; `O_EXCL`
+  alone is ignored (POSIX leaves it undefined, Linux ignores it). The new node then goes
+  through the usual checks (`O_TRUNC` on it is a no-op). No umask. libc: `open` reads its
+  `mode_t` with `va_arg` only with `O_CREAT`; `creat(path, mode)` = `open(path, O_WRONLY |
+  O_CREAT | O_TRUNC, mode)` (an existing file keeps its mode). Directories open (listed with
   `getdents`); reading one gives `-EISDIR`. `vfs_read`: a directory → `-EISDIR`, a node without
   a `read` op (character devices, read through their `file_ops`) → `-EINVAL`. A block device is
   read like a file: `lseek` works on it, since only `VFS_CHARDEV` is refused.
-- **`open(path, flags)`** (`sys_open`): the path copied into a `kmalloc`'d `VFS_PATH_MAX` (4096)
+- **`open(path, flags, mode)`** (`sys_open`, the mode passed on to `vfs_open`): the path copied into a `kmalloc`'d `VFS_PATH_MAX` (4096)
   buffer (`-E2BIG` → `-ENAMETOOLONG`, `-EFAULT`), freed on every path; `vfs_open` (`O_DIRECTORY`:
   a file gives `-ENOTDIR`, for `opendir`; without it directories and files both open);
   `process_fd_install` (lowest free fd, `-EMFILE` → `file_put`, which frees the file and puts the
@@ -1181,6 +1200,9 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   1024 of the disk), `ext2_group_t` (32), `ext2_inode_t` (the first 128 bytes of an inode),
   `ext2_dirent_t` (8-byte header + name), with `_Static_assert`s on sizes and offsets; read in
   place from cache buffers, little-endian like x86 (a big-endian arch needs conversions).
+  `ext2_super_t` names `s_min_extra_isize`/`s_want_extra_isize` (348, 350) between two unused
+  ranges; `EXT2_INODE_EXTRA_ISIZE` (128: a large inode's `i_extra_isize`), `EXT2_INDEX_FL`
+  (`0x1000`, an htree directory), `EXT2_DIRENT_SIZE(name_len)` (8 + the name, rounded up to 4).
 - **Mount** (`ext2_mount(disk, &root)`): copies the superblock from cache block 0, then
   `ext2_check_superblock`: no magic, revision ≠ 1, an incompat feature other than `FILETYPE` or no
   `FILETYPE`, blocks over 4 KiB (they would straddle cache buffers), an inode size not a power of
@@ -1189,7 +1211,10 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   `-EIO` (inconsistent). Compat features are ignored; a `ro_compat` one other than
   `SPARSE_SUPER`/`LARGE_FILE` (`EXT2_FEATURE_RO_COMPAT_KNOWN`), or a disk without a `write`
   op (nothing could be written back), makes the volume `read_only` (Linux's three-tier rule).
-  A group with more blocks or inodes per group than its one-block bitmap has bits → `-EIO`.
+  A group with more blocks or inodes per group than its one-block bitmap has bits → `-EIO`;
+  `s_first_ino` at or below the root (2) or past `s_inodes_count` → `-EIO`. `want_extra_isize`
+  for large inodes: `s_want_extra_isize`, at least `s_min_extra_isize`, 32 when both are 0
+  (an old `mke2fs`; Linux's default); 0 with 128-byte inodes.
   `max_file_size`: what 12 + p + p² + p³ blocks hold (p = block size / 4; 16 GiB with 1 KiB
   blocks), under 1 TiB (`i_blocks` is 32-bit 512-byte units), under 2 GiB without
   `LARGE_FILE`. `ext2_read_groups` copies the descriptor table (from block
@@ -1198,11 +1223,12 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   `mutex_init` of both locks, the free counts from the superblock, `vfs_dev_alloc`, and the
   root (`ext2_node_get(2)`; not a directory → `-EIO`).
   `ext2_volume_t` = the disk, `dev`, block size, block/inode counts, inodes per group, inode size,
-  groups, `first_data_block`, `blocks_per_group`, `read_only`, `max_file_size`, the group
+  groups, `first_data_block`, `blocks_per_group`, `first_ino`, `want_extra_isize`,
+  `read_only`, `max_file_size`, the group
   table, `free_blocks`/`free_inodes` and `allocation_lock` (the bitmaps, the group table's
   counters and those two), `lock` (the node cache) and the node hash (`nodes[64]`, `kzalloc`'d:
   empty). `ext2.c` is in sections, every function after what it calls: disk access, block
-  allocation, inodes and nodes, file blocks, directories, file data, mounting; only the ops'
+  allocation, inodes and nodes, inode allocation, file blocks, directories, file data, mounting; only the ops'
   prototypes come first (lookup → `ext2_node_get` → the ops tables → lookup).
 - **Disk access** (`ext2_block_get(volume, block, &lease, &data)`): the only way to the disk; block 0
   or past the end → `-EIO` (a corrupt pointer); otherwise `block_cache_get` of the cache block
@@ -1213,8 +1239,10 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   across another lease). `ext2_disk_write(volume, byte, data, count)`: any byte range of the
   file system through `block_write_bytes` (a short write → `-EIO`), for metadata outside the
   data blocks or smaller than one (the superblock is in block 0 with 4 KiB blocks, which
-  `ext2_block_get` refuses; descriptors; inode fields). `ext2_block_zero`: a whole block
-  zeroed in its buffer (no 4 KiB zero buffer on the stack).
+  `ext2_block_get` refuses; descriptors; inode fields). `ext2_block_zero`: a range of a block
+  zeroed in its buffer (no 4 KiB zero buffer on the stack). `ext2_disk_zero(volume, byte,
+  count)`: zeros anywhere, written from a static 128-byte zero array as many times as needed
+  (an inode slot is up to a block).
 - **Block allocation** (under `allocation_lock`): `ext2_bitmap_find(bitmap, from, bits)` (the
   first clear bit in `[from, bits)`, bit 0 = the lowest bit of byte 0, `-ENOSPC` if none),
   `ext2_bitmap_set(bitmap, bit, used)` (the byte read, the lease put, the byte written back;
@@ -1238,7 +1266,9 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   not own (links, times) are never rewritten. `ext2_inode_write(node)` (public, `fs/ext2.h`)
   takes the lock and calls it.
 - **Nodes** (`ext2_node_t` = `vfs_node_t` (as `base`) + `volume`, `ino`, a copy of `i_block[15]`,
-  `blocks` (`i_blocks`), `lock` (a mutex: `block[]`, `blocks` and `base.size`, held by `ext2_read` and `ext2_write`; lock order
+  `blocks` (`i_blocks`), `flags` (`i_flags`), `lock` (a mutex: `block[]`, `blocks` and
+  `base.size`, and a directory's records: held by `ext2_read`, `ext2_write`, `ext2_truncate`,
+  `ext2_readdir`, `ext2_lookup`'s walk and `ext2_create`; lock order
   `n->lock` → `volume->lock` → the cache's), `cache_link`; ops `ext2_ops`, or
   `ext2_read_only_ops` (no `write`: the VFS refuses write opens with `-EROFS`) on a `read_only`
   volume):
@@ -1252,6 +1282,22 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   large_file), `parent` (the directory it was found in, with a reference, so `..` stays valid;
   the root is its own parent). **Release:** unhash under the lock if still linked, `kfree`, then
   put the parent after the lock (that may release it in turn: a chain of releases up the tree).
+- **Inode allocation** (bitmaps and counts under `allocation_lock`):
+  `ext2_inode_alloc(volume, parent, directory, &ino)`: no free inodes → `-ENOSPC`; the parent's
+  group first, then each other group once (`groups` rounds: an inode has a goal group, not a
+  goal bit, so every group is searched from its start), groups with no free inodes skipped;
+  group 0 from bit `first_ino - 1` (a reserved inode is never given out, even with its bit
+  clear), the last group's real size; found → the bit set, both counters −1 (and
+  `bg_used_dirs_count` +1 for a directory), descriptor and counts written; ino = group ×
+  `inodes_per_group` + bit + 1 (inodes count from 1); nothing found → `-EIO`. The slot is not
+  touched: `ext2_inode_init(volume, ino, mode, links, time)` zeroes all `inode_size` bytes (a
+  reused slot keeps its last owner's block map, `i_dtime` and in-inode extended attributes,
+  `ext_attr` being on), writes an `ext2_inode_t` with the mode, the links and the three times,
+  and `want_extra_isize` at byte 128. `ext2_inode_free(volume, ino, directory)` (for W6d):
+  below `first_ino` or past the count → `-EIO`; `i_dtime` = 1 first, outside the lock (no
+  clock; non-zero means deleted to `e2fsck`, 0 an orphan), then the bit cleared (already
+  clear → `-EIO`), the counters +1 (`bg_used_dirs_count` −1), both written. On the test disk:
+  `first_ino` 11, the first free inode 29, `want_extra_isize` 32.
 - **`ext2_slot(volume, n, table, index, goal, create, &block)`:** one block pointer: `n->block[index]`
   (table 0) or entry `index` of table block `table`. With `create` and a 0 there:
   `ext2_block_alloc(*goal)`, linked at once (in `n->block[]`, or written into the table; if that
@@ -1262,15 +1308,33 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   blocks: +256 KiB, +64 MiB, +16 GiB); walks down one slot per level like a page table; without
   `create` 0 anywhere is a hole, with it every missing table and the data block are created on
   the way down; past the triple range `-EFBIG`.
-- **Directories:** `ext2_dir_walk(dir, visit, context)` runs `visit(entry, context)` (a function
-  pointer plus a context struct: a closure by hand) for every used entry, block by block, while
-  the block is leased; 0 goes on, 1 stops (the walk returns 1), -errno fails. Each record is
-  checked first: 8 bytes of header left in the block, `rec_len` ≥ 8, a multiple of 4, inside the
+- **Directories:** `ext2_dir_walk(dir, visit, context)` (the caller holds `dir->lock`) runs
+  `visit(entry, context)` (a function pointer plus a context struct: a closure by hand) for
+  every used entry, block by block, while the block is leased; 0 goes on, 1 stops (the walk
+  returns 1), -errno fails. Each record is checked first (`ext2_record_bad`, shared with
+  `ext2_dir_add`): 8 bytes of header left in the block, `rec_len` ≥ 8, a multiple of 4, inside the
   block, holding `8 + name_len` → else `-EIO` (never a loop or a read past the block). Inode 0
   (deleted) is skipped. `readdir` counts shown entries (regular files and directories: others
   are skipped and not counted, so indexes stay dense) up to `index`; `.` and `..` come from the
   disk. `lookup` compares `name_len` and the bytes (exact, case-sensitive), then calls `ext2_node_get`
   after the walk with no lease held; a match that is not a file or directory is `-ENOENT`.
+  `ext2_dir_add(dir, name, length, ino, file_type)` (lock held, the name checked absent): the
+  first record whose `rec_len` minus what it uses (`EXT2_DIRENT_SIZE(name_len)`, 0 for a
+  deleted one) holds the new record is split: it keeps what it uses, the new record takes the
+  rest, so the chain still ends at the block's end (the test disk's root: `sparse` at 396 has
+  `rec_len` 628 for 16 used bytes); written in place in the leased buffer between
+  `begin_write`/`end_write`. No room: a new block past the end (`ext2_file_block` with create:
+  zeroed, counted, a table if needed) holding one record that covers it, the size +1 block,
+  the inode stored. **Create** (`ext2_create(dir, name, length, mode, &child)`, the `create`
+  node op, writable volumes only): under the directory's lock; `EXT2_INDEX_FL` → `-EROFS`
+  (adding a record without updating the hash index would hide it from Linux's lookups); the
+  name found by a walk with `ext2_lookup_visit` (any type: `link`, a symlink, too) →
+  `-EEXIST`; `ext2_inode_alloc` (the directory's group), `ext2_inode_init(EXT2_S_IFREG | mode
+  & 07777, 1 link, the directory's mtime)`, then `ext2_dir_add` (`EXT2_FT_REG_FILE`): the name
+  last, so no record points at an unprepared inode; a failure of either gives the inode back.
+  Then `ext2_node_get` (its error returned; the file stays on the disk). The directory's
+  links and times stay (a file adds no `..`; no clock). `ext2_create` must not call
+  `ext2_lookup` (it takes the same, non-recursive lock).
 - **Read** (`ext2_read`): clamped to the size; per ext2 block: `ext2_file_block`, a hole → `memset` 0,
   else the slice copied from the leased block; errors are returned as is.
 - **Write** (`ext2_write`, under `n->lock`): 0 bytes → 0; at or past `max_file_size` → `-EFBIG`,
@@ -1345,7 +1409,18 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   block's tail and the hole read as zeros), to 0 (15 back); `small` to 5 and a write at 1100
   (5..1099 read as zeros), to 5 again; `holes` to 1 KiB (4 back) and its `end` written again;
   `empty` to 0 (14 back); the free count at the end = before the growth test + `long`'s 303;
-  `-EFBIG`, `-EISDIR`, `-EINVAL` for `/dev/hda`.
+  `-EFBIG`, `-EISDIR`, `-EINVAL` for `/dev/hda`. Create (`ext2_test_create`, in `grow/`):
+  `grow/new` with `O_RDWR | O_CREAT | O_EXCL` and `0640` is an empty file in inode 29 with
+  one link, the parent's mtime and `dev`; on the disk both free inode counts −1, bit 28 of
+  the inode bitmap set, `bg_used_dirs_count` unchanged, the raw slot: mode `0x8000 | 0640`,
+  size, `i_dtime`, `i_blocks` 0, zeros elsewhere, `i_extra_isize` 32 and zeros after it;
+  written and read back; `O_EXCL` again `-EEXIST`, `O_CREAT` alone opens it (inode 29, size
+  7); 90 more names (`f000`…, 12-byte records) give `grow/` a second block (size 2048,
+  `i_blocks` 4 on the disk), each looks up to inode 30 + i, 91 inodes and 2 blocks taken in
+  all; refusals: `grow/dir/` `-EISDIR`, a missing parent `-ENOENT`, `hello.txt/new`
+  `-ENOTDIR`, `/usr/new` and `/dev/new` `-EROFS`, `link` `-ENOENT` (`-EEXIST` with `O_EXCL`),
+  `docs` opens read-only and is `-EISDIR` for writing, a 256-byte name `-ENAMETOOLONG`, and
+  no inode taken by any of them. `fsck-test.sh` after a run: 120 inodes used, e2fsck clean.
 - **`ext2` test** (`user/tests/ext2`): the listing with types and the dots as inode 2, `link`
   absent, `hello.txt`'s `d_ino` = `st_ino`, `docs/deep/nested` lists `file.txt`, `/mnt/..` lists
   `usr`; `stat`: `/mnt` `0755`, inode 2, `nlink` 5, `st_dev` unlike `/` and `/dev`, `hello.txt`
@@ -1360,7 +1435,11 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   through a second fd, 3 bytes at 10000 (size 10003, the gap zeros); truncate on `grow/user`:
   `ftruncate` to 3003 (the kept bytes) and up to 5000 (zeros, the offset unmoved), `truncate`
   to 100, `O_RDONLY | O_TRUNC` ignored, `O_WRONLY | O_TRUNC` empties; `EINVAL` (a read-only
-  fd, a negative length, `/dev/null`), `EISDIR`, `EROFS` (the initrd), `ENOENT`;
+  fd, a negative length, `/dev/null`), `EISDIR`, `EROFS` (the initrd), `ENOENT`; create:
+  `grow/made` with `O_CREAT | O_EXCL` and `0600`, written, `stat` (`S_IFREG`, `0600`, 19 bytes,
+  one link), read back; `O_EXCL` again `EEXIST`; `creat` empties it and keeps `0600`;
+  `made/` `ENOTDIR`, `newdir/` `EISDIR`, a missing parent and `link` `ENOENT`, `creat` on the
+  initrd `EROFS`;
   `ENOENT` (`link`, missing), `ENOTDIR` (`hello.txt/`, `opendir` of a file, `getdents` on a
   file), `EISDIR`, `EBADF` (write); fd 3 free at the end.
 
@@ -1874,7 +1953,13 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     1); permissions stored, never checked; a directory with `EXT2_INDEX_FL` is `-EROFS` for
     changes; names 1–255 bytes, `.`/`..` never created or removed; new 256-byte inodes get
     `s_want_extra_isize`; syscalls numbered from 21. W6a (done): `ext2_truncate`,
-    `vfs_truncate`, `O_TRUNC`, `ftruncate`/`truncate`; the truncate tests. Next W6b.
+    `vfs_truncate`, `O_TRUNC`, `ftruncate`/`truncate`; the truncate tests. W6b (done):
+    `s_first_ino`/`s_want_extra_isize`, `ext2_inode_alloc`/`init`/`free`, `ext2_disk_zero`.
+    W6c (done): the `create` node op, `vfs_create`, `O_CREAT`/`O_EXCL` and `open`'s mode,
+    `creat`; `ext2_dir_add`, `ext2_create`, directories walked under their lock; the create
+    tests. Next W6d: `unlink` (a record removed by growing the previous one's `rec_len`;
+    the inode's blocks and the inode freed at the last node put once its links are 0) and
+    `O_APPEND`.
     Overall: inode allocation (the inode bitmap, `free_inodes`, `bg_used_dirs_count`),
     `O_CREAT`/`O_TRUNC`/`O_EXCL`, `unlink`, `mkdir`, `rmdir`, directory entries inserted in a
     record's slack and removed by growing the previous `rec_len`, truncate (frees blocks: the
@@ -2085,8 +2170,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `getdents` fills at most a page per call; `d_type` is `DT_DIR`/`DT_REG`/`DT_CHR`/`DT_BLK`
   (no symlinks, FIFOs or sockets yet). The `dirs` test hard-codes the root's layout (`bin`, `dev`, `mnt`, `sbin`, `usr`).
 - ext2 (each item becomes work when something needs it):
-  - no creating, deleting or truncating files (no inode allocation, no directory entry
-    changes: W6), so files only grow; times are never updated (no clock); `s_mnt_count`,
+  - no deleting files and no making or removing directories yet (W6d, W6e); times are never
+    updated (no clock), so a created file gets its directory's mtime and the directory's own
+    times stay; no umask; permissions stored, never checked; `s_mnt_count`,
     `s_mtime` and `s_wtime` are not written; a not-clean or erroneous volume only warns; the
     halt hook marks the volume clean before the cache sync, and the sync may sleep (a mutex),
     so another process could still write between the two (nothing stops other processes at
@@ -2098,7 +2184,15 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
     `e2fsck`; no ordering of metadata writes (consistent only after a sync, ext2's model); a
     new data block is zeroed even when the write fills all of it; no full-disk test yet
     (W6f); truncate frees block by block (one bitmap write and two counter writes each, no
-    batching) and walks every entry of a table it enters;
+    batching) and walks every entry of a table it enters; inodes are first-fit from the
+    parent's group (no Orlov spreading of directories across groups, which matters only on
+    multi-group disks);
+  - directories: a create walks the directory twice (the name check, then the room search),
+    linearly; a new block is only ever added at the end (a hole in a directory is skipped,
+    never filled); if writing the new block's record fails, the block stays linked with the
+    size unchanged (`e2fsck` mends it); a create whose `ext2_node_get` fails returns the
+    error though the file exists; the directory's lock serializes every lookup, listing and
+    create in it;
   - one node `lock` for reads and writes: two reads of a file wait for each other (an rwlock
     would let them share);
   - symlinks, device files, FIFOs and sockets on the disk are not shown or found (no VFS node
