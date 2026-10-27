@@ -1,2 +1,3 @@
 hosted_local_sources := \
-open.c
+open.c \
+creat.c
