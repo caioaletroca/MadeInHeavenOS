@@ -6,6 +6,8 @@
 #define O_WRONLY 1
 #define O_RDWR 2
 #define O_ACCMODE 3
+#define O_CREAT 0x40  // open(): create the file if it does not exist (Linux's 0100)
+#define O_EXCL 0x80   // with O_CREAT: fail with EEXIST if it does (Linux's 0200)
 #define O_TRUNC 0x200 // open(): truncate a regular file opened for writing to 0 (Linux's 01000)
 #define O_DIRECTORY 0x10000
 

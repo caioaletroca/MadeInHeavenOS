@@ -508,7 +508,7 @@ static void block_test_node_writes(block_device_t *dev, vfs_node_t *node)
     if (vfs_write(dir, bytes, 1, 0) != -EISDIR)
         panic("Block self-test: a write to /dev did not return -EISDIR\n");
     struct file *file;
-    if (vfs_open("/dev", O_WRONLY, &file) != -EISDIR || vfs_open("/dev", O_RDWR, &file) != -EISDIR)
+    if (vfs_open("/dev", O_WRONLY, 0, &file) != -EISDIR || vfs_open("/dev", O_RDWR, 0, &file) != -EISDIR)
         panic("Block self-test: opening /dev for writing did not return -EISDIR\n");
     vfs_node_put(dir);
 
@@ -564,14 +564,14 @@ static void block_test_node(block_device_t *dev)
     struct file *file;
     for (size_t i = 0; i < sizeof(opens) / sizeof(opens[0]); i++)
     {
-        ret = vfs_open(path, opens[i].flags, &file);
+        ret = vfs_open(path, opens[i].flags, 0, &file);
         if (ret != 0)
             panic("Block self-test: opening %s with flags %d failed: %d\n", path, opens[i].flags, ret);
         if (file->node != node || file->flags != opens[i].access)
             panic("Block self-test: %s opened with the wrong node or flags (%u)\n", path, file->flags);
         file_put(file);
     }
-    if (vfs_open(path, O_ACCMODE, &file) != -EINVAL)
+    if (vfs_open(path, O_ACCMODE, 0, &file) != -EINVAL)
         panic("Block self-test: opening %s with access mode 3 did not return -EINVAL\n", path);
 
     uint8_t *sectors = kmalloc(LONG_READ * BLOCK_SECTOR_SIZE);

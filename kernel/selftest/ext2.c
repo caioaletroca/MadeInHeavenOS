@@ -339,10 +339,10 @@ static void ext2_test_read(void)
     // Files open for writing (the disk's ro_compat features are all known), directories
     // open, reading one is EISDIR
     struct file *file;
-    if (vfs_open(MNT "/hello.txt", O_RDWR, &file) != 0 || file->flags != (FILE_READ | FILE_WRITE))
+    if (vfs_open(MNT "/hello.txt", O_RDWR, 0, &file) != 0 || file->flags != (FILE_READ | FILE_WRITE))
         panic("ext2 self-test: opening hello.txt for reading and writing failed\n");
     file_put(file);
-    if (vfs_open(MNT "/docs", O_RDONLY | O_DIRECTORY, &file) != 0)
+    if (vfs_open(MNT "/docs", O_RDONLY | O_DIRECTORY, 0, &file) != 0)
         panic("ext2 self-test: opening /mnt/docs as a directory failed\n");
     if (vfs_read(file->node, &byte, 1, 0) != -EISDIR)
         panic("ext2 self-test: reading a directory did not return -EISDIR\n");

@@ -342,7 +342,7 @@ void console_init(const keymap_t *map)
         panic("console: failed to register the console device\n");
 
     file_t *c;
-    if (vfs_open("/dev/console", O_RDWR, &c) != 0)
+    if (vfs_open("/dev/console", O_RDWR, 0, &c) != 0)
         panic("console: failed to open the console file\n");
 
     console = c;

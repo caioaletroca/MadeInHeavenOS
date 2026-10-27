@@ -374,6 +374,14 @@ static long vfs_file_read(file_t *file, char *buffer, size_t count)
     return n;
 }
 
+/**
+ * Write data to a file.
+ *
+ * @param file The file object to write to.
+ * @param buffer The buffer containing the data to write.
+ * @param count The number of bytes to write.
+ * @return The number of bytes written on success, or a negative error code on failure.
+ */
 static long vfs_file_write(file_t *file, const char *buffer, size_t count)
 {
     guard(mutex, &file->position_lock);
@@ -391,13 +399,82 @@ static const file_ops_t vfs_file_ops = {
     .release = NULL,
 };
 
-int vfs_open(const char *path, int flags, file_t **out)
+/**
+ * Create a regular file at a path whose last component does not exist yet: the parent
+ * is looked up (through mounts) and asked to create the name in it.
+ *
+ * @param path The absolute path of the file to create.
+ * @param mode The permissions for the new file (07777).
+ * @param out Receives the new file's node, as a new reference.
+ * @return 0, -EISDIR for a path ending in '/', -ENAMETOOLONG, the parent's lookup error,
+ * -ENOTDIR, -EROFS (the parent's file system cannot create), -EEXIST if the name was
+ * made meanwhile, or the file system's error.
+ */
+static int vfs_create(const char *path, uint32_t mode, vfs_node_t **out)
 {
-    if (flags & ~(O_ACCMODE | O_DIRECTORY | O_TRUNC))
+    size_t end = strlen(path);
+    if (path[end - 1] == '/')
+        return -EISDIR; // "create a directory?" (Linux's answer too); vfs_open's lookup failed, so the path is "/x" or longer
+
+    // The last component is the name (pointing into path); the rest, its trailing '/' kept, is the parent
+    size_t start = end;
+    while (start > 0 && path[start - 1] != '/')
+        start--;
+
+    if (end - start > VFS_NAME_MAX)
+        return -ENAMETOOLONG;
+
+    char *parent_path = kmalloc(start + 1);
+    if (parent_path == NULL)
+        return -ENOMEM;
+    memcpy(parent_path, path, start);
+    parent_path[start] = '\0';
+
+    vfs_node_t *dir;
+    int ret = vfs_lookup(parent_path, &dir);
+    kfree(parent_path);
+    if (ret < 0)
+        return ret;
+
+    if (dir->type != VFS_DIRECTORY)
+    {
+        vfs_node_put(dir);
+        return -ENOTDIR;
+    }
+
+    if (dir->ops->create == NULL)
+    {
+        vfs_node_put(dir);
+        return -EROFS;
+    }
+
+    // The new node holds its own reference to the parent (its "..")
+    ret = dir->ops->create(dir, path + start, end - start, mode & 07777, out);
+    vfs_node_put(dir);
+    return ret;
+}
+
+int vfs_open(const char *path, int flags, uint32_t mode, file_t **out)
+{
+    if (flags & ~(O_ACCMODE | O_DIRECTORY | O_TRUNC | O_CREAT | O_EXCL))
         return -EINVAL;
 
     vfs_node_t *node;
     int ret = vfs_lookup(path, &node);
+    if (ret == -ENOENT && (flags & O_CREAT))
+    {
+        ret = vfs_create(path, mode, &node);
+
+        // Someone made it between our lookup and the create: without O_EXCL, open theirs. Only
+        // once: a name the VFS cannot show (a symlink) is -EEXIST to create and -ENOENT to lookup
+        if (ret == -EEXIST && !(flags & O_EXCL))
+            ret = vfs_lookup(path, &node);
+    }
+    else if (ret == 0 && (flags & O_CREAT) && (flags & O_EXCL))
+    {
+        vfs_node_put(node);
+        return -EEXIST;
+    }
     if (ret < 0)
         return ret;
 

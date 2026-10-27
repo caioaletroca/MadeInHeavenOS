@@ -67,6 +67,10 @@ typedef struct vfs_node_ops
     // Directory: the child called name[0..length) (not '\0'-terminated), as a new reference
     int (*lookup)(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
 
+    // Directory: a new, empty regular file called name[0..length) with permissions mode (07777),
+    // as a new reference; -EEXIST if the name is taken (whatever its type)
+    int (*create)(vfs_node_t *dir, const char *name, size_t length, uint32_t mode, vfs_node_t **child);
+
     // File: copies up to count bytes from offset; returns the count (0 at the end) or -errno
     long (*read)(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
 
@@ -236,9 +240,10 @@ int vfs_read_file(const char *path, void **data, size_t *size);
  *
  * @param path The path to the file.
  * @param flags The flags for opening the file.
+ * @param mode The permissions of a file created by O_CREAT (07777); ignored otherwise.
  * @param file Pointer to store the resulting file object.
  * @return 0 on success, -errno on failure.
  */
-int vfs_open(const char *path, int flags, struct file **file);
+int vfs_open(const char *path, int flags, uint32_t mode, struct file **file);
 
 #endif /* _FS_VFS_H_ */

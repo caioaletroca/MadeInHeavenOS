@@ -219,9 +219,9 @@ static const char *const root_names[] = {".", "..", "bin", "dev", "mnt", "sbin",
 static void vfs_test_getdents(void)
 {
     struct file *file;
-    if (vfs_open("/sbin/init", O_RDONLY | O_DIRECTORY, &file) != -ENOTDIR)
+    if (vfs_open("/sbin/init", O_RDONLY | O_DIRECTORY, 0, &file) != -ENOTDIR)
         panic("VFS self-test: O_DIRECTORY on a file did not return -ENOTDIR\n");
-    if (vfs_open("/", O_RDONLY | O_DIRECTORY, &file) != 0)
+    if (vfs_open("/", O_RDONLY | O_DIRECTORY, 0, &file) != 0)
         panic("VFS self-test: opening / with O_DIRECTORY failed\n");
 
     // Zeroed, like sys_getdents does; the byte after `size` is a canary
@@ -321,7 +321,7 @@ static void vfs_test_stat(void)
 
     // An open file is its lookup's node: what fstat reports is that node's stat
     struct file *file;
-    if (vfs_open(HELLO, O_RDONLY, &file) != 0)
+    if (vfs_open(HELLO, O_RDONLY, 0, &file) != 0)
         panic("VFS self-test: opening %s failed\n", HELLO);
     vfs_node_t *node = vfs_expect(HELLO, VFS_FILE);
     if (file->node != node)
@@ -430,7 +430,7 @@ static void vfs_test_mount(void)
 static struct file *vfs_expect_device_open(const char *path, int flags, unsigned int access)
 {
     struct file *file;
-    int ret = vfs_open(path, flags, &file);
+    int ret = vfs_open(path, flags, 0, &file);
     if (ret != 0)
         panic("VFS self-test: opening %s (flags %d) failed: %d\n", path, flags, ret);
     if (file->flags != access || file->node == NULL || file->node->type != VFS_CHARDEV ||
@@ -484,9 +484,9 @@ static void vfs_test_devices(void)
         panic("VFS self-test: /dev/null or /dev/zero has an ioctl\n");
 
     // A device is no directory; the access mode 3 means nothing
-    if (vfs_open("/dev/null", O_RDONLY | O_DIRECTORY, &file) != -ENOTDIR)
+    if (vfs_open("/dev/null", O_RDONLY | O_DIRECTORY, 0, &file) != -ENOTDIR)
         panic("VFS self-test: O_DIRECTORY on /dev/null did not return -ENOTDIR\n");
-    if (vfs_open("/dev/null", O_ACCMODE, &file) != -EINVAL)
+    if (vfs_open("/dev/null", O_ACCMODE, 0, &file) != -EINVAL)
         panic("VFS self-test: access mode 3 on /dev/null did not return -EINVAL\n");
     vfs_dirent_t entry;
     if (vfs_readdir(null, 0, &entry) != -ENOTDIR)
@@ -495,7 +495,7 @@ static void vfs_test_devices(void)
     vfs_expect_error("/dev/null/", -ENOTDIR);
 
     // Initrd files stay read-only; a missing path is ENOENT before any access check
-    if (vfs_open(HELLO, O_WRONLY, &file) != -EROFS || vfs_open("/nope", O_WRONLY, &file) != -ENOENT)
+    if (vfs_open(HELLO, O_WRONLY, 0, &file) != -EROFS || vfs_open("/nope", O_WRONLY, 0, &file) != -ENOENT)
         panic("VFS self-test: write access outside /dev gave the wrong error\n");
 
     // Registration refuses duplicates and bad names, and changes nothing then

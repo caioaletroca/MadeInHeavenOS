@@ -380,9 +380,10 @@ static long sys_getppid(void)
  *
  * @param path The user-space pointer to the file path.
  * @param flags The flags for opening the file (e.g., O_RDONLY).
+ * @param mode The permissions of a file created by O_CREAT; ignored otherwise.
  * @return The file descriptor on success, or a negative error code on failure.
  */
-static long sys_open(uintptr_t path, int flags)
+static long sys_open(uintptr_t path, int flags, uint32_t mode)
 {
     process_t *current = scheduler_current()->process;
 
@@ -392,7 +393,7 @@ static long sys_open(uintptr_t path, int flags)
         return error;
 
     file_t *file = NULL;
-    long ret = vfs_open(buffer, flags, &file);
+    long ret = vfs_open(buffer, flags, mode, &file);
 
     kfree(buffer);
     if (ret < 0)
@@ -649,7 +650,7 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
     case SYS_GETPPID:
         return sys_getppid();
     case SYS_OPEN:
-        return sys_open(arg0, (int)arg1);
+        return sys_open(arg0, (int)arg1, (uint32_t)arg2);
     case SYS_LSEEK:
         return sys_lseek((unsigned long)arg0, (long)arg1, (int)arg2);
     case SYS_GETDENTS:
