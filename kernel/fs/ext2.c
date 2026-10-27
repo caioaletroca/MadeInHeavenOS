@@ -26,7 +26,9 @@ typedef struct ext2_volume
     uint32_t blocks_per_group;
     uint32_t inodes_count;
     uint32_t inodes_per_group;
-    uint32_t inode_size; // bytes per inode in the table (128 or more)
+    uint32_t first_ino;        // s_first_ino: the first inode files may get (the ones below are reserved)
+    uint16_t want_extra_isize; // new large inodes' i_extra_isize (0 with 128-byte inodes)
+    uint32_t inode_size;       // bytes per inode in the table (128 or more)
     uint32_t groups;
     bool read_only;            // an unknown ro_compat feature: writing could damage the disk
     uint16_t state;            // s_state as it is on the disk (EXT2_VALID_FS cleared while mounted writable)
@@ -47,13 +49,15 @@ typedef struct ext2_node
     uint32_t ino;
     uint32_t block[EXT2_BLOCK_POINTERS]; // copy of the inode's i_block
     uint32_t blocks;                     // i_blocks: 512-byte units the file owns, indirect tables included
-    mutex_t lock;                        // block[], blocks and base.size: held by reads and writes of the file
+    uint32_t flags;                      // i_flags: inode flags (EXT2_INDEX_FL for hashed directories)
+    mutex_t lock;                        // block[], blocks and base.size, and a directory's records: held by reads, writes, walks and creates
     hlist_node_t cache_link;             // in volume->nodes, under volume->lock
 } ext2_node_t;
 
 #define EXT2_NODE(n) list_container(n, ext2_node_t, base)
 
 static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
+static int ext2_create(vfs_node_t *dir, const char *name, size_t length, uint32_t mode, vfs_node_t **child);
 static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
 static long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint64_t offset);
 static int ext2_truncate(vfs_node_t *file, uint64_t size);
@@ -66,6 +70,7 @@ static const vfs_node_ops_t ext2_ops = {
     .write = ext2_write,
     .readdir = ext2_readdir,
     .truncate = ext2_truncate,
+    .create = ext2_create,
     .release = ext2_release,
 };
 
@@ -170,6 +175,29 @@ static int ext2_disk_write(ext2_volume_t *volume, uint64_t byte, const void *dat
         return ret;
     if (ret != (long)count)
         return -EIO;
+    return 0;
+}
+
+/**
+ * @brief Zero out a range of bytes on disk
+ *
+ * @param volume: The ext2 volume
+ * @param byte: The starting byte offset
+ * @param count: The number of bytes to zero
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_disk_zero(ext2_volume_t *volume, uint64_t byte, size_t count)
+{
+    static const uint8_t zeros[128];
+    while (count > 0)
+    {
+        size_t chunk = MIN(count, sizeof(zeros));
+        int ret = ext2_disk_write(volume, byte, zeros, chunk);
+        if (ret < 0)
+            return ret;
+        byte += chunk;
+        count -= chunk;
+    }
     return 0;
 }
 
@@ -478,6 +506,7 @@ static int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent
     n->volume = volume;
     n->ino = ino;
     n->blocks = inode.i_blocks;
+    n->flags = inode.i_flags;
     memcpy(n->block, inode.i_block, sizeof(n->block));
     mutex_init(&n->lock);
     hlist_insert(bucket, &n->cache_link);
@@ -513,6 +542,158 @@ static void ext2_release(vfs_node_t *node)
 
     if (parent != NULL)
         vfs_node_put(parent);
+}
+
+// ---- Inode allocation: the groups' inode bitmaps, new inodes' slots, under allocation_lock ----
+
+/**
+ * @brief Take a free inode: in the parent's group first, then the others
+ *
+ * Every group is searched once from its start (inodes have a goal group, not a goal bit);
+ * group 0 from s_first_ino, so a reserved inode is never given out even if its bit is clear.
+ * Only the bitmap and the counts change: ext2_inode_init prepares the slot.
+ *
+ * @param volume: The ext2 filesystem
+ * @param parent: The directory the new inode will be linked into
+ * @param directory: The new inode is a directory (counted in bg_used_dirs_count)
+ * @param out: Receives the inode number
+ * @return 0, -ENOSPC when no inode is free, -EIO if the counters and bitmaps disagree, or the disk's error
+ */
+static int ext2_inode_alloc(ext2_volume_t *volume, uint32_t parent, bool directory, uint32_t *out)
+{
+    guard(mutex, &volume->allocation_lock);
+
+    if (volume->free_inodes == 0)
+        return -ENOSPC;
+
+    uint32_t start = (parent - 1) / volume->inodes_per_group;
+
+    for (uint32_t i = 0; i < volume->groups; i++)
+    {
+        uint32_t g = (start + i) % volume->groups;
+        uint32_t from = g == 0 ? volume->first_ino - 1 : 0; // inodes 1..first_ino-1 are reserved
+
+        if (volume->group_table[g].bg_free_inodes_count == 0)
+            continue;
+
+        uint32_t bits = MIN(volume->inodes_per_group, volume->inodes_count - g * volume->inodes_per_group);
+
+        long bit = ext2_bitmap_find(volume, volume->group_table[g].bg_inode_bitmap, from, bits);
+        if (bit == -ENOSPC)
+            continue;
+        else if (bit < 0)
+            return bit;
+
+        int ret = ext2_bitmap_set(volume, volume->group_table[g].bg_inode_bitmap, (uint32_t)bit, true);
+        if (ret == 0)
+        {
+            volume->group_table[g].bg_free_inodes_count--;
+            volume->free_inodes--;
+            if (directory)
+                volume->group_table[g].bg_used_dirs_count++;
+
+            ret = ext2_group_store(volume, g);
+        }
+        if (ret == 0)
+            ret = ext2_super_store_counts(volume);
+
+        if (ret < 0)
+            return ret;
+
+        *out = g * volume->inodes_per_group + (uint32_t)bit + 1; // inodes count from 1, bits from 0
+
+        return 0;
+    }
+
+    return -EIO; // free_inodes said some were free, but no bitmap has one
+}
+
+/**
+ * @brief Make a freshly allocated inode's slot a new, empty inode: everything zeroed,
+ * then the type and permissions, the link count, the times, and the extra area's size
+ *
+ * The whole slot is zeroed: a reused one still holds its last owner's block map, i_dtime,
+ * and past byte 128 its extended attributes. Size, block map and i_blocks stay 0.
+ *
+ * @param volume: The ext2 filesystem
+ * @param ino: The inode (from ext2_inode_alloc)
+ * @param mode: EXT2_S_IF* | permissions
+ * @param links: i_links_count (1 for a file, 2 for a directory: its name and its ".")
+ * @param time: All three times (no clock: the caller passes its parent's mtime)
+ * @return 0 on success, negative error code on failure
+ */
+static int ext2_inode_init(ext2_volume_t *volume, uint32_t ino, uint16_t mode, uint16_t links, uint32_t time)
+{
+    uint64_t byte = ext2_inode_byte(volume, ino);
+
+    int ret = ext2_disk_zero(volume, byte, volume->inode_size);
+
+    if (ret == 0)
+    {
+        ext2_inode_t inode = {
+            .i_mode = mode,
+            .i_links_count = links,
+            .i_mtime = time,
+            .i_atime = time,
+            .i_ctime = time};
+
+        ret = ext2_disk_write(volume, byte, &inode, sizeof(inode));
+    }
+    // Large inodes: how much of the area after byte 128 is valid (all zeros here: no extra times, no crtime)
+    if (ret == 0 && volume->want_extra_isize != 0)
+        ret = ext2_disk_write(volume, byte + EXT2_INODE_EXTRA_ISIZE, &volume->want_extra_isize, sizeof(volume->want_extra_isize));
+
+    return ret;
+}
+
+/**
+ * @brief Give an inode back: marked deleted in its slot (i_dtime), then its bit and the counts
+ *
+ * The caller has freed its blocks (truncate to 0) and its links are 0. i_dtime is written
+ * first, outside the lock (nobody else writes this slot): a deleted inode still marked
+ * allocated is a leak, never two owners.
+ *
+ * @param volume: The ext2 filesystem
+ * @param ino: The inode
+ * @param directory: It was a directory (bg_used_dirs_count)
+ * @return 0, -EIO for a reserved or out-of-range inode or one already free, or the disk's error
+ */
+static int ext2_inode_free(ext2_volume_t *volume, uint32_t ino, bool directory)
+{
+    if (ino < volume->first_ino || ino > volume->inodes_count)
+        return -EIO;
+
+    uint64_t byte = ext2_inode_byte(volume, ino);
+
+    uint32_t dtime = 1; // "deleted" for e2fsck (0 would be an orphan); no clock, so 1970-01-01 00:00:01
+    int ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_dtime), &dtime, sizeof(uint32_t));
+    if (ret < 0)
+        return ret;
+
+    scoped_guard(mutex, &volume->allocation_lock)
+    {
+        uint32_t bit = (ino - 1) % volume->inodes_per_group;
+        uint32_t g = (ino - 1) / volume->inodes_per_group;
+
+        ret = ext2_bitmap_set(volume, volume->group_table[g].bg_inode_bitmap, bit, false);
+        if (ret == 0)
+        {
+            volume->group_table[g].bg_free_inodes_count++;
+            volume->free_inodes++;
+
+            if (directory)
+                volume->group_table[g].bg_used_dirs_count--;
+        }
+        if (ret == 0)
+            ret = ext2_group_store(volume, g);
+        if (ret == 0)
+            ret = ext2_super_store_counts(volume);
+    }
+
+    if (ret < 0)
+        return ret;
+
+    return 0;
 }
 
 // ---- File blocks: a file's logical block number to its block on the disk, through the tables ----
@@ -705,6 +886,26 @@ static int ext2_truncate_branch(ext2_volume_t *volume, ext2_node_t *node, uint32
 // ---- Directories: walking the records of a directory's blocks ----
 
 /**
+ * @brief Check if an ext2 directory record is bad
+ *
+ * @param volume The ext2 volume
+ * @param data The block data containing the directory entry
+ * @param offset The offset of the directory entry within the block
+ * @return true if the record is bad, false otherwise
+ */
+static bool ext2_record_bad(const ext2_volume_t *volume, const uint8_t *data, uint32_t offset)
+{
+    if (volume->block_size - offset < sizeof(ext2_dirent_t))
+        return true;
+
+    const ext2_dirent_t *e = (const ext2_dirent_t *)(data + offset);
+    return e->rec_len < sizeof(ext2_dirent_t) ||
+           e->rec_len % 4 != 0 ||
+           e->rec_len > volume->block_size - offset ||
+           sizeof(ext2_dirent_t) + e->name_len > e->rec_len;
+}
+
+/**
  * @brief Convert an ext2 directory entry type to a VFS node type
  *
  * @param file_type: The ext2 directory entry type
@@ -737,6 +938,8 @@ typedef int (*ext2_visit_t)(const ext2_dirent_t *entry, void *context);
 /**
  * @brief Walk through the entries of a directory
  *
+ * The caller holds dir->lock: a create may split a record or add a block meanwhile.
+ *
  * @param dir: The ext2 directory node
  * @param visit: The visit function to call for each directory entry
  * @param context: The context to pass to the visit function
@@ -766,24 +969,14 @@ static int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context)
         uint32_t rec_len;
         for (uint32_t offset = 0; offset < volume->block_size; offset += rec_len)
         {
-            const ext2_dirent_t *e = (const ext2_dirent_t *)(data + offset);
-
-            // Check before trusting the disk: room for a header, then a rec_len that
-            // moves forward (0 would loop forever), stays in the block and holds the name
-            bool corrupt = volume->block_size - offset < sizeof(ext2_dirent_t);
-            if (!corrupt)
-            {
-                rec_len = e->rec_len;
-                corrupt = rec_len < sizeof(ext2_dirent_t) || rec_len % 4 != 0 ||
-                          rec_len > volume->block_size - offset ||
-                          sizeof(ext2_dirent_t) + e->name_len > rec_len;
-            }
-            if (corrupt)
+            if (ext2_record_bad(volume, data, offset))
             {
                 block_cache_put(lease);
                 return -EIO;
             }
 
+            const ext2_dirent_t *e = (const ext2_dirent_t *)(data + offset);
+            rec_len = e->rec_len;
             if (e->inode == 0)
                 continue; // a deleted entry (or an empty block's placeholder)
 
@@ -799,6 +992,100 @@ static int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context)
     }
 
     return 0;
+}
+
+/**
+ * @brief Link a name to an inode in a directory: in the first record with room after what it
+ * uses (split off it), or in a new block at the end holding one record that covers all of it
+ *
+ * The caller holds dir->lock and has checked the name is not there.
+ *
+ * @param dir: The ext2 directory node
+ * @param name: The name of the new entry
+ * @param length: The length of the name
+ * @param ino: The inode number of the new entry
+ * @param file_type: The file type of the new entry
+ * @return 0 on success, -EIO for a corrupt record, or the error of a new block
+ */
+static int ext2_dir_add(ext2_node_t *dir, const char *name, size_t length, uint32_t ino, uint8_t file_type)
+{
+    ext2_volume_t *volume = dir->volume;
+    uint32_t need = EXT2_DIRENT_SIZE(length);
+    uint64_t blocks = dir->base.size / volume->block_size;
+
+    for (uint64_t i = 0; i < blocks; i++)
+    {
+        uint32_t block;
+        int ret = ext2_file_block(volume, dir, i, NULL, false, &block);
+        if (ret < 0)
+            return ret;
+        if (block == 0)
+            continue;
+
+        block_cache_buf_t *lease;
+        const uint8_t *data;
+        ret = ext2_block_get(volume, block, &lease, &data);
+        if (ret < 0)
+            return ret;
+
+        uint32_t rec_len;
+        for (uint32_t offset = 0; offset < volume->block_size; offset += rec_len)
+        {
+            if (ext2_record_bad(volume, data, offset))
+            {
+                block_cache_put(lease);
+                return -EIO;
+            }
+
+            const ext2_dirent_t *e = (const ext2_dirent_t *)(data + offset);
+            rec_len = e->rec_len;
+
+            uint32_t used = e->inode != 0 ? EXT2_DIRENT_SIZE(e->name_len) : 0; // a deleted record uses nothing
+            if (rec_len - used < need)
+                continue;
+
+            // The writable address of this record (data is const: the same trick as ext2_block_write)
+            uint8_t *record = lease->data + (data - lease->data) + offset;
+            ext2_dirent_t *added = (ext2_dirent_t *)(record + used);
+
+            block_cache_begin_write(lease);
+            if (used != 0)
+                ((ext2_dirent_t *)record)->rec_len = used; // the old record keeps only what it uses
+            added->inode = ino;
+            added->rec_len = rec_len - used; // the rest, so the chain still ends at the block's end
+            added->name_len = (uint8_t)length;
+            added->file_type = file_type;
+            memcpy(added->name, name, length);
+            block_cache_end_write(lease);
+
+            block_cache_put(lease);
+            return 0;
+        }
+
+        block_cache_put(lease);
+    }
+
+    // No record has room: a new block at the end, holding one record that covers all of it
+    uint32_t block;
+    int ret = ext2_file_block(volume, dir, blocks, NULL, true, &block); // allocated zeroed, counted in dir->blocks
+    if (ret < 0)
+        return ret;
+
+    uint8_t record[sizeof(ext2_dirent_t) + VFS_NAME_MAX] = {0};
+    ext2_dirent_t *added = (ext2_dirent_t *)record;
+
+    added->inode = ino;
+    added->rec_len = (uint16_t)volume->block_size;
+    added->name_len = (uint8_t)length;
+    added->file_type = file_type;
+    memcpy(added->name, name, length);
+
+    ret = ext2_block_write(volume, block, 0, record, need);
+    if (ret < 0)
+        return ret;
+
+    dir->base.size += volume->block_size;
+    return ext2_inode_store(dir);
 }
 
 /**
@@ -848,6 +1135,8 @@ static int ext2_readdir_visit(const ext2_dirent_t *e, void *context)
  */
 static int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
 {
+    guard(mutex, &EXT2_NODE(dir)->lock);
+
     ext2_readdir_context_t ctx = {
         .index = index,
         .count = 0,
@@ -904,7 +1193,11 @@ static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_nod
         .name = name,
         .length = length,
     };
-    int ret = ext2_dir_walk(EXT2_NODE(dir), ext2_lookup_visit, &ctx);
+    int ret;
+    scoped_guard(mutex, &EXT2_NODE(dir)->lock)
+    {
+        ret = ext2_dir_walk(EXT2_NODE(dir), ext2_lookup_visit, &ctx);
+    }
     if (ret < 0)
         return ret;
 
@@ -914,6 +1207,57 @@ static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_nod
 
     // After the walk, with no lease held: ext2_node_get takes volume->lock and may read the disk
     return ext2_node_get(EXT2_NODE(dir)->volume, ctx.ino, dir, child);
+}
+
+/**
+ * @brief A new, empty regular file in a directory: an inode taken and prepared, then its name
+ *
+ * The name comes last, so no record ever points at an unprepared inode; if it cannot be
+ * added, the inode goes back. The directory's links and mtime stay (no "..", no clock).
+ *
+ * @param dir: The directory VFS node
+ * @param name: The name of the new file (not '\0'-terminated)
+ * @param length: The length of the name
+ * @param mode: The permissions (07777)
+ * @param child: Receives the new file's node, as a new reference
+ * @return 0, -EEXIST if the name is taken (whatever its type), -EROFS for an indexed directory, or -errno
+ */
+static int ext2_create(vfs_node_t *dir, const char *name, size_t length, uint32_t mode, vfs_node_t **child)
+{
+    ext2_node_t *node = EXT2_NODE(dir);
+    ext2_volume_t *volume = node->volume;
+
+    guard(mutex, &node->lock);
+
+    if (node->flags & EXT2_INDEX_FL)
+        return -EROFS; // a hashed directory: a record added without updating its index would hide from Linux's lookups
+
+    ext2_lookup_context_t ctx = {
+        .name = name,
+        .length = length,
+    };
+    int ret = ext2_dir_walk(node, ext2_lookup_visit, &ctx);
+    if (ret < 0)
+        return ret;
+    if (ret > 0)
+        return -EEXIST; // whatever its type: a second record with the name would be corruption
+
+    uint32_t ino = 0;
+    ret = ext2_inode_alloc(volume, node->ino, false, &ino);
+    if (ret < 0)
+        return ret;
+
+    ret = ext2_inode_init(volume, ino, EXT2_S_IFREG | (mode & 07777), 1, (uint32_t)dir->mtime);
+    if (ret == 0)
+        ret = ext2_dir_add(node, name, length, ino, EXT2_FT_REG_FILE);
+
+    if (ret < 0)
+    {
+        ext2_inode_free(volume, ino, false);
+        return ret;
+    }
+
+    return ext2_node_get(volume, ino, dir, child);
 }
 
 // ---- File data ----
@@ -1173,6 +1517,10 @@ static int ext2_check_superblock(const ext2_super_t *superblock, const block_dev
     if (superblock->s_blocks_per_group > 8 * block_size || superblock->s_inodes_per_group > 8 * block_size)
         return -EIO;
 
+    // Reserved inodes are below s_first_ino; the root (2) must be one of them, and some must be left
+    if (superblock->s_first_ino <= EXT2_ROOT_INO || superblock->s_first_ino > superblock->s_inodes_count)
+        return -EIO;
+
     // Groups cover the blocks after s_first_data_block (rounded up); together they must hold every inode
     uint32_t groups = (superblock->s_blocks_count - superblock->s_first_data_block + superblock->s_blocks_per_group - 1) / superblock->s_blocks_per_group;
     if ((uint64_t)groups * superblock->s_inodes_per_group < superblock->s_inodes_count)
@@ -1185,6 +1533,18 @@ static int ext2_check_superblock(const ext2_super_t *superblock, const block_dev
     volume->inodes_count = superblock->s_inodes_count;
     volume->inodes_per_group = superblock->s_inodes_per_group;
     volume->inode_size = inode_size;
+    volume->first_ino = superblock->s_first_ino;
+
+    // Large inodes: new ones get s_want_extra_isize valid bytes after byte 128 (at least the minimum;
+    // 32, Linux's default, when an old mke2fs left both 0). 128-byte inodes have no extra area
+    volume->want_extra_isize = 0;
+    if (inode_size > EXT2_GOOD_OLD_INODE_SIZE)
+    {
+        volume->want_extra_isize = MAX(superblock->s_want_extra_isize, superblock->s_min_extra_isize);
+        if (volume->want_extra_isize == 0)
+            volume->want_extra_isize = 32;
+    }
+
     volume->groups = groups;
     volume->read_only = (superblock->s_feature_ro_compat & ~EXT2_FEATURE_RO_COMPAT_KNOWN) != 0 ||
                         disk->ops->write == NULL;

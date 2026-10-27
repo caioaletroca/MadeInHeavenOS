@@ -18,6 +18,7 @@
 #define EXT2_GOOD_OLD_REV 0         // revision 0: fixed 128-byte inodes, no feature flags
 #define EXT2_DYNAMIC_REV 1          // revision 1: s_inode_size and the feature flags are valid
 #define EXT2_GOOD_OLD_INODE_SIZE 128
+#define EXT2_INODE_EXTRA_ISIZE 128 // large inodes: a uint16_t i_extra_isize, the size of the valid extra area after it
 
 #define EXT2_DIRECT_BLOCKS 12   // i_block[0..11]: direct
 #define EXT2_SINGLE_INDIRECT 12 // i_block[12]: one level of indirection
@@ -38,9 +39,15 @@
 #define EXT2_S_IFDIR 0x4000
 #define EXT2_S_IFREG 0x8000
 
+// i_flags: inode flags (EXT2_INDEX_FL for hashed directories)
+#define EXT2_INDEX_FL 0x1000 // a hashed (htree) directory: its blocks carry an index we cannot update, so never changed here
+
 // Directory entry file_type (with FILETYPE)
 #define EXT2_FT_REG_FILE 1
 #define EXT2_FT_DIR 2
+
+// A directory record's size: the 8-byte header and the name, rounded up to 4
+#define EXT2_DIRENT_SIZE(name_len) ((sizeof(ext2_dirent_t) + (name_len) + 3) & ~(size_t)3)
 
 typedef struct ext2_super
 {
@@ -80,7 +87,10 @@ typedef struct ext2_super
     char s_volume_name[16];       // 120
     char s_last_mounted[64];      // 136
     uint32_t s_algo_bitmap;       // 200
-    uint8_t s_unused[820];        // 204..1023: preallocation, journal, htree seeds (unused here)
+    uint8_t s_unused1[144];       // 204..347: preallocation, journal, htree seeds, 64-bit counts (unused here)
+    uint16_t s_min_extra_isize;   // 348: every inode has at least this much of its extra area valid
+    uint16_t s_want_extra_isize;  // 350: what new inodes should have
+    uint8_t s_unused2[672];       // 352..1023
 } ext2_super_t;
 
 typedef struct ext2_group
@@ -129,6 +139,8 @@ typedef struct ext2_dirent
 _Static_assert(sizeof(ext2_super_t) == 1024, "ext2 superblock size");
 _Static_assert(offsetof(ext2_super_t, s_magic) == 56, "ext2 s_magic offset");
 _Static_assert(offsetof(ext2_super_t, s_volume_name) == 120, "ext2 s_volume_name offset");
+_Static_assert(offsetof(ext2_super_t, s_first_ino) == 84, "ext2 s_first_ino offset");
+_Static_assert(offsetof(ext2_super_t, s_want_extra_isize) == 350, "ext2 s_want_extra_isize offset");
 _Static_assert(sizeof(ext2_group_t) == 32, "ext2 group descriptor size");
 _Static_assert(sizeof(ext2_inode_t) == 128, "ext2 inode size");
 _Static_assert(offsetof(ext2_inode_t, i_block) == 40, "ext2 i_block offset");
