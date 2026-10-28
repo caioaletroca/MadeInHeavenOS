@@ -89,9 +89,37 @@ int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent, vfs_n
 int ext2_file_block(ext2_volume_t *volume, ext2_node_t *node, uint64_t logical, uint32_t *goal, bool create, uint32_t *out);
 int ext2_truncate_branch(ext2_volume_t *volume, ext2_node_t *node, uint32_t *slot, int depth, uint64_t span, uint64_t from);
 
-// ext2.c
+// directory.c
+bool ext2_entry_type(uint8_t file_type, vfs_node_type_t *type);
+
+/**
+ * Called for each used entry of a directory, while its block is leased:
+ * `entry` points into the cache buffer and is only valid during the call.
+ *
+ * @return 0 to go on, 1 to stop the walk, or -errno to fail it.
+ */
+typedef int (*ext2_visit_t)(const ext2_dirent_t *entry, void *context);
+
+int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context);
+int ext2_dir_add(ext2_node_t *dir, const char *name, size_t length, uint32_t ino, uint8_t file_type);
+int ext2_dir_remove(ext2_node_t *dir, const char *name, size_t length);
 int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
+
+/**
+ * @brief Context for looking up a directory entry by name
+ */
+typedef struct ext2_lookup_context
+{
+    const char *name;
+    size_t length;
+    uint32_t ino;
+    uint8_t file_type;
+} ext2_lookup_context_t;
+
+int ext2_lookup_visit(const ext2_dirent_t *e, void *context);
 int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
+
+// ext2.c
 int ext2_create(vfs_node_t *dir, const char *name, size_t length, uint32_t mode, vfs_node_t **child);
 long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
 long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint64_t offset);
