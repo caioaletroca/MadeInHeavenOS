@@ -20,6 +20,8 @@
 #define EXT2_GOOD_OLD_INODE_SIZE 128
 #define EXT2_INODE_EXTRA_ISIZE 128 // large inodes: a uint16_t i_extra_isize, the size of the valid extra area after it
 
+#define EXT2_LINK_MAX 32000 // the most links an inode may have: a directory's subdirectories are capped by it (EMLINK)
+
 #define EXT2_DIRECT_BLOCKS 12   // i_block[0..11]: direct
 #define EXT2_SINGLE_INDIRECT 12 // i_block[12]: one level of indirection
 #define EXT2_DOUBLE_INDIRECT 13 // i_block[13]: two

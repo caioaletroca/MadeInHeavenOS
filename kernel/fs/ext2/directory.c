@@ -265,6 +265,33 @@ int ext2_dir_remove(ext2_node_t *dir, const char *name, size_t length)
 }
 
 /**
+ * @brief Visit function for checking if a directory is empty
+ *
+ * @param e: The ext2 directory entry
+ * @param context: Unused context
+ * @return int: 0 for '.' or '..', 1 for other entries
+ */
+static int ext2_empty_visit(const ext2_dirent_t *e, void *context)
+{
+    (void)context;
+    bool dot = e->name_len == 1 && e->name[0] == '.';
+    bool dotdot = e->name_len == 2 && e->name[0] == '.' && e->name[1] == '.';
+    return dot || dotdot ? 0 : 1;
+}
+
+/**
+ * @brief Check if a directory is empty
+ *
+ * @param dir: The ext2 directory node
+ * @return int: 1 if empty, 0 if not, negative error code on failure
+ */
+int ext2_dir_empty(ext2_node_t *dir)
+{
+    int ret = ext2_dir_walk(dir, ext2_empty_visit, NULL);
+    return ret < 0 ? ret : ret == 0;
+}
+
+/**
  * @brief Context for reading directory entries
  */
 typedef struct ext2_readdir_context

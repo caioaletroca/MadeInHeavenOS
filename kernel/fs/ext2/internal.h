@@ -84,12 +84,14 @@ int ext2_inode_free(ext2_volume_t *volume, uint32_t ino, bool directory);
 uint64_t ext2_inode_byte(const ext2_volume_t *volume, uint32_t ino);
 int ext2_inode_store(ext2_node_t *n);
 int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent, vfs_node_t **out);
+int ext2_links_store(ext2_node_t *node);
 
 // file_blocks.c
 int ext2_file_block(ext2_volume_t *volume, ext2_node_t *node, uint64_t logical, uint32_t *goal, bool create, uint32_t *out);
 int ext2_truncate_branch(ext2_volume_t *volume, ext2_node_t *node, uint32_t *slot, int depth, uint64_t span, uint64_t from);
 
 // directory.c
+int ext2_dir_empty(ext2_node_t *dir);
 bool ext2_entry_type(uint8_t file_type, vfs_node_type_t *type);
 
 /**
@@ -128,5 +130,7 @@ int ext2_truncate(vfs_node_t *file, uint64_t size);
 int ext2_create(vfs_node_t *dir, const char *name, size_t length, uint32_t mode, vfs_node_t **child);
 void ext2_release(vfs_node_t *node);
 int ext2_unlink(vfs_node_t *dir, const char *name, size_t length);
+int ext2_mkdir(vfs_node_t *dir, const char *name, size_t length, uint32_t mode);
+int ext2_rmdir(vfs_node_t *dir, const char *name, size_t length);
 
 #endif /* _FS_EXT2_INTERNAL_H_ */

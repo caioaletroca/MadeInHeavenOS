@@ -13,6 +13,8 @@ static const vfs_node_ops_t ext2_ops = {
     .truncate = ext2_truncate,
     .create = ext2_create,
     .unlink = ext2_unlink,
+    .mkdir = ext2_mkdir,
+    .rmdir = ext2_rmdir,
     .release = ext2_release,
 };
 
@@ -160,4 +162,13 @@ int ext2_inode_write(vfs_node_t *node)
     ext2_node_t *n = EXT2_NODE(node);
     guard(mutex, &n->lock);
     return ext2_inode_store(n);
+}
+
+int ext2_links_store(ext2_node_t *node)
+{
+    uint16_t links = (uint16_t)node->base.nlink;
+    return ext2_disk_write(node->volume,
+                           ext2_inode_byte(node->volume, node->ino) + offsetof(ext2_inode_t, i_links_count),
+                           &links,
+                           sizeof(links));
 }

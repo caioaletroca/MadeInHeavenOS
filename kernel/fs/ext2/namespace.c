@@ -28,6 +28,9 @@ int ext2_create(vfs_node_t *dir, const char *name, size_t length, uint32_t mode,
     if (node->flags & EXT2_INDEX_FL)
         return -EROFS; // a hashed directory: a record added without updating its index would hide from Linux's lookups
 
+    if (dir->nlink == 0)
+        return -ENOENT; // removed (rmdir) while still held: no new names in it
+
     ext2_lookup_context_t ctx = {
         .name = name,
         .length = length,
@@ -152,9 +155,8 @@ int ext2_unlink(vfs_node_t *dir, const char *name, size_t length)
             ext2_node_t *c = EXT2_NODE(child);
             scoped_guard(mutex, &c->lock)
             {
-                uint16_t links = (uint16_t)--child->nlink;
-                uint64_t byte = ext2_inode_byte(volume, c->ino);
-                ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_links_count), &links, sizeof(links));
+                child->nlink--;
+                ret = ext2_links_store(c);
                 if (child->nlink == 0)
                     c->free_on_release = true;
             }
@@ -162,6 +164,156 @@ int ext2_unlink(vfs_node_t *dir, const char *name, size_t length)
     }
 
     // After the directory's lock: if nobody has the file open, this put frees it right here
+    if (child != NULL)
+        vfs_node_put(child);
+
+    return ret;
+}
+
+int ext2_mkdir(vfs_node_t *dir, const char *name, size_t length, uint32_t mode)
+{
+    ext2_node_t *d = EXT2_NODE(dir);
+    ext2_volume_t *volume = d->volume;
+    vfs_node_t *child = NULL;
+    int ret = 0;
+
+    scoped_guard(mutex, &d->lock)
+    {
+        if (d->flags & EXT2_INDEX_FL)
+            ret = -EROFS; // a hashed directory: its index would still list the name
+        else if (dir->nlink == 0)
+            ret = -ENOENT; // removed (rmdir) while still held: no new names in it
+        else if (dir->nlink >= EXT2_LINK_MAX)
+            ret = -EMLINK; // too many links in the directory
+
+        ext2_lookup_context_t ctx = {
+            .name = name,
+            .length = length,
+        };
+        if (ret == 0)
+        {
+            ret = ext2_dir_walk(d, ext2_lookup_visit, &ctx);
+            if (ret == 1)
+                ret = -EEXIST; // entry already exists
+        }
+
+        uint32_t ino = 0;
+        if (ret == 0)
+            ret = ext2_inode_alloc(volume, d->ino, true, &ino);
+        if (ret == 0)
+        {
+            ret = ext2_inode_init(volume, ino, EXT2_S_IFDIR | (mode & 07777), 2, (uint32_t)dir->mtime);
+            if (ret == 0)
+                ret = ext2_node_get(volume, ino, dir, &child);
+            if (ret < 0)
+                ext2_inode_free(volume, ino, true);
+        }
+
+        if (ret == 0)
+        {
+            ext2_node_t *c = EXT2_NODE(child);
+            scoped_guard(mutex, &c->lock)
+            {
+                ret = ext2_dir_add(c, ".", 1, ino, EXT2_FT_DIR);
+                if (ret == 0)
+                    ret = ext2_dir_add(c, "..", 2, d->ino, EXT2_FT_DIR);
+
+                if (ret < 0)
+                {
+                    child->nlink = 0; // never named: its block and inode go at the put below
+                    c->free_on_release = true;
+                }
+            }
+        }
+
+        if (ret == 0)
+        {
+            ret = ext2_dir_add(d, name, length, ino, EXT2_FT_DIR);
+            if (ret < 0)
+            {
+                child->nlink = 0;
+                EXT2_NODE(child)->free_on_release = true;
+            }
+        }
+        if (ret == 0)
+        {
+            dir->nlink++;
+            ret = ext2_links_store(d);
+        }
+    }
+
+    // After the parent's lock (as in ext2_unlink); a failed directory is freed here
+    if (child != NULL)
+        vfs_node_put(child);
+
+    return ret;
+}
+
+int ext2_rmdir(vfs_node_t *dir, const char *name, size_t length)
+{
+    ext2_node_t *d = EXT2_NODE(dir);
+    ext2_volume_t *volume = d->volume;
+    vfs_node_t *child = NULL;
+    int ret = 0;
+
+    scoped_guard(mutex, &d->lock)
+    {
+        if (d->flags & EXT2_INDEX_FL)
+            ret = -EROFS; // a hashed directory: its index would still list the name
+
+        ext2_lookup_context_t ctx = {
+            .name = name,
+            .length = length,
+        };
+        vfs_node_type_t type;
+        if (ret == 0)
+        {
+            // The walk's 1 (found) becomes 0 (go on), its 0 (not found) ENOENT
+            ret = ext2_dir_walk(d, ext2_lookup_visit, &ctx);
+            if (ret == 0 || (ret == 1 && !ext2_entry_type(ctx.file_type, &type)))
+                ret = -ENOENT;
+            else if (ret == 1)
+                ret = 0;
+        }
+
+        if (ret == 0)
+            ret = ext2_node_get(volume, ctx.ino, dir, &child);
+        if (ret == 0 && child->type != VFS_DIRECTORY)
+            ret = -ENOTDIR; // unlink's
+        if (ret == 0 && child->nlink == 0)
+            ret = -EIO; // a name for a file with no links: the disk is corrupt
+
+        // Empty, then removed, with nothing in between (a create would need this lock)
+        if (ret == 0)
+        {
+            ext2_node_t *c = EXT2_NODE(child);
+            scoped_guard(mutex, &c->lock)
+            {
+                ret = ext2_dir_empty(c);
+                if (ret == 0)
+                    ret = -ENOTEMPTY;
+                else if (ret == 1)
+                    ret = ext2_dir_remove(d, name, length);
+
+                // Both its links go at once (its name and its "."); at 0 the last put frees it
+                if (ret == 0)
+                {
+                    child->nlink = 0;
+                    c->free_on_release = true;
+                    ret = ext2_links_store(c);
+                }
+            }
+        }
+
+        // The parent loses the link of the child's ".."
+        if (ret == 0)
+        {
+            dir->nlink--;
+            ret = ext2_links_store(d);
+        }
+    }
+
+    // After the parent's lock: if nobody holds the directory, this put frees it right here
     if (child != NULL)
         vfs_node_put(child);
 
