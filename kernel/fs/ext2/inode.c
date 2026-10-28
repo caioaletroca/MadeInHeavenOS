@@ -157,13 +157,12 @@ int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent, vfs_n
     return 0;
 }
 
-int ext2_inode_write(vfs_node_t *node)
-{
-    ext2_node_t *n = EXT2_NODE(node);
-    guard(mutex, &n->lock);
-    return ext2_inode_store(n);
-}
-
+/**
+ * @brief Store a node's link count (base.nlink) into its inode's i_links_count
+ *
+ * @param node: The ext2 node; the caller holds node->lock
+ * @return 0 on success, negative error code on failure
+ */
 int ext2_links_store(ext2_node_t *node)
 {
     uint16_t links = (uint16_t)node->base.nlink;
