@@ -1,0 +1,76 @@
+#ifndef _FS_EXT2_INTERNAL_H_
+#define _FS_EXT2_INTERNAL_H_
+
+/*
+ * What the files of fs/ext2/ share, and nothing outside it includes (the rest of
+ * the kernel sees include/fs/ext2.h): the volume and node structs, and the
+ * functions one file defines and another calls. Those are not static, so they keep
+ * the ext2_ prefix; everything only one file uses stays static in it. Like C#'s
+ * `internal`: visible to the whole folder, never to the rest of the kernel.
+ */
+
+#include <fs/ext2.h>
+#include <fs/vfs.h>
+#include <driver/block.h>
+#include <driver/block_cache.h>
+#include <sched/sync.h>
+#include <sys/hashtable.h>
+#include <power.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include "disk_format.h"
+
+#define EXT2_NODE_HASH_BITS 6 // 64 buckets for cached nodes
+
+typedef struct ext2_volume
+{
+    block_device_t *disk;
+    uint64_t dev;              // st_dev (vfs_dev_alloc)
+    uint32_t block_size;       // 1024, 2048 or 4096
+    uint32_t blocks_count;     // valid block numbers: 1 .. blocks_count - 1
+    uint32_t first_data_block; // s_first_data_block: 1 with 1 KiB blocks, else 0; bit i of a group's bitmap is block first_data_block + group * blocks_per_group + i
+    uint32_t blocks_per_group;
+    uint32_t inodes_count;
+    uint32_t inodes_per_group;
+    uint32_t first_ino;        // s_first_ino: the first inode files may get (the ones below are reserved)
+    uint16_t want_extra_isize; // new large inodes' i_extra_isize (0 with 128-byte inodes)
+    uint32_t inode_size;       // bytes per inode in the table (128 or more)
+    uint32_t groups;
+    bool read_only;            // an unknown ro_compat feature: writing could damage the disk
+    uint16_t state;            // s_state as it is on the disk (EXT2_VALID_FS cleared while mounted writable)
+    uint32_t dtime;            // i_dtime for freed inodes: s_wtime (no clock), never below s_inodes_count
+    halt_hook_t halt_hook;     // writable volumes: marks the volume clean before the power goes off
+    uint64_t max_file_size;    // the largest file: what three levels of tables reach, or 2 GiB - 1 without LARGE_FILE
+    ext2_group_t *group_table; // kmalloc'd copy of the group descriptors
+    uint32_t free_blocks;      // s_free_blocks_count, under allocation_lock
+    uint32_t free_inodes;      // s_free_inodes_count, under allocation_lock (for W6)
+    mutex_t allocation_lock;   // the bitmaps, the group table's counters, free_blocks and free_inodes
+    mutex_t lock;              // the node cache: nodes[] and every node's hash link
+    hlist_head_t nodes[HASH_BUCKETS(EXT2_NODE_HASH_BITS)];
+} ext2_volume_t;
+
+typedef struct ext2_node
+{
+    vfs_node_t base; // what the VFS sees (the "base class")
+    ext2_volume_t *volume;
+    uint32_t ino;
+    uint32_t block[EXT2_BLOCK_POINTERS]; // copy of the inode's i_block
+    uint32_t blocks;                     // i_blocks: 512-byte units the file owns, indirect tables included
+    uint32_t flags;                      // i_flags: inode flags (EXT2_INDEX_FL for hashed directories)
+    bool free_on_release;                // its last name was removed: its blocks and inode go at the last put
+    mutex_t lock;                        // block[], blocks, base.size and nlink, and a directory's records: held by reads, writes,
+                                         // walks, creates and unlinks; a directory's lock is taken before its children's
+    hlist_node_t cache_link;             // in volume->nodes, under volume->lock
+} ext2_node_t;
+
+#define EXT2_NODE(n) list_container(n, ext2_node_t, base)
+
+// disk.c
+int ext2_block_get(ext2_volume_t *volume, uint32_t block, block_cache_buf_t **lease, const uint8_t **data);
+int ext2_block_write(ext2_volume_t *volume, uint32_t block, size_t within, const void *data, size_t count);
+int ext2_block_zero(ext2_volume_t *volume, uint32_t block, size_t within, size_t count);
+int ext2_disk_write(ext2_volume_t *volume, uint64_t byte, const void *data, size_t count);
+int ext2_disk_zero(ext2_volume_t *volume, uint64_t byte, size_t count);
+
+#endif /* _FS_EXT2_INTERNAL_H_ */
