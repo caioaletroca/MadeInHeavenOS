@@ -73,4 +73,14 @@ int ext2_block_zero(ext2_volume_t *volume, uint32_t block, size_t within, size_t
 int ext2_disk_write(ext2_volume_t *volume, uint64_t byte, const void *data, size_t count);
 int ext2_disk_zero(ext2_volume_t *volume, uint64_t byte, size_t count);
 
+// allocation.c
+int ext2_block_alloc(ext2_volume_t *volume, uint32_t goal, uint32_t *out);
+int ext2_block_free(ext2_volume_t *volume, uint32_t block);
+int ext2_inode_alloc(ext2_volume_t *volume, uint32_t parent, bool directory, uint32_t *out);
+int ext2_inode_init(ext2_volume_t *volume, uint32_t ino, uint16_t mode, uint16_t links, uint32_t time);
+int ext2_inode_free(ext2_volume_t *volume, uint32_t ino, bool directory);
+
+// ext2.c
+uint64_t ext2_inode_byte(const ext2_volume_t *volume, uint32_t ino);
+
 #endif /* _FS_EXT2_INTERNAL_H_ */
