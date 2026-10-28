@@ -450,6 +450,59 @@ static void test_unlink(void)
     CHECK(unlink("/usr/tests/ext2") == -1 && errno == EROFS);
 }
 
+/*
+ * Directories from user space, in grow/: mkdir with a mode (stat: a directory, 2
+ * links, the parent +1), a listing of just . and .., a file inside, rmdir refused
+ * while it holds the file and accepted after, the parent's links back; the
+ * errnos and their messages.
+ */
+static void test_dirs(void)
+{
+    struct stat st;
+    CHECK(stat(MNT "/grow", &st) == 0 && st.st_nlink == 2);
+    CHECK(mkdir(MNT "/grow/udir", 0700) == 0);
+    CHECK(stat(MNT "/grow/udir", &st) == 0 && S_ISDIR(st.st_mode) && (st.st_mode & 07777) == 0700);
+    CHECK(st.st_nlink == 2);
+    CHECK(stat(MNT "/grow", &st) == 0 && st.st_nlink == 3);
+
+    DIR *dir = opendir(MNT "/grow/udir");
+    CHECK(dir != NULL);
+    if (dir != NULL)
+    {
+        int entries = 0, dots = 0;
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL)
+        {
+            entries++;
+            dots += strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0;
+        }
+        CHECK(entries == 2 && dots == 2);
+        closedir(dir);
+    }
+
+    int fd = open(MNT "/grow/udir/inside", O_WRONLY | O_CREAT | O_EXCL, 0644);
+    CHECK(fd >= 0 && write(fd, "x", 1) == 1);
+    close(fd);
+    errno = 0;
+    CHECK(rmdir(MNT "/grow/udir") == -1 && errno == ENOTEMPTY);
+    CHECK(strcmp(strerror(ENOTEMPTY), "Directory not empty") == 0);
+    CHECK(unlink(MNT "/grow/udir/inside") == 0 && rmdir(MNT "/grow/udir/") == 0);
+    errno = 0;
+    CHECK(stat(MNT "/grow/udir", &st) == -1 && errno == ENOENT);
+    CHECK(stat(MNT "/grow", &st) == 0 && st.st_nlink == 2);
+
+    errno = 0;
+    CHECK(mkdir(MNT "/docs", 0755) == -1 && errno == EEXIST);
+    errno = 0;
+    CHECK(mkdir("/usr/tests/udir", 0755) == -1 && errno == EROFS);
+    errno = 0;
+    CHECK(rmdir(MNT "/hello.txt") == -1 && errno == ENOTDIR);
+    errno = 0;
+    CHECK(rmdir(MNT "/docs/.") == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK(rmdir("/") == -1 && errno == EBUSY);
+}
+
 static void test_refusals(void)
 {
     char buffer[64];
@@ -491,6 +544,7 @@ int main(void)
     test_truncate();
     test_create();
     test_unlink();
+    test_dirs();
     test_refusals();
 
     // Every fd and stream was closed: the next open gets fd 3 again

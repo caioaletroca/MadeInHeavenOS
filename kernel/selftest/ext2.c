@@ -1222,6 +1222,153 @@ static void ext2_test_unlink(void)
         panic("ext2 self-test: a refused unlink changed the free inodes\n");
 }
 
+// The used-directories count of group 0, on the disk itself (after a sync)
+static uint32_t disk_used_dirs(block_device_t *disk)
+{
+    if (block_cache_sync() != 0)
+        panic("ext2 self-test: sync failed\n");
+    return disk_u32(disk, GROUP_TABLE + BG_USED_DIRS_COUNT) & 0xFFFF;
+}
+
+// An inode's 16-bit field at `field`, on the disk itself (after a sync)
+static uint32_t disk_inode_u16(block_device_t *disk, uint32_t ino, uint32_t field)
+{
+    if (block_cache_sync() != 0)
+        panic("ext2 self-test: sync failed\n");
+    uint32_t inode_size = disk_u32(disk, SB + SB_INODE_SIZE) & 0xFFFF;
+    uint64_t inode = (uint64_t)disk_u32(disk, GROUP_TABLE + BG_INODE_TABLE) * BLOCK + (ino - 1) * inode_size;
+    return disk_u32(disk, inode + field) & 0xFFFF;
+}
+
+static void mkdir_expect(const char *path, int error)
+{
+    int ret = vfs_mkdir(path, 0755);
+    if (ret != error)
+        panic("ext2 self-test: mkdir of '%s' returned %d instead of %d\n", path, ret, error);
+}
+
+static void rmdir_expect(const char *path, int error)
+{
+    int ret = vfs_rmdir(path);
+    if (ret != error)
+        panic("ext2 self-test: rmdir of '%s' returned %d instead of %d\n", path, ret, error);
+}
+
+// A directory lists exactly "." (itself) and ".." (its parent)
+static void dir_expect_empty(vfs_node_t *dir, uint64_t parent)
+{
+    vfs_dirent_t entry;
+    if (vfs_readdir(dir, 0, &entry) != 1 || strcmp(entry.name, ".") != 0 || entry.ino != dir->ino ||
+        vfs_readdir(dir, 1, &entry) != 1 || strcmp(entry.name, "..") != 0 || entry.ino != parent ||
+        vfs_readdir(dir, 2, &entry) != 0)
+        panic("ext2 self-test: directory %u does not hold just . and ..\n", (unsigned int)dir->ino);
+}
+
+/**
+ * Directories, in grow/ (inode 20, 2 links). mkdir of grow/sub takes inode 29 as a
+ * directory: mode 0755, 2 links, one block holding "." and ".." (i_blocks 2), both on
+ * the disk; grow/ gets a third link (sub's ".."), group 0 one more used directory, one
+ * inode and one block less free; sub/.. leads back. A trailing '/' works for both
+ * calls. Nested: sub/inner with a file in it; rmdir is ENOTEMPTY for both until the
+ * file and inner go. A directory removed while open: its name gone, nlink 0, it still
+ * lists . and .., and takes no new file or directory (ENOENT); the close frees it. In
+ * the end every count is what it was. Then the refusals of both calls.
+ */
+static void ext2_test_dirs(void)
+{
+    block_device_t *disk = block_at(0);
+    if (disk == NULL)
+        panic("ext2 self-test: no disk\n");
+    uint32_t group0, blocks_group0, now_group0;
+    uint32_t free = disk_free_inodes(disk, &group0);
+    uint32_t free_blocks = disk_free_blocks(disk, &blocks_group0);
+    uint32_t used_dirs = disk_used_dirs(disk);
+    vfs_node_t *grow = ext2_expect(MNT "/grow", VFS_DIRECTORY);
+    if (grow->ino != 20 || grow->nlink != 2)
+        panic("ext2 self-test: grow/ is not inode 20 with 2 links\n");
+
+    // A new directory, on the disk and in its node
+    mkdir_expect(MNT "/grow/sub", 0);
+    vfs_node_t *sub = ext2_expect(MNT "/grow/sub", VFS_DIRECTORY);
+    if (sub->ino != 29 || sub->mode != 0755 || sub->nlink != 2 || sub->size != BLOCK || sub->parent != grow)
+        panic("ext2 self-test: grow/sub is not an empty directory in inode 29\n");
+    dir_expect_empty(sub, 20);
+    if (disk_inode_u16(disk, 29, I_MODE) != (0x4000 | 0755) || disk_inode_u16(disk, 29, I_LINKS_COUNT) != 2 ||
+        disk_inode_u16(disk, 29, I_BLOCKS) != 2)
+        panic("ext2 self-test: inode 29 on the disk is not the new directory\n");
+    if (grow->nlink != 3 || disk_inode_u16(disk, 20, I_LINKS_COUNT) != 3)
+        panic("ext2 self-test: grow/ did not get the link of sub's ..\n");
+    if (disk_used_dirs(disk) != used_dirs + 1 || disk_free_inodes(disk, &now_group0) != free - 1 ||
+        disk_free_blocks(disk, &now_group0) != free_blocks - 1)
+        panic("ext2 self-test: mkdir did not take one directory inode and one block\n");
+    vfs_node_t *up = ext2_expect(MNT "/grow/sub/..", VFS_DIRECTORY);
+    if (up != grow)
+        panic("ext2 self-test: grow/sub/.. is not grow/\n");
+    vfs_node_put(up);
+
+    // A trailing '/' names a directory: fine for both
+    mkdir_expect(MNT "/grow/slash/", 0);
+    rmdir_expect(MNT "/grow/slash//", 0);
+
+    // Nested, with a file: neither goes while it holds something
+    mkdir_expect(MNT "/grow/sub/inner", 0);
+    struct file *file = NULL;
+    if (vfs_open(MNT "/grow/sub/inner/file", O_WRONLY | O_CREAT | O_EXCL, 0644, &file) != 0)
+        panic("ext2 self-test: creating a file in a new directory failed\n");
+    file_put(file);
+    if (sub->nlink != 3)
+        panic("ext2 self-test: grow/sub did not get the link of inner's ..\n");
+    rmdir_expect(MNT "/grow/sub", -ENOTEMPTY);
+    rmdir_expect(MNT "/grow/sub/inner", -ENOTEMPTY);
+    unlink_expect(MNT "/grow/sub/inner/file", 0);
+    rmdir_expect(MNT "/grow/sub/inner", 0);
+    ext2_expect_error(MNT "/grow/sub/inner", -ENOENT);
+    if (sub->nlink != 2 || disk_inode_u16(disk, 29, I_LINKS_COUNT) != 2)
+        panic("ext2 self-test: grow/sub kept the link of a removed directory\n");
+
+    // Removed while open: still listed by its holder, no new names, freed at the close
+    if (vfs_open(MNT "/grow/sub", O_RDONLY | O_DIRECTORY, 0, &file) != 0)
+        panic("ext2 self-test: opening grow/sub failed\n");
+    vfs_node_put(sub);
+    sub = file->node;
+    rmdir_expect(MNT "/grow/sub", 0);
+    ext2_expect_error(MNT "/grow/sub", -ENOENT);
+    if (sub->nlink != 0 || grow->nlink != 2 || disk_inode_u16(disk, 20, I_LINKS_COUNT) != 2)
+        panic("ext2 self-test: rmdir left links on grow/sub or grow/\n");
+    dir_expect_empty(sub, 20);
+    vfs_node_t *child = NULL;
+    if (sub->ops->create(sub, "x", 1, 0644, &child) != -ENOENT || sub->ops->mkdir(sub, "x", 1, 0755) != -ENOENT ||
+        child != NULL)
+        panic("ext2 self-test: a removed directory took a new name\n");
+    if (disk_used_dirs(disk) != used_dirs + 1)
+        panic("ext2 self-test: a removed directory was freed while still open\n");
+    file_put(file);
+    if (disk_used_dirs(disk) != used_dirs || disk_free_inodes(disk, &now_group0) != free ||
+        now_group0 != group0 || disk_free_blocks(disk, &now_group0) != free_blocks || now_group0 != blocks_group0)
+        panic("ext2 self-test: the counts are not back after the rmdirs\n");
+    vfs_node_put(grow);
+
+    // Refusals
+    mkdir_expect(MNT "/grow/small", -EEXIST);
+    mkdir_expect(MNT "/docs", -EEXIST);
+    mkdir_expect(MNT "/link", -EEXIST); // a symlink: lookup cannot see it, but the name is taken
+    mkdir_expect("/", -EEXIST);
+    mkdir_expect("/usr/new", -EROFS);
+    mkdir_expect(MNT "/nope/new", -ENOENT);
+    mkdir_expect(MNT "/hello.txt/new", -ENOTDIR);
+    rmdir_expect(MNT "/hello.txt", -ENOTDIR);
+    rmdir_expect(MNT "/nope", -ENOENT);
+    rmdir_expect(MNT "/link", -ENOENT);
+    rmdir_expect(MNT "/docs", -ENOTEMPTY);
+    rmdir_expect(MNT "/docs/.", -EINVAL);
+    rmdir_expect(MNT "/docs/..", -ENOTEMPTY);
+    rmdir_expect("/", -EBUSY);
+    rmdir_expect("/usr", -EROFS);
+    rmdir_expect(MNT, -EROFS); // the mount point: its parent is the initrd
+    if (disk_used_dirs(disk) != used_dirs || disk_free_inodes(disk, &now_group0) != free)
+        panic("ext2 self-test: a refused mkdir or rmdir changed the counts\n");
+}
+
 void ext2_selftest(void)
 {
     memcpy(long_path, MNT "/", sizeof(MNT));
@@ -1241,6 +1388,7 @@ void ext2_selftest(void)
     ext2_test_truncate();
     ext2_test_create();
     ext2_test_unlink();
+    ext2_test_dirs();
     ext2_test_state();
     ext2_test_broken();
 
