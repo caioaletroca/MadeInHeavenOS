@@ -56,7 +56,7 @@ Working x86-64 PC kernel with:
   filled and files grown through a block allocator (bitmaps, free counts, new indirect
   tables), truncated, and created (`O_CREAT`: an inode allocator, names added to
   directories), deleted (`unlink`, freed at the last close), appended to (`O_APPEND`),
-  directories made and removed (`mkdir`/`rmdir`), checked by `e2fsck` (`./fsck-test.sh`)
+  directories made and removed (`mkdir`/`rmdir`), checked by `e2fsck` after every `./run-tests.sh`
 - Intrusive `list.h` and an hlist `hashtable.h` (multiplicative `hash_64`) shared by kernel and libc
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
@@ -74,6 +74,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+c708ead test: make e2fsck part of every run-tests.sh run
+cd60060 test: drop ext2's inode write-back test and ext2_inode_write
+7d8dc17 test: drop the raw user-mode programs the libc tests cover
+d0c8ac7 test: move the kernel-address EFAULT and hlt checks into user tests
+cbd70d3 docs(architecture): document the full-disk test and W6's end in handoff
 30d8da8 test: fill the disk
 abc1c1c fix(fs): clear i_links_count when ext2 frees an inode
 e8fad0d docs(architecture): document mkdir and rmdir in handoff
@@ -569,14 +574,14 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `#DE`/x87/SIMD → SIGFPE, `#DB`/`#BP` → SIGTRAP, `#UD` → SIGILL, `#NP`/`#SS`/`#AC` → SIGBUS, the
   rest (incl. `#GP`, `#PF`) → SIGSEGV, unlisted → SIGKILL. Returning instead would re-run the
   faulting instruction forever.
-- Self-tests (`selftest/user_program.S`, `selftest/user.c`): position-independent programs copied to
-  `USER_BASE`, each started as a process with the console on fds 0–2, waited for, checked through
-  its variables and exit status, then released:
-  - `loop`: counts until the kernel sets `stop`, exits 0 (preemption of ring 3)
-  - `hello`: prints, checks a kernel-pointer `write` returns `-EFAULT`, exits with it
-  - `null` / `hlt`: set `before`, fault (`#PF` / `#GP`), must never set `after`; status 139
-  - `files`: `-EBADF` for empty, out-of-range and closed fds and double close; stdout still works
-    after `close(2)`
+- Self-test (`selftest/user_program.S`, `selftest/user.c`): one position-independent program
+  copied to `USER_BASE`, started as a process with the console on fds 0–2: `loop` counts until
+  the kernel sets `stop` (read and written through the address space), then exits 0. It proves a
+  ring-3 loop that never makes a syscall is preempted, which no libc test can check (nothing in
+  user space could stop a looping child). What the other raw programs checked is in the libc
+  tests now: a `write` from a kernel address `EFAULT` (`files`), the `#PF` and `#GP` kills with
+  `SIGSEGV` (`spawn`'s `segv` and `hlt` children), the fd table's `EBADF`s, closing twice and
+  stdout after `close(2)` (`files`, `stdio`).
 
 ### Processes (`sched/process.c`)
 
@@ -1239,7 +1244,7 @@ fs/ext2/
 ├── disk_format.h  the on-disk structures (ext2_super_t, ext2_group_t, ext2_inode_t, ext2_dirent_t)
 ├── disk.c         disk access: ext2_block_get/write/zero, ext2_disk_write/zero
 ├── allocation.c   block and inode bitmaps, free counts: block_alloc/free, inode_alloc/init/free
-├── inode.c        the ops tables, inode_byte, inode_store, node_get, ext2_inode_write
+├── inode.c        the ops tables, inode_byte, inode_store, links_store, node_get
 ├── file_blocks.c  slot, file_block, truncate_branch
 ├── directory.c    record checks, dir_walk, dir_add/remove, readdir, lookup
 ├── file_data.c    read, write, truncate
@@ -1247,7 +1252,7 @@ fs/ext2/
 └── mount.c        superblock checks, group table, s_state, halt hook, mount, init
 ```
 
-Only `include/fs/ext2.h` (`ext2_mount`, `ext2_inode_write`, `ext2_init`) is seen outside the
+Only `include/fs/ext2.h` (`ext2_mount`, `ext2_init`) is seen outside the
 folder. A function another file of the folder calls is not `static` (it keeps the `ext2_`
 prefix) and is declared in `internal.h`, grouped by the file defining it; the rest is
 `static`. Each file is in the bottom-up order of the single file it came from (every
@@ -1328,8 +1333,7 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   block and place) and writes. `ext2_inode_store(n)` (caller holds `n->lock`) writes
   `i_size`, `i_blocks`, `i_block` and, for regular files only, `i_size_high` (a directory's is
   `i_dir_acl`), field by field through `ext2_disk_write`: nothing is read, and fields it does
-  not own (links, times) are never rewritten. `ext2_inode_write(node)` (public, `fs/ext2.h`)
-  takes the lock and calls it.
+  not own (links, times) are never rewritten (`ext2_links_store` writes `i_links_count`).
 - **Nodes** (`ext2_node_t` = `vfs_node_t` (as `base`) + `volume`, `ino`, a copy of `i_block[15]`,
   `blocks` (`i_blocks`), `flags` (`i_flags`), `free_on_release` (its last name was
   removed), `lock` (a mutex: `block[]`, `blocks`, `base.size` and `nlink`, and a directory's
@@ -1504,10 +1508,7 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   blocks than the disk, no inodes per group, more inodes than the groups, an inode table at
   block 0 → `-EIO`; a regular-file root → `-EIO`; a zero / unaligned / too long `rec_len` and a
   name longer than its record in the root directory → mount works, `readdir` and `lookup` give
-  `-EIO`. Mounted overlays stay allocated (no unmount). Inode write-back
-  (`ext2_test_inode_write`): `ext2_inode_write` of the unchanged `big.txt`, `sparse`,
-  `hello.txt`, `empty`, `docs` and root plus a sync leave every byte of each raw slot as it
-  was; `i_blocks` 606, 6, 2, 0, 2, 2 (what `mke2fs` wrote). Growth (`ext2_test_grow`, on
+  `-EIO`. Mounted overlays stay allocated (no unmount). Growth (`ext2_test_grow`, on
   `grow/`; after each write a sync, then the raw inode's `i_size`/`i_blocks` and both free
   counts, the superblock's and group 0's): `small` +1100 bytes at 5 (`i_blocks` 4, 1 block);
   `holes` at 2000 (a direct hole: 8, 1) and at logical 13 (inside the table: 10, 1), the rest
@@ -1539,7 +1540,7 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   back in all); the free counts equal those before the creates but for `grow/`'s second
   block, and `grow/` lists 7 entries again; refusals: `docs`, `docs/`, `docs/.`, `docs/..`
   and `/` `-EISDIR`, `hello.txt/` `-ENOTDIR`, a missing name and `link` `-ENOENT`,
-  `/sbin/init` `-EROFS`, none changing the counts. `fsck-test.sh` after a run: 28 inodes and
+  `/sbin/init` `-EROFS`, none changing the counts. e2fsck after a run: 28 inodes and
   609 blocks used (`grow/`'s second block stays), e2fsck clean. The `-EFBIG` write test uses
   `VFS_APPEND - 1` (`UINT64_MAX` appends). `disk_u32`'s sector is `static`: inlined into every
   caller with its own 512 bytes, it once took `ext2_test_unlink`'s frame to 15 KB of the 16 KB
@@ -1559,8 +1560,8 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   the disk, one more byte `-ENOSPC`; full, a create works (no block needed) but writing to it
   is `-ENOSPC`, a `mkdir` is `-ENOSPC` and keeps neither its inode nor the used-directories
   count; every chunk's number reads back, every 64th chunk byte for byte; unlinked while open
-  it keeps its blocks until the close, then every block and inode is back. `fsck-test.sh`
-  after it: clean (it first caught freed inodes keeping their link count).
+  it keeps its blocks until the close, then every block and inode is back. e2fsck after it:
+  clean (it first caught freed inodes keeping their link count).
 - **`ext2` test** (`user/tests/ext2`): the listing with types and the dots as inode 2, `link`
   absent, `hello.txt`'s `d_ino` = `st_ino`, `docs/deep/nested` lists `file.txt`, `/mnt/..` lists
   `usr`; `stat`: `/mnt` `0755`, inode 2, `nlink` 5, `st_dev` unlike `/` and `/dev`, `hello.txt`
@@ -1969,8 +1970,8 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **Phase A restructure (done):** `user/` by category (`bin/`, `sbin/`, `tests/`) with discovery and
   install paths, the ISO mirroring the sysroot, `grub.cfg` modules named by install path with an
   expected status, `init_start` as a temporary test runner, the temporary `hello` tests as programs
-  in `user/tests/`. Not moved: the `user_program.S` kernel self-tests (they read program variables
-  from the kernel; moving them means rewriting them as libc programs).
+  in `user/tests/`. The `user_program.S` kernel self-tests were moved later (the test-suite
+  review after W6): all but the ring-3 loop, which only the kernel can stop.
 - **stdio input (done):** `__fillbuf`, `fgetc`/`getc`/`getchar`, `ungetc`, `fgets`, `feof`,
   `clearerr` (tests: `tests/stdin`, `tests/stdin_interactive`).
 - **Initial stack + spawn/wait (done):** `argc`/`argv`/`envp` on the System V stack, `crt0` and
@@ -2089,7 +2090,7 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     under `allocation_lock`. W5c (done): `ext2_slot`, `ext2_file_block` creating blocks and
     tables, `ext2_write` filling holes and growing files, `max_file_size`/`EFBIG`; `ext2.c`
     reordered bottom-up in sections; `grow/` on the test disk; the growth tests;
-    `./fsck-test.sh` (clean on the first run). W5d (done): halt hooks, `s_state` not clean while
+    `./fsck-test.sh` (clean on the first run; folded into `run-tests.sh` after W6). W5d (done): halt hooks, `s_state` not clean while
     mounted writable and clean again at halt; the self-test reads it, `fsck-test.sh` asks
     `dumpe2fs` for `clean`. **W5 is complete.**
   - **W6 (done).** Decided: sub-steps W6a truncate, W6b the inode allocator, W6c
@@ -2111,17 +2112,23 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     `ENOTEMPTY`; `ext2_mkdir`, `ext2_rmdir`, `ext2_dir_empty`, `ext2_links_store`; the
     directory tests. W6f (done): the full-disk test; it found `ext2_inode_free` leaving the
     link count of a create's or mkdir's failed inode (fixed: freed inodes get 0 links).
-    **W6 is complete: ext2 writing (W1–W6) is done.** Next: the test-suite review (what each
-    test covers, what else covers it now: keep, merge or remove; a written evaluation first,
-    decided before anything is deleted).
+    **W6 is complete: ext2 writing (W1–W6) is done.**
+  - **Test-suite review (done, after W6).** Each test against what else covers it now: most
+    overlaps are a kernel and a user test of one feature at different layers (the kernel one
+    sees references, nodes, raw disk bytes; the user one the syscalls), kept. Removed: the raw
+    user-mode programs the libc tests cover (their kernel-address `EFAULT` and `hlt` checks
+    moved to `files` and `spawn`, plus closing twice and a write past the fd table), and
+    `ext2_test_inode_write` with `ext2_inode_write` (every grow/truncate step reads the inode
+    back; e2fsck checks them all). `fsck-test.sh` folded into `run-tests.sh`: e2fsck after
+    every run. Left: `user/tests/stdio`'s output order is checked by eye (debt, until pipes);
+    `selftest/ext2.c` (1,400 lines) could split like `fs/ext2/` if it gets in the way.
     Overall: inode allocation (the inode bitmap, `free_inodes`, `bg_used_dirs_count`),
     `O_CREAT`/`O_TRUNC`/`O_EXCL`, `unlink`, `mkdir`, `rmdir`, directory entries inserted in a
     record's slack and removed by growing the previous `rec_len`, truncate (frees blocks: the
     tests can clean up), `O_APPEND`, a full-disk `ENOSPC` test. The split of `ext2.c` came
     early, before W6e (done): `fs/ext2/`, one file per section plus `internal.h`, in nine
     buildable commits, each built and tested; every function moved unchanged (checked by a
-    script: 44 bodies found once each). Then, after W6: a review of the test suite (what each
-    test covers, what else covers it now: keep, merge or remove).
+    script: 44 bodies found once each).
 - **After writing (pick an order):** partitions (MBR/GPT → `hda1` on the reserved minors,
   mounting a partition); IRQ-driven ATA (sleep instead of polling); the root on the disk.
   Phase C (the process model) can also start: none of these block it.
@@ -2333,6 +2340,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The block self-test once failed reading 300 sectors at 7000 with `-EIO`, right after a
   build (host busy); not reproduced in ~20 runs since. Polling ATA's timeouts are loop
   counts, not times; IRQ-driven ATA is the real fix.
+- `user/tests/stdio` checks its return values, but the output order (stdout line-buffered,
+  stderr unbuffered, the flush at exit) only by eye: it passes whatever the order. Checkable
+  once pipes exist (phase C): a child's stdout and stderr read back in order.
 - ext2 (each item becomes work when something needs it):
   - no `rename`; no `link`, so a file has one name (but the
     link count is kept right for when it has more); symlinks (and other kinds the VFS cannot
@@ -2433,13 +2443,11 @@ Automatic test run, no window (about 10 s; exits 0 only after a clean power off 
 ./run-tests.sh
 ```
 
-The `e2fsck` check: the same tests on `build/fsck.img`, a copy of `disk.img` the run may write
-(`SNAPSHOT=0 ./run-tests.sh`), then `e2fsck -fn` in the `mihos-compiler` image; passes only if
-both are clean. `build/fsck.img` stays for `debugfs` after a failure:
-
-```sh
-./fsck-test.sh
-```
+The run writes to `build/test-disk.img`, a fresh copy of `disk.img` (the image itself never
+changes), and after the tests checks it with `e2fsck -fn` and `dumpe2fs`'s state in the
+`mihos-compiler` image: it passes only if the disk is consistent and the halt left it clean.
+`FSCK=auto` (default) skips that, saying so, without Docker or the image; `FSCK=1` requires
+it, `FSCK=0` turns it off. The copy stays for `debugfs` after a failure.
 
 The same by hand (on Windows the log path must be a Windows path):
 

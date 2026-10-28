@@ -127,8 +127,8 @@ docs/                     # handoff, roadmap
 1. ~~Finish and commit stdio (fix `fwrite`/`fputs` return values, run the ordering test).~~ Done.
 2. ~~`brk` syscall + `malloc`/`free` in libc; more user stack pages.~~ Done.
 3. ~~Restructure `user/` as above; `hello` → `user/tests/hello`, the temporary stdio/brk/malloc
-   tests → libc programs in `user/tests/`.~~ Done. Still open: the `user_program.S` kernel
-   self-tests → libc programs.
+   tests → libc programs in `user/tests/`.~~ Done; the `user_program.S` kernel self-tests too
+   (all but the ring-3 loop), after W6.
 4. ~~stdio input (`fgets`, `getchar`; flush line-buffered output before reading).~~ Done.
 5. ~~Spawn + wait syscalls, `argv`/`envp` on the initial stack~~ (done; `exec` comes with `fork` in
    phase C); ~~`/sbin/init` in user space~~ (done: pid 1, runs the test runner) ~~starts a first
@@ -146,7 +146,7 @@ docs/                     # handoff, roadmap
    and W4, ext2 overwriting file data, done; ext2 allocation: inode write-back, the block
    allocator, growing files and `s_state` done, checked by e2fsck; namespace: truncate, the
    inode allocator, creating and deleting files, `O_APPEND`, `mkdir`/`rmdir` and a full-disk
-   test done: **ext2 writing is complete**; next a review of the test suite), then partitions and
+   test done: **ext2 writing is complete**; the test suite reviewed after it), then partitions and
    IRQ-driven reads, then the root on the disk).
 
 ## Reference projects
