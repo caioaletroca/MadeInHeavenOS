@@ -4,6 +4,8 @@
 #include <fs/vfs.h>
 #include <fs/file.h>
 #include <mm/kmalloc.h>
+#include <sched/sync.h>
+#include <sched/thread.h>
 #include <mihos/errno.h>
 #include <mihos/fcntl.h>
 #include <mihos/stat.h>
@@ -125,6 +127,75 @@ static void block_test_reads(block_device_t *dev)
 
     kfree(many);
     kfree(one);
+}
+
+// Concurrent reads: two threads, each reading its own range again and again
+#define CONCURRENT_START_A 0
+#define CONCURRENT_START_B 3000
+#define CONCURRENT_ROUNDS 4
+
+typedef struct block_reader
+{
+    block_device_t *dev;
+    uint64_t sector;
+    const uint8_t *expected; // the range read by one thread alone
+} block_reader_t;
+
+static semaphore_t readers_done;
+
+static void block_reader(void *arg)
+{
+    block_reader_t *reader = arg;
+
+    uint8_t *back = kmalloc(LONG_READ * BLOCK_SECTOR_SIZE);
+    if (back == NULL)
+        panic("Block self-test: out of memory\n");
+
+    for (int round = 0; round < CONCURRENT_ROUNDS; round++)
+    {
+        memset(back, 0, LONG_READ * BLOCK_SECTOR_SIZE);
+        block_read_or_panic(reader->dev, reader->sector, LONG_READ, back);
+        if (memcmp(back, reader->expected, LONG_READ * BLOCK_SECTOR_SIZE) != 0)
+            panic("Block self-test: a read at %u mixed with another thread's\n", (unsigned int)reader->sector);
+    }
+
+    kfree(back);
+    semaphore_up(&readers_done);
+}
+
+/**
+ * Two threads read at once: while one sleeps until its sector's IRQ, the other
+ * runs and must wait for the channel (one command at a time), so each gets its
+ * own sectors, as a read by one thread alone does.
+ */
+static void block_test_concurrent_reads(block_device_t *dev)
+{
+    uint8_t *expected_a = kmalloc(LONG_READ * BLOCK_SECTOR_SIZE);
+    uint8_t *expected_b = kmalloc(LONG_READ * BLOCK_SECTOR_SIZE);
+    if (expected_a == NULL || expected_b == NULL)
+        panic("Block self-test: out of memory\n");
+
+    block_read_or_panic(dev, CONCURRENT_START_A, LONG_READ, expected_a);
+    block_read_or_panic(dev, CONCURRENT_START_B, LONG_READ, expected_b);
+    if (memcmp(expected_a, expected_b, LONG_READ * BLOCK_SECTOR_SIZE) == 0)
+        panic("Block self-test: the two concurrent ranges hold the same bytes\n");
+
+    // On this stack: the boot thread waits for both readers below
+    block_reader_t readers[2] = {
+        {.dev = dev, .sector = CONCURRENT_START_A, .expected = expected_a},
+        {.dev = dev, .sector = CONCURRENT_START_B, .expected = expected_b},
+    };
+
+    semaphore_init(&readers_done, 0);
+    for (int i = 0; i < 2; i++)
+        if (thread_create(block_reader, &readers[i]) == NULL)
+            panic("Block self-test: cannot start a reader thread\n");
+
+    for (int i = 0; i < 2; i++)
+        semaphore_down(&readers_done);
+
+    kfree(expected_b);
+    kfree(expected_a);
 }
 
 static void block_write_or_panic(block_device_t *dev, uint64_t sector, uint32_t count, const void *buffer)
@@ -642,6 +713,7 @@ void block_selftest(void)
     block_device_t *dev = block_test_disk();
 
     block_test_reads(dev);
+    block_test_concurrent_reads(dev);
     block_test_writes(dev);
     block_test_cache(dev);
     block_test_write_back(dev);
