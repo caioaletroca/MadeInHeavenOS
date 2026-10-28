@@ -49,6 +49,10 @@ void pic_irq_enable(uint8_t irq)
 	uint8_t mask = inb(port) & ~(1 << (irq % 8));
 
 	outb(port, mask);
+
+	// IRQs 8-15 reach the CPU through the slave PIC, on the master's line 2
+	if (irq >= 8)
+		outb(PIC1_DATA, inb(PIC1_DATA) & ~(1 << 2));
 }
 
 void pic_irq_disable(uint8_t irq)
