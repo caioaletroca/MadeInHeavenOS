@@ -285,11 +285,13 @@ int ext2_inode_init(ext2_volume_t *volume, uint32_t ino, uint16_t mode, uint16_t
 }
 
 /**
- * @brief Give an inode back: marked deleted in its slot (i_dtime), then its bit and the counts
+ * @brief Give an inode back: marked deleted in its slot (i_dtime, and i_links_count 0), then
+ * its bit and the counts
  *
- * The caller has freed its blocks (truncate to 0) and its links are 0. i_dtime is written
- * first, outside the lock (nobody else writes this slot): a deleted inode still marked
- * allocated is a leak, never two owners.
+ * The caller has freed its blocks (truncate to 0). The slot is written first, outside the
+ * lock (nobody else writes it): a deleted inode still marked allocated is a leak, never two
+ * owners. Its links are cleared here, whatever the caller left: a create or mkdir failing
+ * after ext2_inode_init gives back a slot that still says 1 or 2.
  *
  * @param volume: The ext2 filesystem
  * @param ino: The inode
@@ -304,7 +306,13 @@ int ext2_inode_free(ext2_volume_t *volume, uint32_t ino, bool directory)
     uint64_t byte = ext2_inode_byte(volume, ino);
 
     uint32_t dtime = volume->dtime; // "deleted" for e2fsck (0 would be an orphan); no clock, so the superblock's last write time
-    int ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_dtime), &dtime, sizeof(uint32_t));
+    int ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_dtime), &dtime, sizeof(dtime));
+
+    // A freed inode has no links: e2fsck calls an inode with links in use, whatever its bit says
+    // (a create or mkdir failing after ext2_inode_init gives one back with 1 or 2)
+    uint16_t links = 0;
+    if (ret == 0)
+        ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_links_count), &links, sizeof(links));
     if (ret < 0)
         return ret;
 
