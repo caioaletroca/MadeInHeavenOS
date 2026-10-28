@@ -124,7 +124,7 @@ long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
 long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint64_t offset);
 int ext2_truncate(vfs_node_t *file, uint64_t size);
 
-// ext2.c
+// namespace.c
 int ext2_create(vfs_node_t *dir, const char *name, size_t length, uint32_t mode, vfs_node_t **child);
 void ext2_release(vfs_node_t *node);
 int ext2_unlink(vfs_node_t *dir, const char *name, size_t length);
