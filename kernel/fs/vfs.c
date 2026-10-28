@@ -400,17 +400,15 @@ static const file_ops_t vfs_file_ops = {
 };
 
 /**
- * Create a regular file at a path whose last component does not exist yet: the parent
- * is looked up (through mounts) and asked to create the name in it.
+ * Look up the parent directory of a given path and extract the last component's name.
  *
- * @param path The absolute path of the file to create.
- * @param mode The permissions for the new file (07777).
- * @param out Receives the new file's node, as a new reference.
- * @return 0, -EISDIR for a path ending in '/', -ENAMETOOLONG, the parent's lookup error,
- * -ENOTDIR, -EROFS (the parent's file system cannot create), -EEXIST if the name was
- * made meanwhile, or the file system's error.
+ * @param path The path to analyze.
+ * @param dir Pointer to store the parent directory node.
+ * @param name Pointer to store the last component's name (points into path).
+ * @param length Pointer to store the length of the last component's name.
+ * @return 0 on success, or a negative error code on failure.
  */
-static int vfs_create(const char *path, uint32_t mode, vfs_node_t **out)
+static int vfs_lookup_parent(const char *path, vfs_node_t **dir, const char **name, size_t *length)
 {
     size_t end = strlen(path);
     if (path[end - 1] == '/')
@@ -430,17 +428,43 @@ static int vfs_create(const char *path, uint32_t mode, vfs_node_t **out)
     memcpy(parent_path, path, start);
     parent_path[start] = '\0';
 
-    vfs_node_t *dir;
-    int ret = vfs_lookup(parent_path, &dir);
+    vfs_node_t *d;
+    int ret = vfs_lookup(parent_path, &d);
     kfree(parent_path);
     if (ret < 0)
         return ret;
 
-    if (dir->type != VFS_DIRECTORY)
+    if (d->type != VFS_DIRECTORY)
     {
-        vfs_node_put(dir);
+        vfs_node_put(d);
         return -ENOTDIR;
     }
+
+    *dir = d;
+    *name = path + start;
+    *length = end - start;
+    return 0;
+}
+
+/**
+ * Create a regular file at a path whose last component does not exist yet: the parent
+ * is looked up (through mounts) and asked to create the name in it.
+ *
+ * @param path The absolute path of the file to create.
+ * @param mode The permissions for the new file (07777).
+ * @param out Receives the new file's node, as a new reference.
+ * @return 0, -EISDIR for a path ending in '/', -ENAMETOOLONG, the parent's lookup error,
+ * -ENOTDIR, -EROFS (the parent's file system cannot create), -EEXIST if the name was
+ * made meanwhile, or the file system's error.
+ */
+static int vfs_create(const char *path, uint32_t mode, vfs_node_t **out)
+{
+    const char *name;
+    size_t length;
+    vfs_node_t *dir;
+    int ret = vfs_lookup_parent(path, &dir, &name, &length);
+    if (ret < 0)
+        return ret;
 
     if (dir->ops->create == NULL)
     {
@@ -449,7 +473,33 @@ static int vfs_create(const char *path, uint32_t mode, vfs_node_t **out)
     }
 
     // The new node holds its own reference to the parent (its "..")
-    ret = dir->ops->create(dir, path + start, end - start, mode & 07777, out);
+    ret = dir->ops->create(dir, name, length, mode & 07777, out);
+    vfs_node_put(dir);
+    return ret;
+}
+
+int vfs_unlink(const char *path)
+{
+    // "name/": the lookup refuses a file (ENOTDIR) or a missing name (ENOENT); a directory is EISDIR
+    size_t end = strlen(path);
+    if (end > 1 && path[end - 1] == '/')
+    {
+        vfs_node_t *node;
+        int ret = vfs_lookup(path, &node);
+        if (ret < 0)
+            return ret;
+        vfs_node_put(node);
+        return -EISDIR;
+    }
+
+    const char *name;
+    size_t length;
+    vfs_node_t *dir;
+    int ret = vfs_lookup_parent(path, &dir, &name, &length);
+    if (ret < 0)
+        return ret;
+
+    ret = dir->ops->unlink != NULL ? dir->ops->unlink(dir, name, length) : -EROFS;
     vfs_node_put(dir);
     return ret;
 }

@@ -71,6 +71,10 @@ typedef struct vfs_node_ops
     // as a new reference; -EEXIST if the name is taken (whatever its type)
     int (*create)(vfs_node_t *dir, const char *name, size_t length, uint32_t mode, vfs_node_t **child);
 
+    // Directory: removes the name name[0..length) of a regular file; the file itself is freed once
+    // it has no names and no references left. -EISDIR for a directory, -ENOENT if not there
+    int (*unlink)(vfs_node_t *dir, const char *name, size_t length);
+
     // File: copies up to count bytes from offset; returns the count (0 at the end) or -errno
     long (*read)(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
 
@@ -245,5 +249,13 @@ int vfs_read_file(const char *path, void **data, size_t *size);
  * @return 0 on success, -errno on failure.
  */
 int vfs_open(const char *path, int flags, uint32_t mode, struct file **file);
+
+/**
+ * @brief Remove a file specified by its path.
+ *
+ * @param path The path to the file to remove.
+ * @return 0 on success, -errno on failure.
+ */
+int vfs_unlink(const char *path);
 
 #endif /* _FS_VFS_H_ */
