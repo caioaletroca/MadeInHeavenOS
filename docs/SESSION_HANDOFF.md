@@ -74,6 +74,16 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+a10f718 refactor(fs): move what is left of ext2.c, mounting, into mount.c
+fefae0f refactor(fs): split ext2's create, unlink and the release into namespace.c
+e0ad82a refactor(fs): split ext2's file reads, writes and truncates into file_data.c
+485bb19 refactor(fs): split ext2's directories into directory.c
+ec5cff5 refactor(fs): split ext2's file block mapping into file_blocks.c
+e9e9b36 refactor(fs): split ext2's inodes, nodes and the ops tables into inode.c
+7343c9b refactor(fs): split ext2's block and inode allocation into allocation.c
+1077e3d refactor(fs): split ext2's disk access into disk.c
+418999d refactor(fs): move ext2 into fs/ext2/
+38e0ee8 docs(architecture): document unlink and O_APPEND in handoff
 7e9114f test: cover unlink and O_APPEND
 98a12b0 feat(fs): add O_APPEND
 2ccd035 feat(libc): add unlink
@@ -1205,7 +1215,27 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   product at 64, 1024 consecutive keys 48–80 per bucket of 16; `list_move_after` from the back
   and the middle (both link directions), and of the first item (no change).
 
-### ext2 (`fs/ext2.c`, `fs/ext2_disk.h`, `include/fs/ext2.h`)
+### ext2 (`fs/ext2/`, `include/fs/ext2.h`)
+
+```text
+fs/ext2/
+├── internal.h     private to the folder: the volume and node structs, what one file calls in another
+├── disk_format.h  the on-disk structures (ext2_super_t, ext2_group_t, ext2_inode_t, ext2_dirent_t)
+├── disk.c         disk access: ext2_block_get/write/zero, ext2_disk_write/zero
+├── allocation.c   block and inode bitmaps, free counts: block_alloc/free, inode_alloc/init/free
+├── inode.c        the ops tables, inode_byte, inode_store, node_get, ext2_inode_write
+├── file_blocks.c  slot, file_block, truncate_branch
+├── directory.c    record checks, dir_walk, dir_add/remove, readdir, lookup
+├── file_data.c    read, write, truncate
+├── namespace.c    create, unlink, release (frees an unlinked node at its last put)
+└── mount.c        superblock checks, group table, s_state, halt hook, mount, init
+```
+
+Only `include/fs/ext2.h` (`ext2_mount`, `ext2_inode_write`, `ext2_init`) is seen outside the
+folder. A function another file of the folder calls is not `static` (it keeps the `ext2_`
+prefix) and is declared in `internal.h`, grouped by the file defining it; the rest is
+`static`. Each file is in the bottom-up order of the single file it came from (every
+function after what it calls).
 
 ```text
 / (initrd) ─ mnt ── mounted ──▶ ext2 root (inode 2) ─ hello.txt (inode 20)
@@ -1214,7 +1244,7 @@ read(/mnt/big.txt) ─▶ ext2_read ─ per ext2 block: ext2_file_block ─▶ e
 lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─▶ ext2_node_get(ino) ─▶ node cache
 ```
 
-- **On-disk format** (`fs/ext2_disk.h`, private to `ext2.c`): `ext2_super_t` (1024 bytes at byte
+- **On-disk format** (`fs/ext2/disk_format.h`, private to the folder): `ext2_super_t` (1024 bytes at byte
   1024 of the disk), `ext2_group_t` (32), `ext2_inode_t` (the first 128 bytes of an inode),
   `ext2_dirent_t` (8-byte header + name), with `_Static_assert`s on sizes and offsets; read in
   place from cache buffers, little-endian like x86 (a big-endian arch needs conversions).
@@ -1246,9 +1276,9 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   `read_only`, `max_file_size`, the group
   table, `free_blocks`/`free_inodes` and `allocation_lock` (the bitmaps, the group table's
   counters and those two), `lock` (the node cache) and the node hash (`nodes[64]`, `kzalloc`'d:
-  empty). `ext2.c` is in sections, every function after what it calls: disk access, block
-  allocation, inodes and nodes, inode allocation, file blocks, directories, file data, mounting; only the ops'
-  prototypes come first (lookup → `ext2_node_get` → the ops tables → lookup).
+  empty). The files follow the old single file's sections (see the tree above); the ops
+  tables are in `inode.c`, with `ext2_node_get`, their only user, and every op is declared in
+  `internal.h`.
 - **Disk access** (`ext2_block_get(volume, block, &lease, &data)`): the only way to the disk; block 0
   or past the end → `-EIO` (a corrupt pointer); otherwise `block_cache_get` of the cache block
   holding it and `data` = its first byte there (a block never straddles two cache buffers).
@@ -2024,8 +2054,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     Overall: inode allocation (the inode bitmap, `free_inodes`, `bg_used_dirs_count`),
     `O_CREAT`/`O_TRUNC`/`O_EXCL`, `unlink`, `mkdir`, `rmdir`, directory entries inserted in a
     record's slack and removed by growing the previous `rec_len`, truncate (frees blocks: the
-    tests can clean up), `O_APPEND`, a full-disk `ENOSPC` test. Then: split `ext2.c` along its
-    sections (Linux's `balloc.c`, `inode.c`, `dir.c`, `file.c`, `super.c` + a private header).
+    tests can clean up), `O_APPEND`, a full-disk `ENOSPC` test. The split of `ext2.c` came
+    early, before W6e (done): `fs/ext2/`, one file per section plus `internal.h`, in nine
+    buildable commits, each built and tested; every function moved unchanged (checked by a
+    script: 44 bodies found once each). Then, after W6: a review of the test suite (what each
+    test covers, what else covers it now: keep, merge or remove).
 - **After writing (pick an order):** partitions (MBR/GPT → `hda1` on the reserved minors,
   mounting a partition); IRQ-driven ATA (sleep instead of polling); the root on the disk.
   Phase C (the process model) can also start: none of these block it.
