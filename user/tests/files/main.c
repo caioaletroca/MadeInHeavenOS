@@ -131,6 +131,9 @@ static void test_errors(void)
     CHECK(open(FILE_PATH, 0x100) == -1 && errno == EINVAL); // unknown flag
     errno = 0;
     CHECK(open((const char *)1, O_RDONLY) == -1 && errno == EFAULT);
+    errno = 0;
+    // Kernel memory (the higher half) is refused too, never printed
+    CHECK(write(1, (const void *)0xFFFFFFFF80100000, 16) == -1 && errno == EFAULT);
 
     // A path longer than PATH_MAX
     static char long_path[5000];

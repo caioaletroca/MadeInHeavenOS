@@ -58,6 +58,13 @@ static int child_main(int argc, char **argv, char **envp)
         return 0; // not reached
     }
 
+    // A privileged instruction at CPL 3: the kill goes through the general protection fault path
+    if (strcmp(mode, "hlt") == 0)
+    {
+        __asm__ volatile("hlt");
+        return 0; // not reached
+    }
+
     // argv and envp exactly as the parent passed them
     if (strcmp(mode, "args") == 0)
     {
@@ -150,6 +157,10 @@ static void test_status_encoding(void)
     status = child_run("segv", NULL, NULL);
     CHECK(WIFSIGNALED(status) && !WIFEXITED(status));
     CHECK(WTERMSIG(status) == 11); // SIGSEGV
+
+    // A #GP (hlt) kills with SIGSEGV too, as on Linux
+    status = child_run("hlt", NULL, NULL);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == 11);
 }
 
 static void test_arguments(void)
