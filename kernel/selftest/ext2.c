@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <panic.h>
+#include <util.h>
 
 /*
  * Against disk.img (Makefile): 1 KiB blocks, mounted on /mnt by ext2_init.
@@ -1369,6 +1370,109 @@ static void ext2_test_dirs(void)
         panic("ext2 self-test: a refused mkdir or rmdir changed the counts\n");
 }
 
+#define FULL_CHUNK 4096 // the full-disk test writes this much per call
+
+// Chunk `chunk` of the full-disk test's file: its number in the first 4 bytes, then a pattern from it
+static void full_chunk(uint8_t *buffer, uint32_t chunk)
+{
+    memcpy(buffer, &chunk, sizeof(chunk));
+    for (uint32_t b = sizeof(chunk); b < FULL_CHUNK; b++)
+        buffer[b] = (uint8_t)(chunk * 7 + b);
+}
+
+/**
+ * The disk filled to the last block, through grow/full, 4 KiB per write: the writes end
+ * cleanly (a short write, or -ENOSPC when not one byte fits), the size is what was
+ * written, both free counts are 0 on the disk, and one more byte is -ENOSPC. Full, a
+ * create still works (it needs an inode and room in grow/'s blocks, no new block), but
+ * writing to it is -ENOSPC; a mkdir (its first block) is -ENOSPC and gives back the inode
+ * and the used-directories count it took. Every chunk reads back (its number; every
+ * 64th whole). Unlinking both files brings back every block and inode. e2fsck checks
+ * the disk afterwards (fsck-test.sh).
+ */
+static void ext2_test_full(void)
+{
+    block_device_t *disk = block_at(0);
+    uint8_t *buffer = kmalloc(FULL_CHUNK);
+    uint8_t *back = kmalloc(FULL_CHUNK);
+    if (disk == NULL || buffer == NULL || back == NULL)
+        panic("ext2 self-test: no disk, or out of memory\n");
+    uint32_t group0, blocks_group0, now_group0;
+    uint32_t free = disk_free_inodes(disk, &group0);
+    uint32_t free_blocks = disk_free_blocks(disk, &blocks_group0);
+    uint32_t used_dirs = disk_used_dirs(disk);
+
+    struct file *full_file = NULL;
+    if (vfs_open(MNT "/grow/full", O_RDWR | O_CREAT | O_EXCL, 0644, &full_file) != 0)
+        panic("ext2 self-test: creating grow/full failed\n");
+    vfs_node_t *full = full_file->node;
+
+    // Fill: every write a whole chunk until the disk runs out
+    uint64_t written = 0;
+    uint32_t chunks = 0;
+    for (;;)
+    {
+        full_chunk(buffer, chunks);
+        long n = vfs_write(full, buffer, FULL_CHUNK, written);
+        if (n == -ENOSPC)
+            break;
+        if (n <= 0 || n > FULL_CHUNK)
+            panic("ext2 self-test: a write filling the disk returned %d\n", (int)n);
+        written += (uint64_t)n;
+        chunks++;
+        if (n < FULL_CHUNK)
+            break; // the disk filled inside this chunk
+        if (written > (uint64_t)free_blocks * BLOCK)
+            panic("ext2 self-test: more was written than the disk had free\n");
+    }
+    if (full->size != written || written == 0 || written % BLOCK != 0)
+        panic("ext2 self-test: the full file's size is %u, %u bytes were written\n", (unsigned int)full->size,
+              (unsigned int)written);
+    if (disk_free_blocks(disk, &now_group0) != 0 || now_group0 != 0)
+        panic("ext2 self-test: the disk is full but its free counts are not 0\n");
+    if (vfs_write(full, "x", 1, written) != -ENOSPC || full->size != written)
+        panic("ext2 self-test: a byte past a full disk's last block did not return -ENOSPC\n");
+
+    // Full: a create takes no block, a write to it does; a mkdir needs its first block
+    struct file *file = NULL;
+    if (vfs_open(MNT "/grow/nothing", O_RDWR | O_CREAT | O_EXCL, 0644, &file) != 0)
+        panic("ext2 self-test: creating a file on a full disk failed\n");
+    if (vfs_write(file->node, "x", 1, 0) != -ENOSPC || file->node->size != 0)
+        panic("ext2 self-test: writing to a new file on a full disk did not return -ENOSPC\n");
+    file_put(file);
+    uint32_t inodes_full = disk_free_inodes(disk, &now_group0);
+    mkdir_expect(MNT "/grow/nospace", -ENOSPC);
+    ext2_expect_error(MNT "/grow/nospace", -ENOENT);
+    if (disk_free_inodes(disk, &now_group0) != inodes_full || disk_used_dirs(disk) != used_dirs)
+        panic("ext2 self-test: a mkdir refused for space kept its inode\n");
+
+    // Every chunk is there: its number, and every 64th byte for byte
+    for (uint32_t chunk = 0; chunk < chunks; chunk++)
+    {
+        uint64_t at = (uint64_t)chunk * FULL_CHUNK;
+        size_t length = (size_t)MIN((uint64_t)FULL_CHUNK, written - at);
+        bool whole = chunk % 64 == 0 || chunk == chunks - 1;
+        if (vfs_read(full, back, whole ? length : sizeof(uint32_t), at) != (long)(whole ? length : sizeof(uint32_t)))
+            panic("ext2 self-test: reading chunk %u of the full file failed\n", chunk);
+        full_chunk(buffer, chunk);
+        if (memcmp(back, buffer, whole ? length : sizeof(uint32_t)) != 0)
+            panic("ext2 self-test: chunk %u of the full file reads back wrong\n", chunk);
+    }
+
+    // Everything back: the full file unlinked while open keeps its blocks until the close
+    unlink_expect(MNT "/grow/nothing", 0);
+    unlink_expect(MNT "/grow/full", 0);
+    if (disk_free_blocks(disk, &now_group0) != 0)
+        panic("ext2 self-test: the unlinked full file gave blocks back while still open\n");
+    file_put(full_file);
+    if (disk_free_blocks(disk, &now_group0) != free_blocks || now_group0 != blocks_group0)
+        panic("ext2 self-test: closing the full file did not give all its blocks back\n");
+    if (disk_free_inodes(disk, &now_group0) != free || now_group0 != group0)
+        panic("ext2 self-test: the full-disk test did not give its inodes back\n");
+    kfree(back);
+    kfree(buffer);
+}
+
 void ext2_selftest(void)
 {
     memcpy(long_path, MNT "/", sizeof(MNT));
@@ -1389,6 +1493,7 @@ void ext2_selftest(void)
     ext2_test_create();
     ext2_test_unlink();
     ext2_test_dirs();
+    ext2_test_full();
     ext2_test_state();
     ext2_test_broken();
 
