@@ -27,8 +27,10 @@ static const char *const messages[] = {
     [ENOSPC] = "No space left on device",
     [ESPIPE] = "Illegal seek",
     [EROFS] = "Read-only file system",
+    [EMLINK] = "Too many links",
     [ENAMETOOLONG] = "File name too long",
     [ENOSYS] = "Function not implemented",
+    [ENOTEMPTY] = "Directory not empty",
     [ENOBUFS] = "No buffer space available",
 };
 

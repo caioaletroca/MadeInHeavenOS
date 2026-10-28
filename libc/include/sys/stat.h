@@ -78,6 +78,15 @@ int stat(const char *restrict path, struct stat *restrict st);
  */
 int fstat(int fd, struct stat *st);
 
+/**
+ * @brief Create a directory at the specified path.
+ *
+ * @param path The path to the directory to create.
+ * @param mode The permissions for the new directory (07777).
+ * @return 0 on success, or -1 with errno set (EEXIST, ENOENT, ENOTDIR, EFAULT).
+ */
+int mkdir(const char *path, mode_t mode);
+
 __END_DECLS
 
 #endif /* _SYS_STAT_H_ */

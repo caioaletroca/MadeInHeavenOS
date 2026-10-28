@@ -92,6 +92,14 @@ ssize_t read(int fd, void *buf, size_t count);
 int unlink(const char *path);
 
 /**
+ * Remove a directory at the specified path.
+ *
+ * @param path The path to the directory to remove.
+ * @return 0 on success, or -1 on error.
+ */
+int rmdir(const char *path);
+
+/**
  * Close a file descriptor.
  *
  * @param fd The file descriptor to close.

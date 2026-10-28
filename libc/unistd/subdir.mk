@@ -5,6 +5,7 @@ sbrk.c \
 read.c \
 write.c \
 unlink.c \
+rmdir.c \
 close.c \
 lseek.c \
 reboot.c \
