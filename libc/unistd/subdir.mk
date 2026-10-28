@@ -4,6 +4,7 @@ brk.c \
 sbrk.c \
 read.c \
 write.c \
+unlink.c \
 close.c \
 lseek.c \
 reboot.c \

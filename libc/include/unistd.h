@@ -84,6 +84,14 @@ int truncate(const char *path, off_t length);
 ssize_t read(int fd, void *buf, size_t count);
 
 /**
+ * Remove a file specified by its path.
+ *
+ * @param path The path to the file to remove.
+ * @return 0 on success, or -1 on error.
+ */
+int unlink(const char *path);
+
+/**
  * Close a file descriptor.
  *
  * @param fd The file descriptor to close.
