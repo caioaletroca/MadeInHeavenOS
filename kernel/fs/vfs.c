@@ -450,6 +450,27 @@ static int vfs_lookup_parent(const char *path, vfs_node_t **dir, const char **na
 }
 
 /**
+ * @brief Trim trailing slashes from a path.
+ *
+ * @param path The path to trim.
+ * @return A newly allocated string with trailing slashes removed, or NULL on allocation failure.
+ */
+static char *vfs_path_trimmed(const char *path)
+{
+    size_t end = strlen(path);
+    while (end > 1 && path[end - 1] == '/')
+        end--;
+
+    char *trimmed = kmalloc(end + 1);
+    if (trimmed == NULL)
+        return NULL;
+
+    memcpy(trimmed, path, end);
+    trimmed[end] = '\0';
+    return trimmed;
+}
+
+/**
  * Create a regular file at a path whose last component does not exist yet: the parent
  * is looked up (through mounts) and asked to create the name in it.
  *
@@ -504,6 +525,61 @@ int vfs_unlink(const char *path)
 
     ret = dir->ops->unlink != NULL ? dir->ops->unlink(dir, name, length) : -EROFS;
     vfs_node_put(dir);
+    return ret;
+}
+
+int vfs_mkdir(const char *path, uint32_t mode)
+{
+    vfs_node_t *node;
+    if (vfs_lookup(path, &node) == 0)
+    {
+        vfs_node_put(node);
+        return -EEXIST;
+    }
+
+    char *trimmed = vfs_path_trimmed(path);
+    if (trimmed == NULL)
+        return -ENOMEM;
+
+    vfs_node_t *dir;
+    const char *name;
+    size_t length;
+    int ret = vfs_lookup_parent(trimmed, &dir, &name, &length);
+    if (ret == 0)
+    {
+        ret = dir->ops->mkdir != NULL ? dir->ops->mkdir(dir, name, length, mode & 07777) : -EROFS;
+        vfs_node_put(dir);
+    }
+
+    kfree(trimmed);
+    return ret;
+}
+
+int vfs_rmdir(const char *path)
+{
+    char *trimmed = vfs_path_trimmed(path);
+    if (trimmed == NULL)
+        return -ENOMEM;
+
+    vfs_node_t *dir;
+    const char *name;
+    size_t length;
+
+    int ret = strcmp(trimmed, "/") == 0 ? -EBUSY : 0;
+    if (ret == 0)
+        ret = vfs_lookup_parent(trimmed, &dir, &name, &length);
+    if (ret == 0)
+    {
+        if (length == 1 && name[0] == '.')
+            ret = -EINVAL;
+        else if (length == 2 && name[0] == '.' && name[1] == '.')
+            ret = -ENOTEMPTY;
+        else
+            ret = dir->ops->rmdir != NULL ? dir->ops->rmdir(dir, name, length) : -EROFS;
+        vfs_node_put(dir);
+    }
+
+    kfree(trimmed);
     return ret;
 }
 

@@ -76,6 +76,14 @@ typedef struct vfs_node_ops
     // it has no names and no references left. -EISDIR for a directory, -ENOENT if not there
     int (*unlink)(vfs_node_t *dir, const char *name, size_t length);
 
+    // Directory: a new, empty directory called name[0..length) with permissions mode (07777);
+    // -EEXIST if the name is taken (whatever its type)
+    int (*mkdir)(vfs_node_t *dir, const char *name, size_t length, uint32_t mode);
+
+    // Directory: removes the empty directory called name[0..length); -ENOTDIR, -ENOTEMPTY,
+    // -ENOENT. It is freed once it has no references left
+    int (*rmdir)(vfs_node_t *dir, const char *name, size_t length);
+
     // File: copies up to count bytes from offset; returns the count (0 at the end) or -errno
     long (*read)(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
 
@@ -259,5 +267,22 @@ int vfs_open(const char *path, int flags, uint32_t mode, struct file **file);
  * @return 0 on success, -errno on failure.
  */
 int vfs_unlink(const char *path);
+
+/**
+ * @brief Create a directory at the specified path.
+ *
+ * @param path The path to the directory to create.
+ * @param mode The permissions for the new directory (07777).
+ * @return 0 on success, -errno on failure.
+ */
+int vfs_mkdir(const char *path, uint32_t mode);
+
+/**
+ * @brief Remove a directory at the specified path.
+ *
+ * @param path The path to the directory to remove.
+ * @return 0 on success, -errno on failure.
+ */
+int vfs_rmdir(const char *path);
 
 #endif /* _FS_VFS_H_ */
