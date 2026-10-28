@@ -35,6 +35,15 @@ static bool cond_flag;
 static volatile bool cond_waiter_started;
 static volatile bool cond_waiter_woke;
 
+// Timed waits: one nobody wakes (timed_queue), one woken in time (timed_wake_queue)
+#define TIMED_EXPIRE_TICKS 5
+#define TIMED_WAKE_TICKS 50
+static spinlock_t timed_lock;
+static wait_queue_t timed_queue;
+static wait_queue_t timed_wake_queue;
+static bool timed_flag;
+static volatile bool timed_waiter_started;
+
 static void worker_a_entry(void *arg)
 {
     (void)arg;
@@ -133,6 +142,81 @@ static void cond_signaler(void *arg)
     semaphore_up(&tests_done);
 }
 
+/**
+ * A timed wait nobody wakes: false, after at least its ticks, off both the
+ * wait queue and the timeout queue, the lock held again.
+ */
+static void timed_expire_waiter(void *arg)
+{
+    (void)arg;
+
+    thread_t *self = scheduler_current();
+    uint64_t start = timer_ticks();
+    bool woken = true;
+
+    scoped_guard(spinlock, &timed_lock)
+    {
+        woken = wait_queue_sleep_locked_timeout(&timed_queue, &timed_lock, TIMED_EXPIRE_TICKS);
+        KASSERT(timed_lock.locked);
+    }
+
+    KASSERT(!woken);
+    KASSERT(timer_ticks() - start >= TIMED_EXPIRE_TICKS);
+    KASSERT(list_empty(&timed_queue.threads));
+    KASSERT(self->timeout_link.next == &self->timeout_link);
+
+    semaphore_up(&tests_done);
+}
+
+/**
+ * A timed wait woken long before its deadline: true, off the timeout queue,
+ * and still not marked timed out once that deadline has passed.
+ */
+static void timed_wake_waiter(void *arg)
+{
+    (void)arg;
+
+    thread_t *self = scheduler_current();
+    bool woken = true;
+
+    scoped_guard(spinlock, &timed_lock)
+    {
+        timed_waiter_started = true;
+
+        while (!timed_flag && woken)
+            woken = wait_queue_sleep_locked_timeout(&timed_wake_queue, &timed_lock, TIMED_WAKE_TICKS);
+    }
+
+    KASSERT(woken && timed_flag);
+    KASSERT(self->timeout_link.next == &self->timeout_link);
+
+    // Past the old deadline: the tick must not find it any more
+    thread_sleep(TIMED_WAKE_TICKS + 1);
+    KASSERT(!self->timed_out);
+
+    semaphore_up(&tests_done);
+}
+
+/**
+ * Wake timed_wake_waiter once it sleeps (it sets the flag and sleeps under
+ * timed_lock, so taking the lock means it is asleep).
+ */
+static void timed_signaler(void *arg)
+{
+    (void)arg;
+
+    while (!timed_waiter_started)
+        scheduler_yield();
+
+    scoped_guard(spinlock, &timed_lock)
+    {
+        timed_flag = true;
+        wait_queue_wake_all(&timed_wake_queue);
+    }
+
+    semaphore_up(&tests_done);
+}
+
 static void sync_selftest(void)
 {
     semaphore_init(&tests_done, 0);
@@ -143,14 +227,22 @@ static void sync_selftest(void)
     wait_queue_init(&cond_queue);
     cond_flag = false;
 
+    spinlock_init(&timed_lock);
+    wait_queue_init(&timed_queue);
+    wait_queue_init(&timed_wake_queue);
+    timed_flag = false;
+
     KASSERT(thread_create(mutex_worker, NULL) != NULL);
     KASSERT(thread_create(mutex_worker, NULL) != NULL);
     KASSERT(thread_create(sleep_worker, NULL) != NULL);
     KASSERT(thread_create(cond_waiter, NULL) != NULL);
     KASSERT(thread_create(cond_signaler, NULL) != NULL);
+    KASSERT(thread_create(timed_expire_waiter, NULL) != NULL);
+    KASSERT(thread_create(timed_wake_waiter, NULL) != NULL);
+    KASSERT(thread_create(timed_signaler, NULL) != NULL);
 
     // Boot thread blocks here; idle runs whenever everyone is waiting
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < 8; i++)
         semaphore_down(&tests_done);
 
     KASSERT(shared_counter == 2 * MUTEX_TEST_ITERATIONS);
