@@ -5,7 +5,7 @@
 #include <kprintf.h>
 #include <util.h>
 
-// ---- What has not moved to its own file yet ----
+// ---- Mounting: the superblock and the group table, checked; the root node; the boot mount ----
 
 /**
  * @brief Read the superblock from the ext2 filesystem
