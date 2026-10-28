@@ -621,6 +621,24 @@ static long sys_truncate(uintptr_t path, long length)
     return ret;
 }
 
+/**
+ * Remove a file specified by its path.
+ *
+ * @param path The path to the file to remove.
+ * @return 0 on success, or a negative error code on failure.
+ */
+static long sys_unlink(uintptr_t path)
+{
+    long error;
+    char *kernel_path = user_path_copy(path, &error);
+    if (kernel_path == NULL)
+        return error;
+
+    int ret = vfs_unlink(kernel_path);
+    kfree(kernel_path);
+    return ret;
+}
+
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {
     (void)arg3;
@@ -665,6 +683,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_ftruncate((unsigned long)arg0, (long)arg1);
     case SYS_TRUNCATE:
         return sys_truncate(arg0, (long)arg1);
+    case SYS_UNLINK:
+        return sys_unlink((uintptr_t)arg0);
     default:
         return -ENOSYS;
     }

@@ -25,6 +25,7 @@
 #define SYS_IOCTL 20
 #define SYS_FTRUNCATE 21
 #define SYS_TRUNCATE 22
+#define SYS_UNLINK 23
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)
