@@ -80,7 +80,19 @@ int ext2_inode_alloc(ext2_volume_t *volume, uint32_t parent, bool directory, uin
 int ext2_inode_init(ext2_volume_t *volume, uint32_t ino, uint16_t mode, uint16_t links, uint32_t time);
 int ext2_inode_free(ext2_volume_t *volume, uint32_t ino, bool directory);
 
-// ext2.c
+// inode.c
 uint64_t ext2_inode_byte(const ext2_volume_t *volume, uint32_t ino);
+int ext2_inode_store(ext2_node_t *n);
+int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent, vfs_node_t **out);
+
+// ext2.c
+int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
+int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
+int ext2_create(vfs_node_t *dir, const char *name, size_t length, uint32_t mode, vfs_node_t **child);
+long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
+long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint64_t offset);
+int ext2_truncate(vfs_node_t *file, uint64_t size);
+void ext2_release(vfs_node_t *node);
+int ext2_unlink(vfs_node_t *dir, const char *name, size_t length);
 
 #endif /* _FS_EXT2_INTERNAL_H_ */
