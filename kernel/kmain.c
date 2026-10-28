@@ -64,13 +64,12 @@ void kmain(uintptr_t boot_handoff)
     console_init(&keymap_abnt2);
 
     block_devfs_init();
-
     block_cache_init();
-    ext2_init();
 
     timer_init(TIMER_FREQUENCY_HZ);
 
     irq_enable();
+    ext2_init();
 
     guard_selftest();
     hashtable_selftest();

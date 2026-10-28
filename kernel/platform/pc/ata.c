@@ -1,9 +1,14 @@
 #include "ata.h"
+#include <arch/irq.h>
 #include <x86/io.h>
 #include <driver/block.h>
+#include <driver/timer.h>
+#include <sched/sync.h>
+#include <sched/wait.h>
 #include <mihos/stat.h>
 #include <mihos/errno.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 #include <kprintf.h>
 #include <panic.h>
@@ -13,6 +18,13 @@
 #define ATA_PRIMARY_CONTROL 0x3F6
 #define ATA_SECONDARY_CHANNEL 0x170
 #define ATA_SECONDARY_CONTROL 0x376
+
+#define ATA_PRIMARY_IRQ 14
+#define ATA_SECONDARY_IRQ 15
+#define ATA_CONTROL_NIEN 0x02 // control register: the drive raises no interrupts
+
+// A drive that has not answered in 5 s is not going to: the command fails with -EIO
+#define ATA_IRQ_TIMEOUT_TICKS (5 * TIMER_FREQUENCY_HZ)
 
 // ATA register definitions
 #define ATA_REG_DATA 0x00
@@ -46,6 +58,22 @@
 #define IDE1_MAJOR 22
 
 /**
+ * An ATA channel: the master and slave drives on one cable share its ports and IRQ
+ */
+typedef struct ata_channel
+{
+    uint16_t io;
+    uint16_t control;
+    unsigned int irq;
+    bool has_drives;     // set by ata_init: only those channels get their IRQ turned on
+    mutex_t lock;        // one command at a time on the channel (the drives share its registers)
+    spinlock_t irq_lock; // irq_pending and irq_status; the handler takes it too
+    wait_queue_t irq_waiters;
+    bool irq_pending;   // an IRQ came since the command was sent
+    uint8_t irq_status; // the STATUS the handler read
+} ata_channel_t;
+
+/**
  * ATA drive structure
  */
 typedef struct ata_drive
@@ -53,9 +81,11 @@ typedef struct ata_drive
     uint16_t io;
     uint16_t control;
     uint8_t slave;
+    ata_channel_t *channel;
     block_device_t block;
 } ata_drive_t;
 
+static ata_channel_t ata_channels[2];
 static ata_drive_t ata_drives[4];
 
 /**
@@ -110,6 +140,61 @@ static int ata_wait_data(ata_drive_t *drive)
         return -EIO;
 
     return status;
+}
+
+/**
+ * @brief ATA IRQ handler: save the status and wake the waiting command. Reading STATUS
+ * (not the alternate status) is what tells the drive its IRQ was seen.
+ *
+ * @param irq The IRQ number that triggered the handler (14: primary channel, 15: secondary).
+ */
+static void ata_irq_handler(unsigned int irq)
+{
+    ata_channel_t *channel = &ata_channels[irq - ATA_PRIMARY_IRQ];
+
+    guard(spinlock, &channel->irq_lock);
+    channel->irq_status = inb(channel->io + ATA_REG_STATUS);
+    channel->irq_pending = true;
+    wait_queue_wake_all(&channel->irq_waiters);
+}
+
+/**
+ * @brief Forget an earlier IRQ (a late one from a timed-out command, or the one turning IRQs
+ * on can raise). Right before sending a command, so its IRQ is the next one.
+ *
+ * @param channel Pointer to the ATA channel structure.
+ */
+static void ata_irq_clear(ata_channel_t *channel)
+{
+    guard(spinlock, &channel->irq_lock);
+    channel->irq_pending = false;
+}
+
+/**
+ * @brief Sleep until the channel's IRQ, at most ATA_IRQ_TIMEOUT_TICKS.
+ *
+ * @param channel Pointer to the ATA channel structure.
+ * @return The status the handler read, or -EIO on a timeout or an error status.
+ */
+static int ata_wait_irq(ata_channel_t *channel)
+{
+    guard(spinlock, &channel->irq_lock);
+
+    // Only the handler wakes this queue, and it sets irq_pending first: a wake always ends the loop
+    while (!channel->irq_pending)
+    {
+        // The deadline and the IRQ can land in one tick period: an IRQ that came is no timeout
+        if (!wait_queue_sleep_locked_timeout(&channel->irq_waiters, &channel->irq_lock, ATA_IRQ_TIMEOUT_TICKS) &&
+            !channel->irq_pending)
+            return -EIO;
+    }
+
+    channel->irq_pending = false;
+
+    if (channel->irq_status & (ATA_SR_ERR | ATA_SR_DF))
+        return -EIO;
+
+    return channel->irq_status;
 }
 
 /**
@@ -215,6 +300,8 @@ static int ata_command(ata_drive_t *drive, uint64_t lba, uint32_t n, uint8_t com
     outb(drive->io + ATA_REG_LBA_LOW, (uint8_t)(lba & 0xFF));
     outb(drive->io + ATA_REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
     outb(drive->io + ATA_REG_LBA_HIGH, (uint8_t)((lba >> 16) & 0xFF));
+
+    ata_irq_clear(drive->channel);
     outb(drive->io + ATA_REG_COMMAND, command);
     ata_delay(drive);
 
@@ -238,6 +325,8 @@ static int ata_read(block_device_t *dev, uint64_t sector, uint32_t count, void *
     if (sector + count > (1u << 28))
         return -EINVAL;
 
+    guard(mutex, &drive->channel->lock);
+
     uint16_t *words = buffer;
     uint64_t lba = sector;
     uint32_t remaining = count;
@@ -252,6 +341,9 @@ static int ata_read(block_device_t *dev, uint64_t sector, uint32_t count, void *
         // The drive hands over one sector at a time: wait for DRQ before each one
         for (uint32_t i = 0; i < n; i++)
         {
+            if (ata_wait_irq(drive->channel) < 0)
+                return -EIO;
+
             if (ata_read_data(drive, words, BLOCK_SECTOR_SIZE) < 0)
                 return -EIO;
 
@@ -282,6 +374,8 @@ static int ata_write(block_device_t *dev, uint64_t sector, uint32_t count, const
     if (sector + count > (1u << 28))
         return -EINVAL;
 
+    guard(mutex, &drive->channel->lock);
+
     const uint16_t *words = buffer;
     uint64_t lba = sector;
     uint32_t remaining = count;
@@ -299,13 +393,11 @@ static int ata_write(block_device_t *dev, uint64_t sector, uint32_t count, const
             if (ata_write_data(drive, words, BLOCK_SECTOR_SIZE) < 0)
                 return -EIO;
 
+            if (ata_wait_irq(drive->channel) < 0)
+                return -EIO;
+
             words += BLOCK_SECTOR_SIZE / 2;
         }
-
-        // Wait for the drive to be ready after writing the sectors
-        int status = ata_wait_ready(drive);
-        if (status < 0 || status & ATA_SR_ERR || status & ATA_SR_DF)
-            return -EIO;
 
         lba += n;
         remaining -= n;
@@ -324,6 +416,8 @@ static int ata_flush(block_device_t *dev)
 {
     ata_drive_t *drive = dev->private;
 
+    guard(mutex, &drive->channel->lock);
+
     if (ata_wait_ready(drive) < 0)
         return -EIO;
 
@@ -332,12 +426,12 @@ static int ata_flush(block_device_t *dev)
     ata_delay(drive);
 
     // Send the flush cache command to the drive
+    ata_irq_clear(drive->channel);
     outb(drive->io + ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
     ata_delay(drive);
 
-    // Wait for the drive to be ready after flushing
-    int status = ata_wait_ready(drive);
-    if (status < 0 || status & ATA_SR_ERR || status & ATA_SR_DF)
+    // One IRQ when the cache is on the disk
+    if (ata_wait_irq(drive->channel) < 0)
         return -EIO;
 
     return 0;
@@ -352,8 +446,19 @@ static const block_ops_t ata_block_ops = {
 static const char *const names[4] = {"hda", "hdb", "hdc", "hdd"};
 void ata_init(void)
 {
-    outb(ATA_PRIMARY_CONTROL, 0x02);
-    outb(ATA_SECONDARY_CONTROL, 0x02);
+    for (int c = 0; c < 2; c++)
+    {
+        ata_channel_t *channel = &ata_channels[c];
+        channel->io = c == 0 ? ATA_PRIMARY_CHANNEL : ATA_SECONDARY_CHANNEL;
+        channel->control = c == 0 ? ATA_PRIMARY_CONTROL : ATA_SECONDARY_CONTROL;
+        channel->irq = c == 0 ? ATA_PRIMARY_IRQ : ATA_SECONDARY_IRQ;
+        mutex_init(&channel->lock);
+        spinlock_init(&channel->irq_lock);
+        wait_queue_init(&channel->irq_waiters);
+
+        // IDENTIFY below polls: no interrupts until the end
+        outb(channel->control, ATA_CONTROL_NIEN);
+    }
 
     // Initialize and identify all ATA drives
     for (int i = 0; i < 4; i++)
@@ -361,6 +466,7 @@ void ata_init(void)
         ata_drive_t *drive = &ata_drives[i];
         drive->io = i < 2 ? ATA_PRIMARY_CHANNEL : ATA_SECONDARY_CHANNEL;
         drive->control = i < 2 ? ATA_PRIMARY_CONTROL : ATA_SECONDARY_CONTROL;
+        drive->channel = &ata_channels[i / 2];
         drive->slave = i % 2;
 
         if (ata_identify(drive) < 0)
@@ -375,6 +481,21 @@ void ata_init(void)
         if (block_register(&drive->block) < 0)
             panic("ata: cannot register %s\n", names[i]);
 
+        drive->channel->has_drives = true;
+
         kprintf("ata: %s, %u MiB\n", names[i], (unsigned int)(drive->block.sector_count / 2048));
+    }
+
+    // From here on commands sleep until their IRQ (CPU interrupts come on later, in kmain)
+    for (int c = 0; c < 2; c++)
+    {
+        ata_channel_t *channel = &ata_channels[c];
+        if (!channel->has_drives)
+            continue;
+
+        if (irq_register(channel->irq, ata_irq_handler) < 0)
+            panic("ata: cannot register IRQ %u\n", channel->irq);
+
+        outb(channel->control, 0); // nIEN off: the drives raise their IRQ
     }
 }
