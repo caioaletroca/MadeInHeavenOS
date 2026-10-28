@@ -160,6 +160,10 @@ static void test_errors(void)
     CHECK(close(fd) == 0);
     errno = 0;
     CHECK(read(fd, &byte, 1) == -1 && errno == EBADF);
+    errno = 0;
+    CHECK(close(fd) == -1 && errno == EBADF); // closing it again
+    errno = 0;
+    CHECK(write(100, "x", 1) == -1 && errno == EBADF); // past the fd table
 }
 
 static void test_table_full(void)
