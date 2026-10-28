@@ -44,6 +44,7 @@
 #define SB_FREE_BLOCKS_COUNT 12
 #define SB_FREE_INODES_COUNT 16
 #define SB_STATE 58
+#define SB_WTIME 48
 #define EXT2_TEST_VALID_FS 0x0001 // s_state: cleanly unmounted
 #define BG_INODE_BITMAP 4
 #define BG_FREE_BLOCKS_COUNT 12
@@ -528,7 +529,9 @@ static block_device_t *overlay_create(block_device_t *base, uint64_t offset, uin
 
 static uint32_t disk_u32(block_device_t *disk, uint64_t offset)
 {
-    uint8_t sector[BLOCK_SECTOR_SIZE];
+    // Static, not on the stack: GCC inlines this into every caller, each copy with its own sector,
+    // which took one test's frame to 15 KB of the 16 KB boot stack (the self-tests run on one thread)
+    static uint8_t sector[BLOCK_SECTOR_SIZE];
     if (block_read(disk, offset / BLOCK_SECTOR_SIZE, 1, sector) != 0)
         panic("ext2 self-test: reading the test disk failed\n");
 
@@ -970,6 +973,8 @@ static void open_expect(const char *path, int flags, int error)
  * on the initrd and devfs) and the symlink's name (taken: ENOENT, EEXIST with
  * O_EXCL). e2fsck checks the result (fsck-test.sh).
  */
+static uint32_t create_free_inodes, create_free_blocks; // before ext2_test_create, for ext2_test_unlink
+
 static void ext2_test_create(void)
 {
     block_device_t *disk = block_at(0);
@@ -982,6 +987,8 @@ static void ext2_test_create(void)
     uint32_t group0, blocks_group0;
     uint32_t free = disk_free_inodes(disk, &group0);
     uint32_t free_blocks = disk_free_blocks(disk, &blocks_group0);
+    create_free_inodes = free;
+    create_free_blocks = free_blocks;
 
     vfs_node_t *grow = ext2_expect(MNT "/grow", VFS_DIRECTORY);
     if (grow->size != BLOCK)
@@ -1104,6 +1111,117 @@ static void ext2_test_create(void)
         panic("ext2 self-test: a refused create took an inode\n");
 }
 
+// grow/'s file names (f000…) for the create and unlink tests
+static void grow_name(char *path, uint32_t i)
+{
+    memcpy(path, MNT "/grow/f000", sizeof(MNT "/grow/f000"));
+    path[sizeof(MNT "/grow/f000") - 4] = (char)('0' + i / 100);
+    path[sizeof(MNT "/grow/f000") - 3] = (char)('0' + i / 10 % 10);
+    path[sizeof(MNT "/grow/f000") - 2] = (char)('0' + i % 10);
+}
+
+static void unlink_expect(const char *path, int error)
+{
+    int ret = vfs_unlink(path);
+    if (ret != error)
+        panic("ext2 self-test: unlinking '%s' returned %d instead of %d\n", path, ret, error);
+}
+
+/**
+ * Unlinking what ext2_test_create made. grow/new is unlinked while open: the
+ * name is gone at once (lookup ENOENT, nlink 0, i_links_count 0 on the disk),
+ * the file still reads and writes, and its inode and block come back only at
+ * the last put (bit 28 clear, i_dtime the superblock's s_wtime: no clock); a new create then reuses inode 29,
+ * and unlinking a closed file frees it at once. The 90 f… names go too: in
+ * the end grow/ lists its 5 files again, and the free counts are what they were
+ * before the creates, but for grow/'s second block (directories never shrink).
+ * Then the refusals: EISDIR (a directory, with or without '/', the dots, "/"),
+ * ENOTDIR, ENOENT (missing, the symlink), EROFS (the initrd).
+ */
+static void ext2_test_unlink(void)
+{
+    block_device_t *disk = block_at(0);
+    if (disk == NULL)
+        panic("ext2 self-test: no disk\n");
+    uint32_t inode_size = disk_u32(disk, SB + SB_INODE_SIZE) & 0xFFFF;
+    uint64_t inode29 = (uint64_t)disk_u32(disk, GROUP_TABLE + BG_INODE_TABLE) * BLOCK + 28 * inode_size;
+    uint64_t bitmap = (uint64_t)disk_u32(disk, GROUP_TABLE + BG_INODE_BITMAP) * BLOCK;
+    uint32_t group0, blocks_group0, now_group0;
+    uint32_t free = disk_free_inodes(disk, &group0);
+    uint32_t free_blocks = disk_free_blocks(disk, &blocks_group0);
+
+    // Open, unlinked, still usable; nothing freed while it is open
+    struct file *file = NULL;
+    if (vfs_open(MNT "/grow/new", O_RDWR, 0, &file) != 0)
+        panic("ext2 self-test: opening grow/new failed\n");
+    vfs_node_t *node = file->node;
+    unlink_expect(MNT "/grow/new", 0);
+    ext2_expect_error(MNT "/grow/new", -ENOENT);
+    if (node->nlink != 0 || (disk_free_inodes(disk, &now_group0), (disk_u32(disk, inode29 + I_LINKS_COUNT) & 0xFFFF) != 0))
+        panic("ext2 self-test: grow/new still has links after its unlink\n");
+    char text[16];
+    if (vfs_write(node, " still", 6, 7) != 6 || vfs_read(node, text, sizeof(text), 0) != 13 ||
+        memcmp(text, "created still", 13) != 0)
+        panic("ext2 self-test: an unlinked open file does not read and write\n");
+    if (disk_free_inodes(disk, &now_group0) != free || disk_free_blocks(disk, &now_group0) != free_blocks)
+        panic("ext2 self-test: an unlinked file was freed while still open\n");
+
+    // The last put frees it: its block and inode back, the slot marked deleted
+    file_put(file);
+    uint32_t now = disk_free_inodes(disk, &now_group0);
+    if (now != free + 1 || now_group0 != group0 + 1)
+        panic("ext2 self-test: closing an unlinked file gave back %u inodes, expected 1\n", now - free);
+    if (disk_free_blocks(disk, &now_group0) != free_blocks + 1 || now_group0 != blocks_group0 + 1)
+        panic("ext2 self-test: closing an unlinked file did not give back its block\n");
+    if ((disk_u32(disk, bitmap + 28 / 8) >> (28 % 8) & 1) != 0 || disk_u32(disk, inode29 + I_DTIME) != disk_u32(disk, SB + SB_WTIME))
+        panic("ext2 self-test: inode 29 is still marked used, or its i_dtime is not s_wtime, after its free\n");
+
+    // The freed inode is the first free one again; unlinking a closed file frees it at once
+    if (vfs_open(MNT "/grow/again", O_WRONLY | O_CREAT | O_EXCL, 0600, &file) != 0 || file->node->ino != 29)
+        panic("ext2 self-test: a create after the free did not reuse inode 29\n");
+    file_put(file);
+    unlink_expect(MNT "/grow/again", 0);
+    if (disk_free_inodes(disk, &now_group0) != free + 1)
+        panic("ext2 self-test: unlinking a closed file did not free it at once\n");
+
+    // The 90 empty files: inodes only
+    char path[sizeof(MNT "/grow/f000")];
+    for (uint32_t i = 0; i < 90; i++)
+    {
+        grow_name(path, i);
+        unlink_expect(path, 0);
+        ext2_expect_error(path, -ENOENT);
+    }
+    now = disk_free_inodes(disk, &now_group0);
+    if (now != free + 91 || now_group0 != group0 + 91)
+        panic("ext2 self-test: %u inodes came back from the unlinks, expected 91\n", now - free);
+    if (now != create_free_inodes || disk_free_blocks(disk, &now_group0) != create_free_blocks - 1)
+        panic("ext2 self-test: the free counts after the unlinks are not those before the creates\n");
+
+    // grow/ lists what the test disk gave it (the dots and 5 files), its records merged back
+    vfs_node_t *grow = ext2_expect(MNT "/grow", VFS_DIRECTORY);
+    vfs_dirent_t entry;
+    uint64_t count = 0;
+    while (vfs_readdir(grow, count, &entry) == 1)
+        count++;
+    if (count != 7)
+        panic("ext2 self-test: grow/ lists %u entries after the unlinks, expected 7\n", (unsigned int)count);
+    vfs_node_put(grow);
+
+    // Refusals
+    unlink_expect(MNT "/docs", -EISDIR);
+    unlink_expect(MNT "/docs/", -EISDIR);
+    unlink_expect(MNT "/docs/.", -EISDIR);
+    unlink_expect(MNT "/docs/..", -EISDIR);
+    unlink_expect("/", -EISDIR);
+    unlink_expect(MNT "/hello.txt/", -ENOTDIR);
+    unlink_expect(MNT "/nope", -ENOENT);
+    unlink_expect(MNT "/link", -ENOENT);
+    unlink_expect("/sbin/init", -EROFS);
+    if (disk_free_inodes(disk, &now_group0) != create_free_inodes)
+        panic("ext2 self-test: a refused unlink changed the free inodes\n");
+}
+
 void ext2_selftest(void)
 {
     memcpy(long_path, MNT "/", sizeof(MNT));
@@ -1122,6 +1240,7 @@ void ext2_selftest(void)
     ext2_test_grow();
     ext2_test_truncate();
     ext2_test_create();
+    ext2_test_unlink();
     ext2_test_state();
     ext2_test_broken();
 

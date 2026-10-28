@@ -399,6 +399,57 @@ static void test_create(void)
     CHECK(creat("/usr/tests/made", 0644) == -1 && errno == EROFS);
 }
 
+/*
+ * Unlinking from user space: grow/made (test_create's) goes; a temp file is
+ * unlinked right after its open and still reads and writes (st_nlink 0) until
+ * its close. O_APPEND through two fds, one seeked back to 0: every write lands
+ * at the end, the offset after it. The refusals: EISDIR, ENOTDIR, ENOENT (a
+ * missing name, the symlink), EROFS.
+ */
+static void test_unlink(void)
+{
+    struct stat st;
+    char buffer[32];
+
+    CHECK(unlink(MNT "/grow/made") == 0);
+    errno = 0;
+    CHECK(stat(MNT "/grow/made", &st) == -1 && errno == ENOENT);
+
+    int fd = open(MNT "/grow/temp", O_RDWR | O_CREAT | O_EXCL, 0600);
+    CHECK(fd >= 0);
+    CHECK(unlink(MNT "/grow/temp") == 0);
+    CHECK(write(fd, "no name", 7) == 7 && lseek(fd, 0, SEEK_SET) == 0);
+    CHECK(read_full(fd, buffer, sizeof(buffer)) == 7 && memcmp(buffer, "no name", 7) == 0);
+    CHECK(fstat(fd, &st) == 0 && st.st_nlink == 0 && st.st_size == 7);
+    close(fd);
+    errno = 0;
+    CHECK(open(MNT "/grow/temp", O_RDONLY) == -1 && errno == ENOENT);
+
+    int first = open(MNT "/grow/log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    int second = open(MNT "/grow/log", O_WRONLY | O_APPEND);
+    CHECK(first >= 0 && second >= 0);
+    CHECK(write(first, "aaaa", 4) == 4 && write(second, "bbbb", 4) == 4);
+    CHECK(lseek(first, 0, SEEK_SET) == 0 && write(first, "cccc", 4) == 4);
+    CHECK(lseek(first, 0, SEEK_CUR) == 12);
+    close(second);
+    close(first);
+    fd = open(MNT "/grow/log", O_RDONLY | O_APPEND);
+    CHECK(fd >= 0 && read_full(fd, buffer, sizeof(buffer)) == 12 && memcmp(buffer, "aaaabbbbcccc", 12) == 0);
+    close(fd);
+    CHECK(unlink(MNT "/grow/log") == 0);
+
+    errno = 0;
+    CHECK(unlink(MNT "/docs") == -1 && errno == EISDIR);
+    errno = 0;
+    CHECK(unlink(MNT "/hello.txt/") == -1 && errno == ENOTDIR);
+    errno = 0;
+    CHECK(unlink(MNT "/nope") == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(unlink(MNT "/link") == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(unlink("/usr/tests/ext2") == -1 && errno == EROFS);
+}
+
 static void test_refusals(void)
 {
     char buffer[64];
@@ -439,6 +490,7 @@ int main(void)
     test_grow();
     test_truncate();
     test_create();
+    test_unlink();
     test_refusals();
 
     // Every fd and stream was closed: the next open gets fd 3 again
