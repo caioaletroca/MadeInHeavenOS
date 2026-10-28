@@ -145,8 +145,8 @@ docs/                     # handoff, roadmap
    (W1, sector writes and flushes, W2, write-back in the cache, W3, a writable `/dev/hda`,
    and W4, ext2 overwriting file data, done; ext2 allocation in progress: inode write-back,
    the block allocator, growing files and `s_state` done, checked by e2fsck; namespace in
-   progress: truncate, the inode allocator, creating and deleting files and `O_APPEND`
-   done, next directories: `mkdir`/`rmdir`), then partitions and
+   progress: truncate, the inode allocator, creating and deleting files, `O_APPEND` and
+   `mkdir`/`rmdir` done, next a full-disk test), then partitions and
    IRQ-driven reads, then the root on the disk).
 
 ## Reference projects
