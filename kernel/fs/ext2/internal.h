@@ -85,6 +85,10 @@ uint64_t ext2_inode_byte(const ext2_volume_t *volume, uint32_t ino);
 int ext2_inode_store(ext2_node_t *n);
 int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent, vfs_node_t **out);
 
+// file_blocks.c
+int ext2_file_block(ext2_volume_t *volume, ext2_node_t *node, uint64_t logical, uint32_t *goal, bool create, uint32_t *out);
+int ext2_truncate_branch(ext2_volume_t *volume, ext2_node_t *node, uint32_t *slot, int depth, uint64_t span, uint64_t from);
+
 // ext2.c
 int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
 int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
