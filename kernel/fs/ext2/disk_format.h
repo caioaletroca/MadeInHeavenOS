@@ -1,5 +1,5 @@
-#ifndef _FS_EXT2_DISK_H_
-#define _FS_EXT2_DISK_H_
+#ifndef _FS_EXT2_DISK_FORMAT_H_
+#define _FS_EXT2_DISK_FORMAT_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -146,4 +146,4 @@ _Static_assert(sizeof(ext2_inode_t) == 128, "ext2 inode size");
 _Static_assert(offsetof(ext2_inode_t, i_block) == 40, "ext2 i_block offset");
 _Static_assert(offsetof(ext2_dirent_t, name) == 8, "ext2 directory entry header");
 
-#endif /* _FS_EXT2_DISK_H_ */
+#endif /* _FS_EXT2_DISK_FORMAT_H_ */

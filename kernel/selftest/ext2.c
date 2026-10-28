@@ -16,7 +16,7 @@
 /*
  * Against disk.img (Makefile): 1 KiB blocks, mounted on /mnt by ext2_init.
  * The layout comes from what mke2fs writes; offsets of on-disk fields are the
- * ext2 spec's, written out here on purpose (not taken from ext2_disk.h).
+ * ext2 spec's, written out here on purpose (not taken from fs/ext2/disk_format.h).
  */
 #define MNT "/mnt"
 #define BIG "/mnt/big.txt"

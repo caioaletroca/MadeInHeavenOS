@@ -1,5 +1,5 @@
 #include <fs/ext2.h>
-#include "ext2_disk.h"
+#include "disk_format.h"
 #include <driver/block.h>
 #include <driver/block_cache.h>
 #include <sched/sync.h>
