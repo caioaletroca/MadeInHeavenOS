@@ -32,6 +32,7 @@ typedef struct ext2_volume
     uint32_t groups;
     bool read_only;            // an unknown ro_compat feature: writing could damage the disk
     uint16_t state;            // s_state as it is on the disk (EXT2_VALID_FS cleared while mounted writable)
+    uint32_t dtime;            // i_dtime for freed inodes: s_wtime (no clock), never below s_inodes_count
     halt_hook_t halt_hook;     // writable volumes: marks the volume clean before the power goes off
     uint64_t max_file_size;    // the largest file: what three levels of tables reach, or 2 GiB - 1 without LARGE_FILE
     ext2_group_t *group_table; // kmalloc'd copy of the group descriptors
@@ -50,7 +51,9 @@ typedef struct ext2_node
     uint32_t block[EXT2_BLOCK_POINTERS]; // copy of the inode's i_block
     uint32_t blocks;                     // i_blocks: 512-byte units the file owns, indirect tables included
     uint32_t flags;                      // i_flags: inode flags (EXT2_INDEX_FL for hashed directories)
-    mutex_t lock;                        // block[], blocks and base.size, and a directory's records: held by reads, writes, walks and creates
+    bool free_on_release;                // its last name was removed: its blocks and inode go at the last put
+    mutex_t lock;                        // block[], blocks, base.size and nlink, and a directory's records: held by reads, writes,
+                                         // walks, creates and unlinks; a directory's lock is taken before its children's
     hlist_node_t cache_link;             // in volume->nodes, under volume->lock
 } ext2_node_t;
 
@@ -58,6 +61,7 @@ typedef struct ext2_node
 
 static int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
 static int ext2_create(vfs_node_t *dir, const char *name, size_t length, uint32_t mode, vfs_node_t **child);
+static int ext2_unlink(vfs_node_t *dir, const char *name, size_t length);
 static long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
 static long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint64_t offset);
 static int ext2_truncate(vfs_node_t *file, uint64_t size);
@@ -71,6 +75,7 @@ static const vfs_node_ops_t ext2_ops = {
     .readdir = ext2_readdir,
     .truncate = ext2_truncate,
     .create = ext2_create,
+    .unlink = ext2_unlink,
     .release = ext2_release,
 };
 
@@ -522,28 +527,6 @@ int ext2_inode_write(vfs_node_t *node)
     return ext2_inode_store(n);
 }
 
-/**
- * @brief Release an ext2 node
- *
- * @param node: The VFS node to release
- */
-static void ext2_release(vfs_node_t *node)
-{
-    ext2_node_t *n = EXT2_NODE(node);
-
-    scoped_guard(mutex, &n->volume->lock)
-    {
-        if (hlist_linked(&n->cache_link))
-            hlist_remove(&n->cache_link);
-    }
-
-    vfs_node_t *parent = node->parent != node ? node->parent : NULL;
-    kfree(n);
-
-    if (parent != NULL)
-        vfs_node_put(parent);
-}
-
 // ---- Inode allocation: the groups' inode bitmaps, new inodes' slots, under allocation_lock ----
 
 /**
@@ -665,7 +648,7 @@ static int ext2_inode_free(ext2_volume_t *volume, uint32_t ino, bool directory)
 
     uint64_t byte = ext2_inode_byte(volume, ino);
 
-    uint32_t dtime = 1; // "deleted" for e2fsck (0 would be an orphan); no clock, so 1970-01-01 00:00:01
+    uint32_t dtime = volume->dtime; // "deleted" for e2fsck (0 would be an orphan); no clock, so the superblock's last write time
     int ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_dtime), &dtime, sizeof(uint32_t));
     if (ret < 0)
         return ret;
@@ -1089,6 +1072,71 @@ static int ext2_dir_add(ext2_node_t *dir, const char *name, size_t length, uint3
 }
 
 /**
+ * @brief Remove the record called name[0..length) from a directory: the record before it in its
+ * block swallows it (its rec_len grows by the removed one's), or, first in its block, it is
+ * marked unused (inode 0). The caller holds dir->lock.
+ *
+ * @param dir: The directory node
+ * @param name: The name of the entry to remove (not '\0'-terminated)
+ * @param length: The length of the name
+ * @return 0, -ENOENT if not there, -EIO for a corrupt record, or the disk's error
+ */
+static int ext2_dir_remove(ext2_node_t *dir, const char *name, size_t length)
+{
+    ext2_volume_t *volume = dir->volume;
+    uint64_t blocks = dir->base.size / volume->block_size;
+
+    for (uint64_t i = 0; i < blocks; i++)
+    {
+        uint32_t block;
+        int ret = ext2_file_block(volume, dir, i, NULL, false, &block);
+        if (ret < 0)
+            return ret;
+        if (block == 0)
+            continue;
+
+        block_cache_buf_t *lease;
+        const uint8_t *data;
+        ret = ext2_block_get(volume, block, &lease, &data);
+        if (ret < 0)
+            return ret;
+
+        // `previous` follows one record behind, deleted ones included (growing one of those is fine)
+        uint32_t rec_len = 0;
+        uint32_t previous = UINT32_MAX; // none yet in this block
+        for (uint32_t offset = 0; offset < volume->block_size; previous = offset, offset += rec_len)
+        {
+            if (ext2_record_bad(volume, data, offset))
+            {
+                block_cache_put(lease);
+                return -EIO;
+            }
+
+            const ext2_dirent_t *e = (const ext2_dirent_t *)(data + offset);
+            rec_len = e->rec_len;
+            if (e->inode == 0 || e->name_len != length || memcmp(e->name, name, length) != 0)
+                continue;
+
+            uint8_t *start = lease->data + (data - lease->data); // the block's writable first byte
+            block_cache_begin_write(lease);
+            if (previous == UINT32_MAX)
+                ((ext2_dirent_t *)(start + offset))->inode = 0;
+            else
+                ((ext2_dirent_t *)(start + previous))->rec_len += rec_len;
+
+            block_cache_end_write(lease);
+
+            block_cache_put(lease);
+            return 0;
+        }
+
+        block_cache_put(lease);
+    }
+
+    return -ENOENT;
+}
+
+/**
  * @brief Context for reading directory entries
  */
 typedef struct ext2_readdir_context
@@ -1454,6 +1502,120 @@ static int ext2_truncate(vfs_node_t *file, uint64_t size)
     return ret != 0 ? ret : stored;
 }
 
+// ---- Deleting: names removed, and a node's blocks and inode freed at its last put ----
+
+/**
+ * @brief Release an ext2 node after its last reference: a file whose last name was removed
+ * (free_on_release) gives back its blocks and inode first; then the node leaves the cache
+ * and its parent is put (which may release it in turn)
+ *
+ * A failure to free can't be returned: it is logged and leaks (e2fsck mends a leak). Freeing
+ * before the unhash is safe: a create that reuses the inode meanwhile finds this node at 0
+ * references, unhashes it and reads the new inode.
+ *
+ * @param node: The VFS node to release
+ */
+static void ext2_release(vfs_node_t *node)
+{
+    ext2_node_t *n = EXT2_NODE(node);
+
+    // No names left and now no references: nobody can reach it again, give back its blocks and inode
+    if (n->free_on_release)
+    {
+        int ret = ext2_truncate(node, 0);
+        if (ret == 0)
+            ret = ext2_inode_free(n->volume, n->ino, node->type == VFS_DIRECTORY);
+        if (ret < 0)
+            kprintf("ext2: freeing inode %u failed (%d): run e2fsck\n", n->ino, ret);
+    }
+
+    scoped_guard(mutex, &n->volume->lock)
+    {
+        if (hlist_linked(&n->cache_link))
+            hlist_remove(&n->cache_link);
+    }
+
+    vfs_node_t *parent = node->parent != node ? node->parent : NULL;
+    kfree(n);
+
+    if (parent != NULL)
+        vfs_node_put(parent);
+}
+
+/**
+ * @brief Remove a regular file's name. The file itself stays while it is open: its
+ * blocks and inode are freed at its node's last put (ext2_release)
+ *
+ * The node is read before the name goes, so a failure can never leave a file without a
+ * name but with a link. Lock order: the directory's lock, then the file's.
+ *
+ * @param dir: The directory VFS node
+ * @param name: The name to remove (not '\0'-terminated)
+ * @param length: The length of the name
+ * @return 0, -ENOENT (also for kinds the VFS cannot show, like symlinks), -EISDIR for a
+ * directory, -EROFS for an indexed directory, -EIO for a file with no links, or -errno
+ */
+static int ext2_unlink(vfs_node_t *dir, const char *name, size_t length)
+{
+    ext2_node_t *d = EXT2_NODE(dir);
+    ext2_volume_t *volume = d->volume;
+    vfs_node_t *child = NULL;
+    int ret = 0;
+
+    scoped_guard(mutex, &d->lock)
+    {
+        if (d->flags & EXT2_INDEX_FL)
+            ret = -EROFS; // a hashed directory: its index would still list the name
+
+        // The name's inode, as ext2_lookup finds it (a symlink is ENOENT: its target may live in i_block)
+        ext2_lookup_context_t ctx = {
+            .name = name,
+            .length = length,
+        };
+        vfs_node_type_t type;
+        if (ret == 0)
+        {
+            // The walk's 1 (found) becomes 0 (go on), its 0 (not found) ENOENT
+            ret = ext2_dir_walk(d, ext2_lookup_visit, &ctx);
+            if (ret == 0 || (ret == 1 && !ext2_entry_type(ctx.file_type, &type)))
+                ret = -ENOENT;
+            else if (ret == 1)
+                ret = 0;
+        }
+
+        // The node before anything changes
+        if (ret == 0)
+            ret = ext2_node_get(volume, ctx.ino, dir, &child);
+        if (ret == 0 && child->type == VFS_DIRECTORY)
+            ret = -EISDIR; // rmdir's (W6e)
+        if (ret == 0 && child->nlink == 0)
+            ret = -EIO; // a name for a file with no links: the disk is corrupt
+
+        if (ret == 0)
+            ret = ext2_dir_remove(d, name, length);
+
+        // One name less: on the disk, and in the node; at 0 the last put frees it
+        if (ret == 0)
+        {
+            ext2_node_t *c = EXT2_NODE(child);
+            scoped_guard(mutex, &c->lock)
+            {
+                uint16_t links = (uint16_t)--child->nlink;
+                uint64_t byte = ext2_inode_byte(volume, c->ino);
+                ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_links_count), &links, sizeof(links));
+                if (child->nlink == 0)
+                    c->free_on_release = true;
+            }
+        }
+    }
+
+    // After the directory's lock: if nobody has the file open, this put frees it right here
+    if (child != NULL)
+        vfs_node_put(child);
+
+    return ret;
+}
+
 // ---- Mounting: the superblock and the group table, checked; the root node; the boot mount ----
 
 /**
@@ -1534,6 +1696,9 @@ static int ext2_check_superblock(const ext2_super_t *superblock, const block_dev
     volume->inodes_per_group = superblock->s_inodes_per_group;
     volume->inode_size = inode_size;
     volume->first_ino = superblock->s_first_ino;
+
+    // i_dtime below s_inodes_count is an orphan list link to e2fsck, not a time
+    volume->dtime = MAX(superblock->s_wtime, superblock->s_inodes_count);
 
     // Large inodes: new ones get s_want_extra_isize valid bytes after byte 128 (at least the minimum;
     // 32, Linux's default, when an old mke2fs left both 0). 128-byte inodes have no extra area
