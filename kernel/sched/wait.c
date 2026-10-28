@@ -14,6 +14,14 @@ void wait_queue_sleep_locked(wait_queue_t *queue, spinlock_t *lock)
     spinlock_acquire(lock);
 }
 
+bool wait_queue_sleep_locked_timeout(wait_queue_t *queue, spinlock_t *lock, uint64_t ticks)
+{
+    spinlock_release(lock);
+    bool woken = scheduler_block_timeout(&queue->threads, ticks);
+    spinlock_acquire(lock);
+    return woken;
+}
+
 bool wait_queue_wake_one(wait_queue_t *queue)
 {
     irq_flags_t flags = irq_save();

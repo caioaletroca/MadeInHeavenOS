@@ -1,6 +1,7 @@
 #ifndef _SCHEDULER_H_
 #define _SCHEDULER_H_
 
+#include <stdbool.h>
 #include <sched/thread.h>
 #include <sys/list.h>
 
@@ -32,6 +33,21 @@ int scheduler_add(thread_t *thread);
  * @param queue Pointer to the list representing the queue to block the current thread on.
  */
 void scheduler_block(list_t *queue);
+
+/**
+ * @brief Block the current thread on a queue like scheduler_block, for at most `ticks` scheduler ticks.
+ * IRQs off. Whichever comes first, a scheduler_wake or the deadline, takes the thread off both
+ * the queue and the timeout queue.
+ *
+ * @param queue Pointer to the list representing the queue to block the current thread on.
+ * @param ticks Number of scheduler ticks to wait before timing out (the tick that ends the wait
+ *              is the `ticks`-th from now, so the first one may come at once: wait ticks + 1 for
+ *              at least `ticks` full periods).
+ *
+ * @return true if the thread was woken before the timeout, false if it timed out.
+ * @note A loop that waits again after a wake-up starts a new deadline each time.
+ */
+bool scheduler_block_timeout(list_t *queue, uint64_t ticks);
 
 /**
  * @brief Wake the specified thread, adding it back to the scheduler's run queue.

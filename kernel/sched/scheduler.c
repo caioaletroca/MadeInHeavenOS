@@ -23,6 +23,7 @@ static volatile int need_reschedule = 0;
 
 static list_t ready_queue;
 static list_t sleep_queue;
+static list_t timeout_queue;
 static thread_t *current_thread;
 
 static thread_t idle_thread;
@@ -109,6 +110,7 @@ void scheduler_init(thread_t *boot_thread)
 
     list_init(&ready_queue);
     list_init(&sleep_queue);
+    list_init(&timeout_queue);
 
     if (thread_init(&idle_thread, idle_stack, sizeof(idle_stack), idle_thread_entry, NULL) != 0)
         panic("scheduler_init: failed to initialize idle thread");
@@ -116,6 +118,7 @@ void scheduler_init(thread_t *boot_thread)
     current_thread = boot_thread;
     current_thread->state = THREAD_RUNNING;
     list_init(&current_thread->run_link);
+    list_init(&current_thread->timeout_link);
 
     scheduler_enabled = 1;
 }
@@ -169,6 +172,19 @@ void scheduler_block(list_t *queue)
     arch_yield();
 }
 
+bool scheduler_block_timeout(list_t *queue, uint64_t ticks)
+{
+    KASSERT(!irq_enabled());
+
+    current_thread->wake_tick = scheduler_ticks + ticks;
+    current_thread->timed_out = false;
+    list_insert_before(&timeout_queue, &current_thread->timeout_link);
+
+    scheduler_block(queue);
+
+    return !current_thread->timed_out;
+}
+
 void scheduler_wake(thread_t *thread)
 {
     KASSERT(!irq_enabled());
@@ -177,6 +193,7 @@ void scheduler_wake(thread_t *thread)
         return;
 
     list_remove(&thread->run_link);
+    list_remove(&thread->timeout_link);
     thread->state = THREAD_READY;
     list_insert_before(&ready_queue, &thread->run_link);
 
@@ -222,6 +239,18 @@ void scheduler_tick(void)
 
         if (thread->wake_tick <= scheduler_ticks)
             scheduler_wake(thread);
+    }
+
+    // Timed waits past their deadline: woken as timed out (scheduler_wake takes them off their wait queue)
+    list_for_each_safe(node, next, &timeout_queue)
+    {
+        thread_t *thread = list_container(node, thread_t, timeout_link);
+
+        if (thread->wake_tick <= scheduler_ticks)
+        {
+            thread->timed_out = true;
+            scheduler_wake(thread);
+        }
     }
 
     scheduler_request_reschedule();

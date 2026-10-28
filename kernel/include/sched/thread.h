@@ -42,12 +42,13 @@ typedef struct thread
     thread_entry_t entry;
     void *arg; // Argument to pass to the thread entry function
     thread_state_t state;
-    uint64_t wake_tick;
-
+    uint64_t wake_tick; // sleeping: the tick to wake at; a timed wait: its deadline
+    bool timed_out;     // a timed wait ended by its deadline, not by a wake (scheduler state)
     struct address_space *space;
     struct process *process;
 
     list_t run_link;
+    list_t timeout_link; // in the timeout queue during a timed wait; else points at itself
 } thread_t;
 
 /**

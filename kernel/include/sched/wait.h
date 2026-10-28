@@ -28,6 +28,18 @@ void wait_queue_init(wait_queue_t *queue);
 void wait_queue_sleep_locked(wait_queue_t *queue, spinlock_t *lock);
 
 /**
+ * @brief Put the current thread to sleep on the specified wait queue while holding a lock, with a timeout.
+ * Lock must be held, it is released while sleeping and reacquired afterwards, IRQs still off. Recheck the condition in a loop.
+ *
+ * @param queue Pointer to the wait queue to sleep on.
+ * @param lock Pointer to the spinlock that will be released while sleeping and reacquired afterwards.
+ * @param ticks Number of scheduler ticks to wait before timing out.
+ *
+ * @return true if the thread was woken before the timeout, false if it timed out.
+ */
+bool wait_queue_sleep_locked_timeout(wait_queue_t *queue, spinlock_t *lock, uint64_t ticks);
+
+/**
  * @brief Wake one thread waiting on the specified wait queue.
  *
  * @param queue Pointer to the wait queue to wake a thread from.

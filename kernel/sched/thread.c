@@ -71,9 +71,11 @@ static void thread_setup(thread_t *thread, void *stack, size_t stack_size, void 
     thread->state = THREAD_READY;
     thread->context = context;
     thread->wake_tick = 0;
+    thread->timed_out = false;
     thread->process = NULL;
     thread->space = NULL;
     list_init(&thread->run_link);
+    list_init(&thread->timeout_link);
 }
 
 void thread_start(void)
