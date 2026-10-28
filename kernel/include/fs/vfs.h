@@ -8,6 +8,7 @@
 
 #define VFS_NAME_MAX 255
 #define VFS_PATH_MAX 4096
+#define VFS_APPEND UINT64_MAX // a write offset: the file's end, read by the file system under its lock
 
 struct file;
 struct mihos_stat;
@@ -78,7 +79,8 @@ typedef struct vfs_node_ops
     // File: copies up to count bytes from offset; returns the count (0 at the end) or -errno
     long (*read)(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
 
-    // File or disk: copies count bytes in at offset; returns the count written (fewer at the end of a disk) or -errno
+    // File or disk: copies count bytes in at offset (VFS_APPEND for a regular file: at its end, under the
+    // file system's lock); returns the count written (fewer at the end of a disk) or -errno
     long (*write)(vfs_node_t *file, const void *buffer, size_t count, uint64_t offset);
 
     // File: sets the size; shrinking frees what is past it, growing leaves a hole. 0 or -errno

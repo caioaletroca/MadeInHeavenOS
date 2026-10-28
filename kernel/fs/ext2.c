@@ -1381,6 +1381,9 @@ static long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint6
 
     guard(mutex, &n->lock);
 
+    if (offset == VFS_APPEND)
+        offset = file->size; // O_APPEND: the end, read under the lock, so another write can't move it now
+
     uint64_t old_size = file->size;
     uint32_t old_blocks = n->blocks;
 

@@ -386,9 +386,12 @@ static long vfs_file_write(file_t *file, const char *buffer, size_t count)
 {
     guard(mutex, &file->position_lock);
 
-    long n = vfs_write(file->node, buffer, count, file->offset);
+    // O_APPEND: the file system finds the end under its own lock, so two appenders never overlap.
+    // The offset is the end afterwards (read after the write: another appender's bytes may be past ours)
+    bool append = file->flags & FILE_APPEND;
+    long n = vfs_write(file->node, buffer, count, append ? VFS_APPEND : file->offset);
     if (n > 0)
-        file->offset += (uint64_t)n;
+        file->offset = append ? file->node->size : file->offset + (uint64_t)n;
 
     return n;
 }
@@ -506,7 +509,7 @@ int vfs_unlink(const char *path)
 
 int vfs_open(const char *path, int flags, uint32_t mode, file_t **out)
 {
-    if (flags & ~(O_ACCMODE | O_DIRECTORY | O_TRUNC | O_CREAT | O_EXCL))
+    if (flags & ~(O_ACCMODE | O_DIRECTORY | O_TRUNC | O_CREAT | O_EXCL | O_APPEND))
         return -EINVAL;
 
     vfs_node_t *node;
@@ -552,6 +555,10 @@ int vfs_open(const char *path, int flags, uint32_t mode, file_t **out)
         vfs_node_put(node);
         return -EINVAL;
     }
+
+    // O_APPEND only means something for regular files (a disk's end is fixed; devices have none)
+    if ((flags & O_APPEND) && node->type == VFS_FILE)
+        access |= FILE_APPEND;
 
     file_t *file;
     if (node->type == VFS_CHARDEV)

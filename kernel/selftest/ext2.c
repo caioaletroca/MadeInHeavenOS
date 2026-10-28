@@ -425,8 +425,8 @@ static void ext2_test_write(void)
     ext2_write_or_panic(big, data + BIG_SIZE - 5, 5, BIG_SIZE - 5);
     if (vfs_write(big, pattern, 0, 1000) != 0 || vfs_write(big, pattern, 0, BIG_SIZE) != 0)
         panic("ext2 self-test: a 0-byte write to big.txt did not return 0\n");
-    if (vfs_write(big, pattern, 1, UINT64_MAX) != -EFBIG)
-        panic("ext2 self-test: a write at UINT64_MAX did not return -EFBIG\n");
+    if (vfs_write(big, pattern, 1, VFS_APPEND - 1) != -EFBIG) // VFS_APPEND itself (UINT64_MAX) appends
+        panic("ext2 self-test: a write at UINT64_MAX - 1 did not return -EFBIG\n");
 
     // Every line as it was, the size unchanged
     if (big->size != BIG_SIZE || vfs_read(big, data, BIG_SIZE, 0) != BIG_SIZE)

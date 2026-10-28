@@ -19,8 +19,9 @@ typedef struct file_ops
     void (*release)(struct file *file);
 } file_ops_t;
 
-#define FILE_READ (1u << 0)
-#define FILE_WRITE (1u << 1)
+#define FILE_READ (1u << 0)   // O_RDONLY or O_RDWR
+#define FILE_WRITE (1u << 1)  // O_WRONLY or O_RDWR
+#define FILE_APPEND (1u << 2) // O_APPEND: writes go to the end, wherever the offset is
 
 typedef struct file
 {
