@@ -45,7 +45,8 @@ Working x86-64 PC kernel with:
   `atexit`; `open` (with a mode)/`creat`/`lseek`/`unlink`, `mkdir`/`rmdir`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
   runtime (global constructors and destructors, `operator new`)
 - **Disks:** a block layer (`block_read`/`block_write` with range checks, `block_flush`) and an
-  ATA PIO driver (polling, 28-bit LBA, reads, writes and cache flushes) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators;
+  ATA PIO driver (IRQ-driven: a command sleeps until the drive's IRQ 14/15, one command per
+  channel; 28-bit LBA, reads, writes and cache flushes) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators;
   each disk as a block device in `/dev` (`/dev/hda`, `S_IFBLK`, seekable, read and written at
   byte offsets through `block_read_bytes`/`block_write_bytes`); a **block cache** (`block_cache_get`/`block_cache_put`: 64
   leased 4 KiB buffers, hash lookup, LRU eviction, write-back of dirty buffers on eviction and
@@ -61,7 +62,7 @@ Working x86-64 PC kernel with:
 - PIC/PIT timer at 100 Hz, generic IRQ registration layer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
-- Blocking primitives: wait queues, `thread_sleep`, semaphores, mutexes
+- Blocking primitives: wait queues (also with a timeout), `thread_sleep`, semaphores, mutexes
 - `spinlock_t` (IRQs off + misuse checks on one CPU) and scope guards (`guard()`/`scoped_guard()`
   in `cleanup.h`); sleeping with a lock held goes through `wait_queue_sleep_locked`
 - Generic input events; PS/2 scancode set 2 decoder feeding the console thread
@@ -74,6 +75,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+4b83925 test(block): read the disk from two threads at once
+f9ac69b feat(ata): sleep until the drive's IRQ instead of polling
+6393245 fix(pic): unmask the cascade line for slave PIC IRQs
+7f1487f test(sched): check timed waits expire and wake
+a07b4e1 feat(sched): add a timed wait
 c708ead test: make e2fsck part of every run-tests.sh run
 cd60060 test: drop ext2's inode write-back test and ext2_inode_write
 7d8dc17 test: drop the raw user-mode programs the libc tests cover
@@ -426,8 +432,9 @@ tty_init → platform_boot_info_init → arch_init [TSS first] → input_init �
 → scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [/dev/console, console thread]
 → block_devfs_init [/dev/hda…: the disks platform_init found] → block_cache_init [64 buffers]
-→ ext2_init [first ext2 disk on /mnt]
-→ timer_init(TIMER_FREQUENCY_HZ) → irq_enable → guard_selftest → hashtable_selftest → mm_selftest
+→ timer_init(TIMER_FREQUENCY_HZ) → irq_enable
+→ ext2_init [first ext2 disk on /mnt; after irq_enable: disk commands wait for their IRQ]
+→ guard_selftest → hashtable_selftest → mm_selftest
 → scheduler_selftest [+ sync tests] → console_selftest → user_selftest → vfs_selftest
 → elf_selftest
 → init_start(&boot_info) [starts /sbin/init, waits; init exiting = panic; init halts via SYS_REBOOT]
@@ -1073,7 +1080,7 @@ read(fd) ─▶ vfs_file_ops ─▶ vfs_read(node, offset) ─▶ devfs_block_re
                                                      per 4 KiB block: block_cache_get ─ memcpy slice ─ block_cache_put ─┘
 ext2 (step 4) ─▶ block_cache_get ─ read buf->data in place ─ block_cache_put
 block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check─▶ dev->ops->read
-                                                       ATA PIO: ports, polling, inw ×256 per sector
+                                                       ATA PIO: ports, an IRQ per sector, inw ×256
 ```
 
 - **Block layer** (`include/driver/block.h`): `block_device_t` = `name[16]` (`hda`…),
@@ -1153,14 +1160,29 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   size 0, `st_rdev`. Numbers: Linux's IDE ones, major 3 (`IDE0_MAJOR`, primary) or 22
   (`IDE1_MAJOR`, secondary), minor `slave * 64` (64 minors per drive for its partitions).
 - **ATA PIO** (`platform/pc/ata.c`, PC ports, so `platform/`; `ata.h` declares only
-  `ata_init`): `ata_init()` at the end of `platform_init` (before `mm_init`: four static
-  `ata_drive_t` slots `{io, control, slave, block}`, no `kmalloc`). Writes nIEN (`0x02`) to both
-  control ports (polling; no IRQ 14/15 handler), then per slot (primary `0x1F0`/`0x3F6`,
+  `ata_init`): `ata_init()` at the end of `platform_init` (before `mm_init`: two static
+  `ata_channel_t` and four static `ata_drive_t` slots `{io, control, slave, channel, block}`, no
+  `kmalloc`). A **channel** is one cable: its master and slave share the ports and the IRQ
+  (primary 14, secondary 15), so it holds `lock` (a mutex: one command at a time on the
+  channel), `irq_lock` (spinlock, also taken by the handler) guarding `irq_pending` and
+  `irq_status`, the `irq_waiters` queue and `has_drives`. `ata_init` sets up both channels and
+  writes nIEN (`ATA_CONTROL_NIEN` `0x02`) to their control ports (IDENTIFY polls), then per slot (primary `0x1F0`/`0x3F6`,
   secondary `0x170`/`0x376`, master/slave) `ata_identify`: select (`0xA0 | slave << 4`),
   delay, zero count/LBA, `IDENTIFY` (`0xEC`); status 0 or `0xFF` → no drive; wait for not-BSY;
   LBA mid/high non-zero → ATAPI (the boot CD), skipped; then 256 words, words 60–61 = the 28-bit
   LBA sector count (0 → no LBA, skipped). A disk is registered as `hda`…`hdd` by position and
-  logged (`ata: hda, 4 MiB`).
+  logged (`ata: hda, 4 MiB`), and its channel gets `has_drives`. At the end, per channel with
+  drives: `irq_register(irq, ata_irq_handler)` (unmasks the slave PIC line and, in
+  `pic_irq_enable`, the master's cascade line 2) and nIEN cleared. The CPU takes them once
+  `kmain` runs `irq_enable`; a leftover IRQ from IDENTIFY only sets `irq_pending`.
+- **IRQs:** `ata_irq_handler(irq)` takes `irq_lock`, reads STATUS (reading it, not the
+  alternate status, acknowledges the drive), saves it, sets `irq_pending` and wakes all
+  waiters. `ata_irq_clear` sets `irq_pending = false` right before a command goes out, so the
+  next IRQ is that command's (forgetting a late one from a timed-out command). `ata_wait_irq`
+  under `irq_lock`: while `!irq_pending`, `wait_queue_sleep_locked_timeout` for
+  `ATA_IRQ_TIMEOUT_TICKS` (5 s); timed out with no IRQ → `-EIO` (only the handler wakes the
+  queue, after setting the flag, so the deadline does not restart); then the flag cleared and
+  the saved status, ERR/DF → `-EIO`. A syscall's disk read sleeps there and other threads run.
 - **Helpers:** `ata_delay` reads the alternate status (the control port, no side effects) 4
   times, about 400 ns, after every drive select and after a command; `ata_wait_ready` spins
   while BSY (limit 1,000,000 polls → `-EIO`) and returns the status, ignoring ERR (IDENTIFY on
@@ -1170,16 +1192,20 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   outsw`: real drives may need the gaps).
 - **`ata_command(drive, lba, n, command)`:** `ata_wait_ready` (not `_data`: an idle drive has
   no DRQ), select `0xE0 | slave << 4 | LBA[24..27]`, delay, count (`n & 0xFF`, 0 = 256), LBA
-  bytes 0–23, the command, delay.
-- **`ata_read`:** past 2^28 sectors → `-EINVAL` (LBA48 is debt). Per command of `n` ≤ 256
-  sectors: `ata_command(READ SECTORS 0x20)`, then per sector `ata_read_data` of 512 bytes, the
+  bytes 0–23, `ata_irq_clear`, the command, delay.
+- **`ata_read`:** past 2^28 sectors → `-EINVAL` (LBA48 is debt), then the channel's mutex
+  for the whole call. Per command of `n` ≤ 256 sectors: `ata_command(READ SECTORS 0x20)`, then
+  per sector `ata_wait_irq` (the drive has the sector: DRQ) and `ata_read_data` of 512 bytes
+  (its poll passes at once), the
   `uint16_t *` advancing 256 words. The driver runs on the caller's thread (no thread of its
   own: a disk only answers when asked).
-- **`ata_write`:** the same loop with `WRITE SECTORS` (`0x30`) and `ata_write_data`; after each
-  command's last sector the drive is BSY while it stores the data, so `ata_wait_ready` again
-  and ERR/DF → `-EIO` (the end of the data phase is not the end of the write; without the
-  check a failed write looks fine). **`ata_flush`:** wait ready, select `0xE0 | slave << 4` (no
-  address), `CACHE FLUSH` (`0xE7`), wait ready, ERR/DF → `-EIO`; no data phase.
+- **`ata_write`:** the mutex, then the same loop with `WRITE SECTORS` (`0x30`): per sector
+  `ata_write_data` (the first sector has no IRQ before it: its DRQ is polled) and then
+  `ata_wait_irq`, one IRQ after each sector; the last one comes when the drive has stored the
+  data, its ERR/DF → `-EIO` (the end of the data phase is not the end of the write; without the
+  check a failed write looks fine). **`ata_flush`:** the mutex, wait ready, select
+  `0xE0 | slave << 4` (no address), `ata_irq_clear`, `CACHE FLUSH` (`0xE7`), one `ata_wait_irq`
+  (ERR/DF → `-EIO`); no data phase.
 - **Test disk** (`Makefile`): `disk.img`, 4 MiB ext2 with 1 KiB blocks, label `mihos-test`,
   root-owned, `mke2fs -q -F -t ext2 -b 1024 -L mihos-test -E root_owner=0:0 -d build/disk`,
   rebuilt when a file in `disk/` or the Makefile changes; `make clean` deletes it and `build/`.
@@ -1200,7 +1226,11 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   exponent 0 at 24, label at 120); a 2-sector read and a 300-sector read (two commands) equal
   single reads, also at sectors 255/256/257; 0 sectors does nothing; the last sector reads;
   past the end, from the last sector for 2, `UINT64_MAX` and `UINT32_MAX` → `-EINVAL`; a
-  second `block_register` → `-EEXIST`. Writes (`block_test_writes`, sectors 7000…7299: free
+  second `block_register` → `-EEXIST`. Concurrent reads (`block_test_concurrent_reads`):
+  300 sectors at 0 and at 3000 read alone (they must differ), then two threads read them at
+  once, 4 rounds each, and each gets its own bytes: while one sleeps until its IRQ the other
+  runs and waits for the channel's mutex (without it, its command would overwrite the
+  registers in the middle of the other's read). Writes (`block_test_writes`, sectors 7000…7299: free
   ext2 blocks 3500…3649 nothing else reads, so no cached copy goes stale): 300 sectors (two
   commands), each with its own pattern (`sector * 31 + byte`), read back sector by sector; one
   sector at 7100 changes only itself; 0 sectors → 0, the same past-the-end cases → `-EINVAL`;
@@ -1775,7 +1805,8 @@ link.next == MALLOC_MAGIC while allocated; size in UNITs (sizeof(block_t)), head
   scheduler state, protected by the lock of the list the thread is on.
 - `entry(arg)` returning → `thread_start` → `thread_exit()`.
 - **Invariant:** `run_link` is in exactly one list — ready queue, a wait queue, the sleep queue or
-  the zombie list — or none (the running thread, exited static threads).
+  the zombie list — or none (the running thread, exited static threads). `timeout_link` is in the
+  timeout queue only during a timed wait, else self-linked.
 - **Idle thread** (static stack, `cpu_idle` loop) runs only when nothing is ready; never queued.
 - **Reaper:** `thread_exit` disables IRQs for good, marks the thread `TERMINATED`, and (if owned)
   puts it on `zombie_list` (under `zombie_lock`, raw acquire/release since IRQs are never restored)
@@ -1809,8 +1840,17 @@ link.next == MALLOC_MAGIC while allocated; size in UNITs (sizeof(block_t)), head
 
 - `scheduler_block(list)`: current → `BLOCKED`, onto the list, `arch_yield()`. Must be called with
   IRQs off; returns after wake-up still with IRQs off (IF is saved per thread in its frame).
-- `scheduler_wake(thread)`: `BLOCKED` → `READY` onto the ready queue; requests an immediate
-  reschedule when the CPU is idling. Safe from IRQ handlers.
+- `scheduler_wake(thread)`: `BLOCKED` → `READY` onto the ready queue (also off the timeout
+  queue); requests an immediate reschedule when the CPU is idling. Safe from IRQ handlers.
+- **Timed waits:** `scheduler_block_timeout(list, ticks)` blocks like `scheduler_block` and also
+  puts the thread on `timeout_queue` (through `timeout_link`) with its deadline in `wake_tick`;
+  `scheduler_tick` wakes the expired ones with `timed_out` set. Whichever comes first, a wake or
+  the deadline, takes it off both lists (`list_remove` of a self-linked node does nothing).
+  Returns true if woken. The deadline is the `ticks`-th tick from now (the first may come at
+  once), and a loop that waits again starts a new one. `wait_queue_sleep_locked_timeout(queue,
+  lock, ticks)` is the lock-releasing form drivers use. Self-tested: one wait nobody wakes
+  returns false after its ticks, off both lists; one woken in time returns true and is not
+  marked timed out once its old deadline passes.
 - **Never sleep holding a spinlock.** `wait_queue_sleep_locked(queue, lock)` releases the lock,
   blocks and retakes it before returning, all with IRQs off, so no wake-up slips between the check and
   the sleep. It is the only way to sleep on a wait queue (the unlocked `wait_queue_sleep` was removed).
@@ -2129,8 +2169,14 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     early, before W6e (done): `fs/ext2/`, one file per section plus `internal.h`, in nine
     buildable commits, each built and tested; every function moved unchanged (checked by a
     script: 44 bodies found once each).
-- **After writing (pick an order):** partitions (MBR/GPT → `hda1` on the reserved minors,
-  mounting a partition); IRQ-driven ATA (sleep instead of polling); the root on the disk.
+  - **IRQ-driven ATA (done, after the review).** IRQ-1: a timed wait in the scheduler
+    (`scheduler_block_timeout`, `wait_queue_sleep_locked_timeout`) and its self-test. IRQ-2:
+    the driver sleeps until the drive's IRQ (per-channel mutex, handler, 5 s timeout), the PIC
+    cascade line unmasked for IRQs 8–15, `ext2_init` after `irq_enable`; a block test reading
+    from two threads at once. The suite went from 16–17 s to 12–15 s, and the flaky `-EIO`
+    (loop-count timeouts on a busy host) is gone with the polling.
+- **Next (pick an order):** partitions (MBR/GPT → `hda1` on the reserved minors, mounting a
+  partition); the root on the disk.
   Phase C (the process model) can also start: none of these block it.
 
 ### Shell (`user/bin/sh/`)
@@ -2228,8 +2274,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `vfs_read_file` copies every program once more (archive → `kmalloc` buffer → address space);
   fine at ~100 KiB, replaced by mapping later. `kmalloc` above 1024 B rounds to a power-of-two
   number of pages.
-- ATA: polling only (the CPU spins for every sector, with IRQs off inside a syscall), 28-bit
-  LBA (128 GiB), no DMA; no check that the drive supports `CACHE FLUSH` (IDENTIFY word 83 bit
+- ATA: PIO, no DMA (the CPU still copies every word, after each sector's IRQ); 28-bit LBA
+  (128 GiB); after a 5 s timeout the drive is not reset (a software reset, SRST through the
+  control port), so a hung drive fails every later command too; the BSY wait before a command
+  and IDENTIFY at boot still poll, limited by a loop count (both short: the drive is idle); no check that the drive supports `CACHE FLUSH` (IDENTIFY word 83 bit
   12; Bochs and QEMU do; an old drive would abort it and the flush returns `-EIO`); a write
   error leaves the sectors of that command in an unknown state (no retry, no report of how far
   it got); IDENTIFY's model string unused; names by IDE
@@ -2337,9 +2385,6 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   overflow corrupts the memory below it silently (it happened: `ext2_test_unlink` once had a
   15 KB frame). Kernel thread stacks are 16 KiB too. A guard page (unmapped page below each
   stack) would turn it into a page fault.
-- The block self-test once failed reading 300 sectors at 7000 with `-EIO`, right after a
-  build (host busy); not reproduced in ~20 runs since. Polling ATA's timeouts are loop
-  counts, not times; IRQ-driven ATA is the real fix.
 - `user/tests/stdio` checks its return values, but the output order (stdout line-buffered,
   stderr unbuffered, the flush at exit) only by eye: it passes whatever the order. Checkable
   once pipes exist (phase C): a child's stdout and stderr read back in order.

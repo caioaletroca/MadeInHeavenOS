@@ -90,7 +90,7 @@ together (C++17 libstdc++, pthreads, executable `mmap` for V8's JIT, signals, so
 | Debt | Needed by |
 |---|---|
 | fixed 64 KiB user stack, no growth | C |
-| syscalls run with IRQs off | B (disk I/O blocks for long) |
+| syscalls run with IRQs off | D (latency; disk waits already sleep, since IRQ-driven ATA) |
 | 1 GiB direct-map limit | B / D (caches, large programs) |
 | NX off | D (`mprotect`, JITs) |
 | single CPU scheduler design | D (SMP) |
@@ -146,8 +146,8 @@ docs/                     # handoff, roadmap
    and W4, ext2 overwriting file data, done; ext2 allocation: inode write-back, the block
    allocator, growing files and `s_state` done, checked by e2fsck; namespace: truncate, the
    inode allocator, creating and deleting files, `O_APPEND`, `mkdir`/`rmdir` and a full-disk
-   test done: **ext2 writing is complete**; the test suite reviewed after it), then partitions and
-   IRQ-driven reads, then the root on the disk).
+   test done: **ext2 writing is complete**; the test suite reviewed after it; IRQ-driven ATA
+   done), then partitions, then the root on the disk).
 
 ## Reference projects
 
