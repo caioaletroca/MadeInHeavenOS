@@ -74,6 +74,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+30d8da8 test: fill the disk
+abc1c1c fix(fs): clear i_links_count when ext2 frees an inode
+e8fad0d docs(architecture): document mkdir and rmdir in handoff
 b53f81d test: cover mkdir and rmdir
 21248bc feat(libc): add mkdir and rmdir
 3073dfb feat(sys): add mkdir and rmdir
@@ -1362,7 +1365,9 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   first, outside the lock (no clock, so the superblock's last write time, `s_wtime`;
   non-zero means deleted to `e2fsck`, 0 an orphan; and one below `s_inodes_count` is read
   as the next inode of the orphan list, a "corrupted orphan list", which is why it is never
-  1), then the bit cleared (already
+  1), and `i_links_count` 0 (e2fsck calls an inode with links in use whatever its bit says;
+  a create or mkdir failing after `ext2_inode_init` gives back a slot still saying 1 or 2:
+  the full-disk test found it), then the bit cleared (already
   clear → `-EIO`), the counters +1 (`bg_used_dirs_count` −1), both written. On the test disk:
   `first_ino` 11, the first free inode 29, `want_extra_isize` 32.
 - **`ext2_slot(volume, n, table, index, goal, create, &block)`:** one block pointer: `n->block[index]`
@@ -1548,7 +1553,14 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   still lists `.`/`..`, its `create` and `mkdir` ops `-ENOENT`, still counted until the close,
   then every count back; refusals: `EEXIST` (`grow/small`, `docs`, `link`, `/`), `EROFS`
   (`/usr/new`; rmdir of `/usr` and of `/mnt`, whose parent is the initrd), `ENOENT`,
-  `ENOTDIR`, `ENOTEMPTY` (`docs`, `docs/..`), `EINVAL` (`docs/.`), `EBUSY` (`/`).
+  `ENOTDIR`, `ENOTEMPTY` (`docs`, `docs/..`), `EINVAL` (`docs/.`), `EBUSY` (`/`). A full disk
+  (`ext2_test_full`, about 3 s of the run): `grow/full` written 4 KiB per call until the disk
+  runs out (a short write, then `-ENOSPC`), its size what was written, both free counts 0 on
+  the disk, one more byte `-ENOSPC`; full, a create works (no block needed) but writing to it
+  is `-ENOSPC`, a `mkdir` is `-ENOSPC` and keeps neither its inode nor the used-directories
+  count; every chunk's number reads back, every 64th chunk byte for byte; unlinked while open
+  it keeps its blocks until the close, then every block and inode is back. `fsck-test.sh`
+  after it: clean (it first caught freed inodes keeping their link count).
 - **`ext2` test** (`user/tests/ext2`): the listing with types and the dots as inode 2, `link`
   absent, `hello.txt`'s `d_ino` = `st_ino`, `docs/deep/nested` lists `file.txt`, `/mnt/..` lists
   `usr`; `stat`: `/mnt` `0755`, inode 2, `nlink` 5, `st_dev` unlike `/` and `/dev`, `hello.txt`
@@ -2080,7 +2092,7 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     `./fsck-test.sh` (clean on the first run). W5d (done): halt hooks, `s_state` not clean while
     mounted writable and clean again at halt; the self-test reads it, `fsck-test.sh` asks
     `dumpe2fs` for `clean`. **W5 is complete.**
-  - **W6 (in progress).** Decided: sub-steps W6a truncate, W6b the inode allocator, W6c
+  - **W6 (done).** Decided: sub-steps W6a truncate, W6b the inode allocator, W6c
     directory entries + `O_CREAT`/`O_EXCL`, W6d `unlink` (freed at the last node put when
     the link count is 0) + `O_APPEND`, W6e `mkdir`/`rmdir`, W6f a full-disk test, then the
     split of `ext2.c`; no clock (new inodes get the parent's `mtime`, a deleted one the
@@ -2097,8 +2109,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     (done): the `mkdir`/`rmdir` node ops, `vfs_mkdir`/`vfs_rmdir` (trailing slashes, the dots
     refused by name), `SYS_MKDIR` 24 / `SYS_RMDIR` 25, libc `mkdir`/`rmdir`, `EMLINK`/
     `ENOTEMPTY`; `ext2_mkdir`, `ext2_rmdir`, `ext2_dir_empty`, `ext2_links_store`; the
-    directory tests. Next W6f: a full-disk test (fill until `ENOSPC`, nothing broken, clean
-    up), then the test-suite review.
+    directory tests. W6f (done): the full-disk test; it found `ext2_inode_free` leaving the
+    link count of a create's or mkdir's failed inode (fixed: freed inodes get 0 links).
+    **W6 is complete: ext2 writing (W1–W6) is done.** Next: the test-suite review (what each
+    test covers, what else covers it now: keep, merge or remove; a written evaluation first,
+    decided before anything is deleted).
     Overall: inode allocation (the inode bitmap, `free_inodes`, `bg_used_dirs_count`),
     `O_CREAT`/`O_TRUNC`/`O_EXCL`, `unlink`, `mkdir`, `rmdir`, directory entries inserted in a
     record's slack and removed by growing the previous `rec_len`, truncate (frees blocks: the
@@ -2336,8 +2351,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
     (reserved for root) ignored; only the primary superblock and descriptors are updated; a
     write error after the bitmap bit is set (descriptor or counts) loses that block until
     `e2fsck`; no ordering of metadata writes (consistent only after a sync, ext2's model); a
-    new data block is zeroed even when the write fills all of it; no full-disk test yet
-    (W6f); truncate frees block by block (one bitmap write and two counter writes each, no
+    new data block is zeroed even when the write fills all of it; `s_r_blocks_count` aside,
+    a full disk is filled to its last block (the full-disk test does); truncate frees block by block (one bitmap write and two counter writes each, no
     batching) and walks every entry of a table it enters; inodes are first-fit from the
     parent's group (no Orlov spreading of directories across groups, which matters only on
     multi-group disks);
