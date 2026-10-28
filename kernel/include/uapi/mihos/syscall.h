@@ -26,6 +26,8 @@
 #define SYS_FTRUNCATE 21
 #define SYS_TRUNCATE 22
 #define SYS_UNLINK 23
+#define SYS_MKDIR 24
+#define SYS_RMDIR 25
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)
