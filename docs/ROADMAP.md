@@ -43,9 +43,33 @@ is borrowed.
 | shell (ours, and/or a port of dash) | Lua, Python, QuickJS → Node |
 | window server, GUI toolkit, native apps (C++) | FreeType, zlib, libpng, SDL, later Mesa |
 | installer, boot | GRUB (until an own bootloader) |
+| PCI enumeration, disk/USB/network drivers | ACPI tables and AML (uACPI or ACPICA) |
+| | a USB host stack, if writing our own isn't worth it (CherryUSB to evaluate first) |
 
 **The kernel stays POSIX-shaped**: small integer fds, `fork`/`exec`, signals, one file namespace,
 `mmap`. That keeps the libc layer thin. It does not mean copying Linux's quirks.
+
+## Kernel shape
+
+**A modular monolith, with user-mode services where they pay off** (decided after phase A,
+revisiting the microkernel question once user space existed).
+
+- **In the kernel:** what many processes share, what needs IRQs or DMA, what is needed to boot:
+  the scheduler, memory, VFS, file systems, disk/USB/network drivers. Drivers stay behind narrow
+  interfaces (`block_device_ops`, the VFS node ops), the same shape a driver protocol would have.
+- **In user mode:** line ③'s services (window server, input, audio), and policy rather than
+  mechanism (device naming, configuration), the way Linux leaves printers, scanners, Mesa and
+  FUSE to user space.
+- **A user-mode driver experiment** once phase C has IPC: a small device (serial port or
+  keyboard) driven from ring 3. The kernel hands over the device's I/O ports (the TSS I/O
+  permission bitmap: `in`/`out` work in ring 3, no syscall), maps its MMIO registers into the
+  driver, and delivers its IRQ as a message; only that hand-over and the IRQ wake-up cost a
+  syscall. Microkernel mechanics, learned without betting POSIX on them.
+- **Why not a microkernel:** POSIX (`fork`, signals, file `mmap`, shared fds) spans several
+  servers there, which managarm and Redox spend years on and Fuchsia gave up on; and phase B
+  (ATA, partitions, cache, ext2, VFS, devfs) would be rewritten as servers. The cost of a
+  microkernel is the IPC hops between components (app → VFS → ext2 → driver), not the drivers
+  touching hardware.
 
 ## The libc plan
 
@@ -95,6 +119,25 @@ together (C++17 libstdc++, pthreads, executable `mmap` for V8's JIT, signals, so
 | NX off | D (`mprotect`, JITs) |
 | single CPU scheduler design | D (SMP) |
 | VGA text console | F |
+
+## Hardware targets
+
+**Rule of thumb: the hardware in the development PC** (an Intel 600/700-series chipset). Older
+hardware only where QEMU makes it free (the IDE/ATA driver).
+
+| Device | How the OS reaches it | Order |
+|---|---|---|
+| PCI(e) enumeration | config space: ports `0xCF8`/`0xCFC`, then ECAM (address from the ACPI `MCFG` table); vendor/device/class IDs, BARs, bus mastering, MSI/MSI-X | **first**: every modern device below is found through it |
+| NVMe SSD (the PC's disk: PCIe ×4 in an M.2 slot) | MMIO registers, submission/completion queues in RAM, a doorbell write per batch | 2 (or AHCI first) |
+| SATA disks | AHCI (MMIO) | 2 |
+| USB | **one xHCI controller** covers every port and speed (UHCI/OHCI/EHCI are absent on modern PCs; USB-C is a connector). Then enumeration, hubs, HID and mass storage classes | 3; until then the firmware's PS/2 emulation covers USB keyboards |
+| Wired network | per chip (Intel/Realtek) | phase E |
+| GPU | **the UEFI/Multiboot2 framebuffer** (a pixel buffer, no GPU driver); acceleration much later, Intel first (documented), NVIDIA not realistic | phase F; to be discussed then |
+| Wi-Fi | per chip, binary firmware, 802.11 | not planned |
+
+A custom CPU (bare metal) has none of these: its own simple devices (UART, timer, interrupt
+controller), plus **virtio** devices if a QEMU model exists (virtio does not depend on the
+architecture). That target relies on the arch contract staying narrow.
 
 ## Repository layout target
 
@@ -147,7 +190,8 @@ docs/                     # handoff, roadmap
    allocator, growing files and `s_state` done, checked by e2fsck; namespace: truncate, the
    inode allocator, creating and deleting files, `O_APPEND`, `mkdir`/`rmdir` and a full-disk
    test done: **ext2 writing is complete**; the test suite reviewed after it; IRQ-driven ATA
-   and MBR partitions done), then the root on the disk).
+   and MBR partitions done), then the root on the disk: `root=` on the kernel command line,
+   a pre-installed ext2 on a partition, the initrd as the live system; the installer is phase G).
 
 ## Reference projects
 

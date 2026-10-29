@@ -1,6 +1,7 @@
 # MadeInHeavenOS Architecture
 
-Modular monolithic x86-64 kernel. One statically-linked kernel image, no userspace yet.
+Modular monolithic x86-64 kernel. One statically-linked kernel image; user-mode services (and
+one user-mode driver experiment) planned on top: see `ROADMAP.md`, "Kernel shape".
 
 ```text
 Docker x86_64-mihos toolchain

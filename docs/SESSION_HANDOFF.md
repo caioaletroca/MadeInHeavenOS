@@ -2226,7 +2226,25 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     (logical) partitions and GPT are logged and skipped (debt). Mounting ext2 from a partition
     needs nothing new (`ext2_init` tries every block device in order), but no test disk has
     one yet.
-- **Next:** the root on the disk.
+- **Next:** the root on the disk. Agreed design (Linux-like):
+  - **Two boots from the CD's GRUB menu.** "Live": the initrd is `/`, as today (the initrd is
+    the live system, like a live USB). "From disk": `root=hdb1` on the kernel command line,
+    ext2 on that device is `/`, and GRUB does not load the initrd at all. Leading `name=value`
+    words on the command line are the kernel's, the rest is init's. No `root=` → the initrd.
+    If the mount fails, fall back to the initrd too (to be decided in R2).
+  - **The disk is pre-installed by the build**, as an installer would leave it: `part.img`'s
+    partition 1 grows and holds an ext2 with the initrd's tree (`mke2fs -E offset=`). The
+    installer itself (partitioning, `mkfs`, copying, a bootloader on the disk) is phase G.
+  - **Steps:** R1 (Claude) the root partition in `part.img`, the "from disk" GRUB entry,
+    `run-tests.sh` booting twice (live and from disk), e2fsck on the partition. R2 (user)
+    `root=` parsing, the root mount (ext2 or the initrd), `/dev` and `/mnt` mounted after it
+    (the disk needs `irq_enable`), `ext2_init` skipping the root's device. R3 (Claude) tests and
+    docs.
+  - **Tests that assume the initrd is `/`** (the `EROFS` checks in `devices` and `ext2`, the VFS
+    self-test's initrd nodes) are rewritten for the boot they run in or deleted: tests do not
+    shape the design.
+  - Kernel shape and hardware targets (PCI, NVMe/AHCI, xHCI, framebuffer) are decided in
+    `ROADMAP.md`.
   Phase C (the process model) can also start: none of these block it.
 
 ### Shell (`user/bin/sh/`)
