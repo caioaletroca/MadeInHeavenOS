@@ -5,10 +5,12 @@
 # the run left behind with e2fsck. Exits 0 only if the run powered off by
 # itself after "tests: N passed, 0 failed" and the disk is consistent.
 #
-#   ./run-tests.sh [iso [disk]]   defaults: mihos.iso, disk.img
+#   ./run-tests.sh [iso [disk [partitions]]]   defaults: mihos.iso, disk.img, part.img
 #
 # The disk (an ext2 image, make all builds it) is the IDE primary master, the
-# CD stays the secondary master. The run writes to a fresh copy of it,
+# partition test disk (an MBR, make all builds it too) the primary slave, the
+# CD stays the secondary master. The partition disk is never changed
+# (snapshot=on). The run writes to a fresh copy of it,
 # build/test-disk.img (kept for a look, e.g. debugfs, after a failure): the
 # image itself is never changed.
 #
@@ -25,6 +27,7 @@ set -u
 
 iso=${1:-mihos.iso}
 disk=${2:-disk.img}
+part=${3:-part.img}
 qemu=${QEMU:-qemu-system-x86_64}
 limit=${TIMEOUT:-120}
 image=${IMAGE:-mihos-compiler}
@@ -37,10 +40,12 @@ if [ ! -f "$iso" ]; then
     exit 2
 fi
 
-if [ ! -f "$disk" ]; then
-    echo "run-tests: $disk not found (build it first: make all, in Docker)" >&2
-    exit 2
-fi
+for image_file in "$disk" "$part"; do
+    if [ ! -f "$image_file" ]; then
+        echo "run-tests: $image_file not found (build it first: make all, in Docker)" >&2
+        exit 2
+    fi
+done
 
 if ! command -v "$qemu" >/dev/null 2>&1; then
     echo "run-tests: $qemu not found" >&2
@@ -71,17 +76,19 @@ cp "$disk" "$copy" || exit 2
 # A Windows QEMU or Docker needs Windows paths, and Git Bash must not rewrite them
 log_arg=$log
 disk_arg=$copy
+part_arg=$part
 build_dir=$PWD/build
 if command -v cygpath >/dev/null 2>&1; then
     log_arg=$(cygpath -m "$PWD/$log")
     disk_arg=$(cygpath -m "$PWD/$copy")
+    part_arg=$(cygpath -m "$PWD/$part")
     build_dir=$(cygpath -m "$build_dir")
 fi
 
 rm -f "$log"
 start=$(date +%s)
 MSYS_NO_PATHCONV=1 timeout "$limit" "$qemu" -cdrom "$iso" -m 1024 -no-reboot \
-    -drive "file=$disk_arg,format=raw,if=ide,index=0,media=disk" \
+    -drive "file=$disk_arg,format=raw,if=ide,index=0,media=disk"     -drive "file=$part_arg,format=raw,if=ide,index=1,media=disk,snapshot=on" \
     -display none -debugcon "file:$log_arg"
 qemu_status=$?
 elapsed=$(($(date +%s) - start))

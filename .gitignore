@@ -47,6 +47,7 @@
 *.cmd
 *.iso
 disk.img
+part.img
 *.kernel
 .tmp_versions/
 modules.order
