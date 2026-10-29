@@ -47,7 +47,8 @@ Working x86-64 PC kernel with:
 - **Disks:** a block layer (`block_read`/`block_write` with range checks, `block_flush`) and an
   ATA PIO driver (IRQ-driven: a command sleeps until the drive's IRQ 14/15, one command per
   channel; 28-bit LBA, reads, writes and cache flushes) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators;
-  MBR primary partitions as block devices of their own (`hdb1`, a second test disk `part.img`);
+  MBR primary partitions as block devices of their own (`hdb1`, a second test disk `part.img`
+  whose partition 1 holds the installed system, an ext2 of the initrd's tree);
   each disk and partition as a block device in `/dev` (`/dev/hda`, `S_IFBLK`, seekable, read and written at
   byte offsets through `block_read_bytes`/`block_write_bytes`); a **block cache** (`block_cache_get`/`block_cache_put`: 64
   leased 4 KiB buffers, hash lookup, LRU eviction, write-back of dirty buffers on eviction and
@@ -76,6 +77,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+641a72b build: install the root file system on part.img's partition 1
+9825e91 docs(roadmap): record the kernel shape, hardware targets and root-on-disk plan
+a7d2936 docs(architecture): document MBR partitions and part.img in handoff
 8b0d5f9 test(driver): check MBR partitions against part.img
 c92a64c feat(driver): register MBR partitions as block devices
 187881b build: add a partition test disk, part.img
@@ -1228,12 +1232,16 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   `0x3`, one group, root directory in block 276. QEMU (`run-tests.sh`, and `run.bat` for
   interactive runs): IDE primary master (`hda`), `-snapshot`. Bochs (local `.bochsrc`):
   `ata0-slave: type=disk, path=disk.img, mode=flat` (`hdb`: the CD is `ata0-master` there).
-- **Partition test disk** (`Makefile`, `disk-tools/partition-disk.sh`): `part.img`, 4 MiB
-  (8192 sectors), an MBR written with `printf` (octal escapes: dash has no `\x`) and `dd` (the
-  build image has no `sfdisk`). Slot 1 Linux (`0x83`) at 2048, 2048 sectors; slot 2 empty;
-  slot 3 extended (`0x05`) at 4096; slot 4 Linux at 6144, 2047 sectors (sector 8191 is in
-  none). No file systems: text markers at each partition's first and last sector
-  (`mihos-part1 first` … `mihos-part4 last`). QEMU: the primary slave (`hdb`), `snapshot=on`
+- **Partitioned disk** (`Makefile`, `disk-tools/partition-disk.sh`): `part.img`, 16 MiB
+  (32768 sectors), an MBR written with `printf` (octal escapes: dash has no `\x`) and `dd` (the
+  build image has no `sfdisk`). Slot 1 Linux (`0x83`) at 2048, 24576 sectors (12 MiB): **the
+  installed system**, an ext2 (1 KiB blocks, label `mihos-root`, owner 0) holding the
+  initrd's tree (`initrd.tar` unpacked into `build/root`, then `mke2fs -E offset=1048576 -d`,
+  which writes inside the partition and leaves the rest of the image alone); the root of the
+  planned "from disk" boot. Slot 2 empty; slot 3 extended (`0x05`) at 26624; slot 4 Linux at
+  28672, 2047 sectors, text markers at its first and last sector (`mihos-part4 first`/`last`);
+  sectors 30719 and up are in none. Rebuilt when the initrd changes. e2fsck reads the
+  partition as `'part.img?offset=1048576'`. QEMU: the primary slave (`hdb`), `snapshot=on`
   in `run-tests.sh`, `-snapshot` in `run.bat`. Bochs: `ata1-master` (`hdc`) if added to the
   local `.bochsrc`; without it the partition self-test skips.
 - **Block self-test** (`selftest/block.c`, after the VFS one): the first of `hda`…`hdd` (none
@@ -1301,15 +1309,16 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   sectors, starting at or past the disk's end, or `sector_count > disk sectors - first`
   (a subtraction: no wrap) → logged, skipped. Else a `kzalloc`'d partition (lives forever)
   named `<disk><slot>` (`hdb1`), `rdev` = the disk's + slot (minor 64 + 1 for `hdb1`: the 64
-  minors per IDE drive), registered, logged (`partition: hdb1, 1 MiB at sector 2048`).
+  minors per IDE drive), registered, logged (`partition: hdb1, 12 MiB at sector 2048`).
 - **Partition self-test** (`selftest/partition.c`, after the block one): the first of
-  `hda`…`hdd` that has a `<name>1` (none → logged, skipped). `hdb1` 2048 sectors, `hdb4`
+  `hda`…`hdd` that has a `<name>1` (none → logged, skipped). `hdb1` 24576 sectors, `hdb4`
   2047, each `rdev` = the disk's + slot, same major; no `hdb2` (empty) or `hdb3` (extended).
-  Each partition's first and last sector start with the markers; a read at the end, 2 sectors
-  from the last one and a write at the end → `-EINVAL`. A 2-sector read of `hdb1`'s last
-  sectors equals `hdb`'s 4094 and 4095; a write to `hdb1`'s sector 100 is at `hdb`'s 2148,
-  then put back and flushed. `/dev/hdb1` and `/dev/hdb4`: `VFS_BLOCKDEV`, the partition's
-  `rdev` and size.
+  `hdb1` holds ext2 (the magic `0xEF53` at byte 1080, read through the partition); `hdb4`'s
+  first and last sectors start with the markers; for both, a read at the end, 2 sectors from
+  the last one and a write at the end → `-EINVAL`. On `hdb4` (only markers: no file system a
+  test write could disturb): a 2-sector read of its last sectors equals `hdb`'s 30717 and
+  30718; a write to its sector 100 is at `hdb`'s 28772, then put back and flushed.
+  `/dev/hdb1` and `/dev/hdb4`: `VFS_BLOCKDEV`, the partition's `rdev` and size.
 
 ### ext2 (`fs/ext2/`, `include/fs/ext2.h`)
 
@@ -2231,15 +2240,22 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     the live system, like a live USB). "From disk": `root=hdb1` on the kernel command line,
     ext2 on that device is `/`, and GRUB does not load the initrd at all. Leading `name=value`
     words on the command line are the kernel's, the rest is init's. No `root=` → the initrd.
-    If the mount fails, fall back to the initrd too (to be decided in R2).
+    **`root=` given but the mount fails → panic**, as Linux does ("VFS: Unable to mount root
+    fs"): the device, the error, and the list of block devices that exist (names and sizes),
+    so the right `root=` can be picked. No fallback (the "from disk" entry has no initrd
+    anyway); neither `root=` nor an initrd → panic too. The rescue is the "Live" menu entry.
+    Not needed: Linux's `rootwait` (our disks are all found before the root mount) and
+    `rootfstype=` (ext2 only).
   - **The disk is pre-installed by the build**, as an installer would leave it: `part.img`'s
-    partition 1 grows and holds an ext2 with the initrd's tree (`mke2fs -E offset=`). The
-    installer itself (partitioning, `mkfs`, copying, a bootloader on the disk) is phase G.
-  - **Steps:** R1 (Claude) the root partition in `part.img`, the "from disk" GRUB entry,
-    `run-tests.sh` booting twice (live and from disk), e2fsck on the partition. R2 (user)
-    `root=` parsing, the root mount (ext2 or the initrd), `/dev` and `/mnt` mounted after it
-    (the disk needs `irq_enable`), `ext2_init` skipping the root's device. R3 (Claude) tests and
-    docs.
+    partition 1 holds an ext2 with the initrd's tree (see "Partitioned disk"). The installer
+    itself (partitioning, `mkfs`, copying, a bootloader on the disk) is phase G.
+  - **Steps:** R1 (Claude, **done**) the root partition in `part.img` and the partition
+    self-test rewritten for it. R2 (user) `root=` parsing, the root mount (ext2 or the
+    initrd, the panic above), `/dev` and `/mnt` mounted after it (the disk needs
+    `irq_enable`), `ext2_init` skipping the root's device. R3 (Claude) the "from disk" GRUB
+    entry, `run-tests.sh` booting twice (live and from disk; `part.img` then on a copy, not
+    `snapshot=on`), e2fsck on the partition, the tests, docs. The GRUB entry waits for R2:
+    today's kernel would hand `root=hdb1` to init as an argument.
   - **Tests that assume the initrd is `/`** (the `EROFS` checks in `devices` and `ext2`, the VFS
     self-test's initrd nodes) are rewritten for the boot they run in or deleted: tests do not
     shape the design.
@@ -2342,6 +2358,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `vfs_read_file` copies every program once more (archive → `kmalloc` buffer → address space);
   fine at ~100 KiB, replaced by mapping later. `kmalloc` above 1024 B rounds to a power-of-two
   number of pages.
+- The root on the disk (planned) is mounted writable from the start. Linux mounts it
+  read-only, runs fsck, then remounts it writable; we have neither a remount nor an fsck of
+  our own. Also no `rootwait`, `rootfstype=` or `ro`/`rw` options.
 - Partitions: MBR primary ones only; extended partitions (a chain of tables inside slot 3)
   and GPT (`0xEE`: a header at sector 1, 128-byte entries) are logged and skipped; overlapping
   partitions are not refused. A disk and its partitions are separate cache keys: the same
