@@ -28,6 +28,7 @@
 #include "selftest/guard.h"
 #include "selftest/hashtable.h"
 #include "selftest/mm.h"
+#include "selftest/partition.h"
 #include "selftest/scheduler.h"
 #include "selftest/user.h"
 #include "selftest/vfs.h"
@@ -81,6 +82,7 @@ void kmain(uintptr_t boot_handoff)
     user_selftest();
     vfs_selftest();
     block_selftest();
+    partition_selftest();
     ext2_selftest(); // after the block one: that one counts cache hits and misses
     elf_selftest();
     kprintf("self-tests: ok\n"); // each one panics on failure

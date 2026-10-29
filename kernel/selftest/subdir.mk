@@ -6,6 +6,7 @@ ext2.c \
 guard.c \
 hashtable.c \
 mm.c \
+partition.c \
 scheduler.c \
 user.c \
 user_program.S \
