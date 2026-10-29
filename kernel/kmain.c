@@ -11,6 +11,7 @@
 #include <driver/mem.h>
 #include <driver/block.h>
 #include <driver/block_cache.h>
+#include <driver/partition.h>
 #include <platform/platform.h>
 #include <sched/thread.h>
 #include <sched/scheduler.h>
@@ -63,12 +64,13 @@ void kmain(uintptr_t boot_handoff)
     threads_init();
     console_init(&keymap_abnt2);
 
-    block_devfs_init();
     block_cache_init();
 
     timer_init(TIMER_FREQUENCY_HZ);
 
     irq_enable();
+    partition_init();
+    block_devfs_init();
     ext2_init();
 
     guard_selftest();

@@ -7,5 +7,6 @@ keymap.c \
 console.c \
 mem.c \
 block.c \
-block_cache.c
+block_cache.c \
+partition.c
 
