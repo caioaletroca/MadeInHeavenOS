@@ -12,6 +12,8 @@ DISK_SIZE := 4M
 DISK_FILES := $(shell find disk -type f)
 DISK_STAGING := build/disk
 PART_IMAGE := part.img
+PART_ROOT_STAGING := build/root
+INITRD := grub/build/$(BUILD_ID)/initrd.tar
 
 .PHONY: all headers libc kernel user grub install clean purge dump print-config
 
@@ -46,10 +48,22 @@ $(DISK_IMAGE): $(DISK_FILES) Makefile
 	cp $(DISK_STAGING)/big.txt $(DISK_STAGING)/grow/long
 	mke2fs -q -F -t ext2 -b 1024 -L mihos-test -E root_owner=0:0 -d $(DISK_STAGING) $@ $(DISK_SIZE)
 
-# The partition test disk: an MBR and markers, no file systems (the script
-# lists its layout), attached as the second disk next to disk.img
-$(PART_IMAGE): disk-tools/partition-disk.sh
+# The partitioned disk, attached as the second disk next to disk.img: an MBR
+# and the self-test's markers (the script lists its layout), and on partition
+# 1 (sector 2048, 12 MiB) the installed system: an ext2 holding the initrd's
+# tree, the root of the "from disk" boot. mke2fs -E offset writes the file
+# system inside the partition and leaves the rest of the image as it is.
+$(PART_IMAGE): disk-tools/partition-disk.sh $(INITRD) Makefile
+	rm -rf $@ $(PART_ROOT_STAGING)
+	mkdir -p $(PART_ROOT_STAGING)
+	tar -xf $(INITRD) -C $(PART_ROOT_STAGING)
 	sh disk-tools/partition-disk.sh $@
+	mke2fs -q -F -t ext2 -b 1024 -L mihos-root -E offset=$$((2048 * 512)),root_owner=0:0 \
+	    -d $(PART_ROOT_STAGING) $@ 12288
+
+# Made by grub/ (the "grub" target, before this disk in "all")
+$(INITRD):
+	$(MAKE) grub
 
 # The kernel/user contract (<mihos/...>) first: libc and user programs include it
 headers:

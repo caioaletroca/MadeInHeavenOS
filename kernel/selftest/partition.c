@@ -9,13 +9,17 @@
 #include <kprintf.h>
 #include <panic.h>
 
-// part.img's layout (disk-tools/partition-disk.sh)
-#define PART1_FIRST 2048
-#define PART1_SECTORS 2048
-#define PART4_FIRST 6144
+// part.img's layout (disk-tools/partition-disk.sh): partition 1 holds the root
+// file system, partition 4 only markers
+#define PART1_SECTORS 24576
+#define PART4_FIRST 28672
 #define PART4_SECTORS 2047
 
-#define WRITE_SECTOR 100 // inside hdb1: disk sector PART1_FIRST + 100, no marker there
+#define WRITE_SECTOR 100 // inside hdb4: disk sector PART4_FIRST + 100, no marker there
+
+// ext2's superblock is at byte 1024 of the partition, its magic 0xEF53 at byte 56 of it
+#define EXT2_MAGIC_SECTOR 2
+#define EXT2_MAGIC_OFFSET 56
 
 static uint8_t sector[BLOCK_SECTOR_SIZE];
 static uint8_t other[BLOCK_SECTOR_SIZE];
@@ -87,14 +91,10 @@ static void partition_expect_marker(block_device_t *part, uint64_t at, const cha
 }
 
 /**
- * The partition's edges: its first and last sectors are the markers, one
- * sector past the end (and a range running into it) is refused
+ * One sector past the partition's end (and a range running into it) is refused
  */
-static void partition_test_range(block_device_t *part, const char *first, const char *last)
+static void partition_test_end(block_device_t *part)
 {
-    partition_expect_marker(part, 0, first);
-    partition_expect_marker(part, part->sector_count - 1, last);
-
     if (block_read(part, part->sector_count, 1, sector) != -EINVAL ||
         block_read(part, part->sector_count - 1, 2, sector) != -EINVAL ||
         block_write(part, part->sector_count, 1, sector) != -EINVAL)
@@ -102,24 +102,36 @@ static void partition_test_range(block_device_t *part, const char *first, const 
 }
 
 /**
+ * Partition 1 holds an ext2 file system (the root of the "from disk" boot):
+ * its superblock's magic, read through the partition
+ */
+static void partition_test_ext2(block_device_t *part)
+{
+    partition_read_or_panic(part, EXT2_MAGIC_SECTOR, 1, sector);
+    if (sector[EXT2_MAGIC_OFFSET] != 0x53 || sector[EXT2_MAGIC_OFFSET + 1] != 0xEF)
+        panic("Partition self-test: %s holds no ext2 file system (no 0xEF53 at byte 1080)\n", part->name);
+}
+
+/**
  * Reads and writes reach the disk at first_sector + sector: a multi-sector read
- * equals the disk's sectors there, and a write shows up on the disk
+ * equals the disk's sectors there, and a write shows up on the disk. Partition 4:
+ * only markers there, nothing that a write (even put back) could disturb
  */
 static void partition_test_offset(block_device_t *disk, block_device_t *part)
 {
     // The partition's last 2 sectors in one read equal the disk's same 2, one by one
     static uint8_t two[2 * BLOCK_SECTOR_SIZE];
-    partition_read_or_panic(part, PART1_SECTORS - 2, 2, two);
+    partition_read_or_panic(part, PART4_SECTORS - 2, 2, two);
     for (uint32_t i = 0; i < 2; i++)
     {
-        uint64_t at = PART1_FIRST + PART1_SECTORS - 2 + i;
+        uint64_t at = PART4_FIRST + PART4_SECTORS - 2 + i;
         partition_read_or_panic(disk, at, 1, other);
         if (memcmp(two + i * BLOCK_SECTOR_SIZE, other, BLOCK_SECTOR_SIZE) != 0)
             panic("Partition self-test: sector %u of a 2-sector read of %s is not %s's %u\n", (unsigned int)i,
                   part->name, disk->name, (unsigned int)at);
     }
 
-    // A write through the partition lands at its first sector + WRITE_SECTOR on the disk, then is undone
+    // A write through the partition lands at its first sector + WRITE_SECTOR on the disk, then is put back
     static uint8_t saved[BLOCK_SECTOR_SIZE];
     partition_read_or_panic(part, WRITE_SECTOR, 1, saved);
 
@@ -128,10 +140,10 @@ static void partition_test_offset(block_device_t *disk, block_device_t *part)
     if (block_write(part, WRITE_SECTOR, 1, sector) != 0)
         panic("Partition self-test: writing sector %u of %s failed\n", WRITE_SECTOR, part->name);
 
-    partition_read_or_panic(disk, PART1_FIRST + WRITE_SECTOR, 1, other);
+    partition_read_or_panic(disk, PART4_FIRST + WRITE_SECTOR, 1, other);
     if (memcmp(sector, other, BLOCK_SECTOR_SIZE) != 0)
         panic("Partition self-test: a write to %s's sector %u is not at %s's %u\n", part->name, WRITE_SECTOR,
-              disk->name, PART1_FIRST + WRITE_SECTOR);
+              disk->name, PART4_FIRST + WRITE_SECTOR);
 
     if (block_write(part, WRITE_SECTOR, 1, saved) != 0 || block_flush(part) != 0)
         panic("Partition self-test: putting back %s's sector %u failed\n", part->name, WRITE_SECTOR);
@@ -171,10 +183,14 @@ void partition_selftest(void)
     partition_expect_none(disk, 2);
     partition_expect_none(disk, 3);
 
-    partition_test_range(part1, "mihos-part1 first", "mihos-part1 last");
-    partition_test_range(part4, "mihos-part4 first", "mihos-part4 last");
+    partition_test_ext2(part1);
+    partition_test_end(part1);
 
-    partition_test_offset(disk, part1);
+    partition_expect_marker(part4, 0, "mihos-part4 first");
+    partition_expect_marker(part4, PART4_SECTORS - 1, "mihos-part4 last");
+    partition_test_end(part4);
+
+    partition_test_offset(disk, part4);
 
     partition_test_node(part1);
     partition_test_node(part4);

@@ -1,16 +1,18 @@
 #!/bin/sh
 #
-# Writes the partition test disk: 4 MiB (8192 sectors) with an MBR, read by
-# the partition self-test. No file systems, only markers where each partition
-# starts and ends, so a read at the wrong offset or past a partition shows:
+# Writes the partitioned disk's empty layout: 16 MiB (32768 sectors) with an
+# MBR. The Makefile then puts an ext2 file system on partition 1, the system
+# as an installer would leave it (the root for the "from disk" boot); the
+# other slots are for the partition self-test, with markers where partition 4
+# starts and ends, so a read at the wrong offset or past it shows:
 #
-#   slot 1  Linux (0x83)     sectors 2048..4095  (2048)  "mihos-part1 first/last"
+#   slot 1  Linux (0x83)     sectors 2048..26623   (24576)  the root file system
 #   slot 2  empty (0x00)
-#   slot 3  extended (0x05)  sectors 4096..6143          skipped (no logical partitions yet)
-#   slot 4  Linux (0x83)     sectors 6144..8190  (2047)  "mihos-part4 first/last"
+#   slot 3  extended (0x05)  sectors 26624..28671           skipped (no logical partitions yet)
+#   slot 4  Linux (0x83)     sectors 28672..30718  (2047)   "mihos-part4 first/last"
 #
-# Sector 8191 is in no partition. Made with printf and dd only (the build
-# image has no sfdisk): octal escapes, since dash's printf has no \x.
+# Sectors 30719..32767 are in no partition. Made with printf and dd only (the
+# build image has no sfdisk): octal escapes, since dash's printf has no \x.
 #
 #   disk-tools/partition-disk.sh part.img
 
@@ -41,14 +43,12 @@ entry() {
 }
 
 rm -f "$image"
-dd if=/dev/zero of="$image" bs=512 count=8192 status=none
+dd if=/dev/zero of="$image" bs=512 count=32768 status=none
 
-entry 1 131 2048 2048 # 0x83
-entry 3 5 4096 2048   # 0x05
-entry 4 131 6144 2047
+entry 1 131 2048 24576 # 0x83
+entry 3 5 26624 2048   # 0x05
+entry 4 131 28672 2047
 printf '\125\252' | put 510 # the 0x55 0xAA signature
 
-printf 'mihos-part1 first' | put $((2048 * 512))
-printf 'mihos-part1 last' | put $((4095 * 512))
-printf 'mihos-part4 first' | put $((6144 * 512))
-printf 'mihos-part4 last' | put $((8190 * 512))
+printf 'mihos-part4 first' | put $((28672 * 512))
+printf 'mihos-part4 last' | put $((30718 * 512))
