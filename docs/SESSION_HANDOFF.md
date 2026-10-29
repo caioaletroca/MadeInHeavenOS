@@ -47,7 +47,8 @@ Working x86-64 PC kernel with:
 - **Disks:** a block layer (`block_read`/`block_write` with range checks, `block_flush`) and an
   ATA PIO driver (IRQ-driven: a command sleeps until the drive's IRQ 14/15, one command per
   channel; 28-bit LBA, reads, writes and cache flushes) finding `hda`…`hdd`; an ext2 test disk (`disk.img`) attached in the emulators;
-  each disk as a block device in `/dev` (`/dev/hda`, `S_IFBLK`, seekable, read and written at
+  MBR primary partitions as block devices of their own (`hdb1`, a second test disk `part.img`);
+  each disk and partition as a block device in `/dev` (`/dev/hda`, `S_IFBLK`, seekable, read and written at
   byte offsets through `block_read_bytes`/`block_write_bytes`); a **block cache** (`block_cache_get`/`block_cache_put`: 64
   leased 4 KiB buffers, hash lookup, LRU eviction, write-back of dirty buffers on eviction and
   `block_cache_sync`, run at halt) under every disk read
@@ -69,12 +70,17 @@ Working x86-64 PC kernel with:
 - Console: US and ABNT2 keymaps with dead keys, line discipline, blocking `console_read()`
 - UTF-8 tty drawing CP437 glyphs on VGA text mode with a hardware cursor; `kprintf` is atomic per call
 - Kernel split into generic code, arch contracts and platform contracts, enforced by the build
-- Guard, hash table, MM, preemption, sync, console, user-mode, VFS, block, ext2 and ELF self-tests and the user test programs
+- Guard, hash table, MM, preemption, sync, console, user-mode, VFS, block, partition, ext2 and ELF self-tests and the user test programs
   passing in Bochs (stdin_interactive by hand); keyboard verified in Bochs and QEMU
 
 Latest commits:
 
 ```text
+8b0d5f9 test(driver): check MBR partitions against part.img
+c92a64c feat(driver): register MBR partitions as block devices
+187881b build: add a partition test disk, part.img
+d869edd build: attach the ext2 test disk in run.bat
+2335999 docs(architecture): document IRQ-driven ATA and the timed wait in handoff
 4b83925 test(block): read the disk from two threads at once
 f9ac69b feat(ata): sleep until the drive's IRQ instead of polling
 6393245 fix(pic): unmask the cascade line for slave PIC IRQs
@@ -431,12 +437,13 @@ tty_init → platform_boot_info_init → arch_init [TSS first] → input_init �
 → devfs_init [mounted on /dev] → mem_devices_init [/dev/null, /dev/zero]
 → scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [/dev/console, console thread]
-→ block_devfs_init [/dev/hda…: the disks platform_init found] → block_cache_init [64 buffers]
-→ timer_init(TIMER_FREQUENCY_HZ) → irq_enable
+→ block_cache_init [64 buffers] → timer_init(TIMER_FREQUENCY_HZ) → irq_enable
+→ partition_init [hdb1…: reads each disk's MBR, so after irq_enable]
+→ block_devfs_init [/dev/hda…, /dev/hdb1…: the disks platform_init found and their partitions]
 → ext2_init [first ext2 disk on /mnt; after irq_enable: disk commands wait for their IRQ]
 → guard_selftest → hashtable_selftest → mm_selftest
 → scheduler_selftest [+ sync tests] → console_selftest → user_selftest → vfs_selftest
-→ elf_selftest
+→ block_selftest → partition_selftest → ext2_selftest → elf_selftest
 → init_start(&boot_info) [starts /sbin/init, waits; init exiting = panic; init halts via SYS_REBOOT]
 ```
 
@@ -1221,6 +1228,14 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   `0x3`, one group, root directory in block 276. QEMU (`run-tests.sh`, and `run.bat` for
   interactive runs): IDE primary master (`hda`), `-snapshot`. Bochs (local `.bochsrc`):
   `ata0-slave: type=disk, path=disk.img, mode=flat` (`hdb`: the CD is `ata0-master` there).
+- **Partition test disk** (`Makefile`, `disk-tools/partition-disk.sh`): `part.img`, 4 MiB
+  (8192 sectors), an MBR written with `printf` (octal escapes: dash has no `\x`) and `dd` (the
+  build image has no `sfdisk`). Slot 1 Linux (`0x83`) at 2048, 2048 sectors; slot 2 empty;
+  slot 3 extended (`0x05`) at 4096; slot 4 Linux at 6144, 2047 sectors (sector 8191 is in
+  none). No file systems: text markers at each partition's first and last sector
+  (`mihos-part1 first` … `mihos-part4 last`). QEMU: the primary slave (`hdb`), `snapshot=on`
+  in `run-tests.sh`, `-snapshot` in `run.bat`. Bochs: `ata1-master` (`hdc`) if added to the
+  local `.bochsrc`; without it the partition self-test skips.
 - **Block self-test** (`selftest/block.c`, after the VFS one): the first of `hda`…`hdd` (none
   → panic), 8192 sectors; sector 2 is the ext2 superblock (magic `0xEF53` at 56, block-size
   exponent 0 at 24, label at 120); a 2-sector read and a 300-sector read (two commands) equal
@@ -1265,6 +1280,36 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   even ones, every bucket empty at the end; `hash_64` below `2^bits` for 1–16 bits, the plain
   product at 64, 1024 consecutive keys 48–80 per bucket of 16; `list_move_after` from the back
   and the middle (both link directions), and of the first item (no change).
+
+### Partitions (`driver/partition.c`, `include/driver/partition.h`)
+
+- **MBR:** sector 0, four 16-byte entries at byte 446 (`mbr_entry_t`: status, CHS start,
+  type, CHS end, `first_sector`, `sector_count`, little-endian; `_Static_assert` 16 bytes),
+  `55 AA` at 510. A **partition** (`partition_t`) is a block device that is a range of a disk:
+  `{block, disk, first_sector}`; its ops forward to the disk at `first_sector + sector`
+  (`block_read`/`block_write` already checked the range against the partition's size, so it
+  stays inside it; flush flushes the disk). In C# terms a decorator, like a sub-stream.
+- **`partition_init()`** (after `irq_enable`: it reads the disks; before `block_devfs_init`):
+  counts the registered disks first, then scans only those (partitions are registered into the
+  same table). `partition_scan(disk)`: sector 0 through `block_read_bytes` (the cache), into a
+  static buffer (512 bytes off the boot stack); no `55 AA` → no table, silently (`disk.img`: an
+  ext2 over the whole disk starts with zeros). The four entries are copied out (`memcpy`) and
+  all checked **before any is added**: a status other than `0x00`/`0x80` → not a table (a FAT
+  boot sector also ends in `55 AA`), nothing added; a type `0xEE` (GPT's protective entry) →
+  logged, nothing added. Then `partition_add(disk, slot, entry)`: empty (`0x00`) → nothing;
+  extended (`0x05`, `0x0F`, `0x85`) → logged and skipped; `first_sector` 0 (the table), 0
+  sectors, starting at or past the disk's end, or `sector_count > disk sectors - first`
+  (a subtraction: no wrap) → logged, skipped. Else a `kzalloc`'d partition (lives forever)
+  named `<disk><slot>` (`hdb1`), `rdev` = the disk's + slot (minor 64 + 1 for `hdb1`: the 64
+  minors per IDE drive), registered, logged (`partition: hdb1, 1 MiB at sector 2048`).
+- **Partition self-test** (`selftest/partition.c`, after the block one): the first of
+  `hda`…`hdd` that has a `<name>1` (none → logged, skipped). `hdb1` 2048 sectors, `hdb4`
+  2047, each `rdev` = the disk's + slot, same major; no `hdb2` (empty) or `hdb3` (extended).
+  Each partition's first and last sector start with the markers; a read at the end, 2 sectors
+  from the last one and a write at the end → `-EINVAL`. A 2-sector read of `hdb1`'s last
+  sectors equals `hdb`'s 4094 and 4095; a write to `hdb1`'s sector 100 is at `hdb`'s 2148,
+  then put back and flushed. `/dev/hdb1` and `/dev/hdb4`: `VFS_BLOCKDEV`, the partition's
+  `rdev` and size.
 
 ### ext2 (`fs/ext2/`, `include/fs/ext2.h`)
 
@@ -2175,8 +2220,13 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     cascade line unmasked for IRQs 8–15, `ext2_init` after `irq_enable`; a block test reading
     from two threads at once. The suite went from 16–17 s to 12–15 s, and the flaky `-EIO`
     (loop-count timeouts on a busy host) is gone with the polling.
-- **Next (pick an order):** partitions (MBR/GPT → `hda1` on the reserved minors, mounting a
-  partition); the root on the disk.
+  - **MBR partitions (done).** A partition test disk (`part.img`, built by a `printf`/`dd`
+    script), `partition_init` registering primary partitions as block devices (`hdb1`, the
+    reserved minors) before `block_devfs_init`, and the partition self-test. Extended
+    (logical) partitions and GPT are logged and skipped (debt). Mounting ext2 from a partition
+    needs nothing new (`ext2_init` tries every block device in order), but no test disk has
+    one yet.
+- **Next:** the root on the disk.
   Phase C (the process model) can also start: none of these block it.
 
 ### Shell (`user/bin/sh/`)
@@ -2274,6 +2324,14 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `vfs_read_file` copies every program once more (archive → `kmalloc` buffer → address space);
   fine at ~100 KiB, replaced by mapping later. `kmalloc` above 1024 B rounds to a power-of-two
   number of pages.
+- Partitions: MBR primary ones only; extended partitions (a chain of tables inside slot 3)
+  and GPT (`0xEE`: a header at sector 1, 128-byte entries) are logged and skipped; overlapping
+  partitions are not refused. A disk and its partitions are separate cache keys: the same
+  sector written through `hdb` and through `hdb1` leaves one cached copy stale (Linux has the
+  same split between a disk and its partitions); nothing but `/dev/hdb` writes a whole disk
+  today. `block_cache_sync` flushes a disk once per partition too (harmless). Table changes
+  after boot are not seen (no re-scan). `BLOCK_DEVICES_MAX` is 8: four disks with partitions
+  would fill it (`block_register` → `-ENOMEM`, logged).
 - ATA: PIO, no DMA (the CPU still copies every word, after each sector's IRQ); 28-bit LBA
   (128 GiB); after a 5 s timeout the drive is not reset (a software reset, SRST through the
   control port), so a hung drive fails every later command too; the BSY wait before a command

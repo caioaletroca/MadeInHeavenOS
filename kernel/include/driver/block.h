@@ -18,7 +18,7 @@ typedef struct block_ops
 } block_ops_t;
 
 /**
- * A disk (or, later, a partition): a numbered array of 512-byte sectors.
+ * A disk or a partition (driver/partition.c): a numbered array of 512-byte sectors.
  */
 typedef struct block_device
 {

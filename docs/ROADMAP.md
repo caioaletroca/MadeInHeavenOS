@@ -147,7 +147,7 @@ docs/                     # handoff, roadmap
    allocator, growing files and `s_state` done, checked by e2fsck; namespace: truncate, the
    inode allocator, creating and deleting files, `O_APPEND`, `mkdir`/`rmdir` and a full-disk
    test done: **ext2 writing is complete**; the test suite reviewed after it; IRQ-driven ATA
-   done), then partitions, then the root on the disk).
+   and MBR partitions done), then the root on the disk).
 
 ## Reference projects
 
