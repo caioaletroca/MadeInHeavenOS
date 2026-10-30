@@ -5,14 +5,17 @@
 # the run left behind with e2fsck. Exits 0 only if the run powered off by
 # itself after "tests: N passed, 0 failed" and the disk is consistent.
 #
-#   ./run-tests.sh [iso [disk [partitions]]]   defaults: mihos.iso, disk.img, part.img
+#   ./run-tests.sh [iso [disk [partitions]]]
 #
-# The disk (an ext2 image, make all builds it) is the IDE primary master, the
-# partition test disk (an MBR, make all builds it too) the primary slave, the
-# CD stays the secondary master. The partition disk is never changed
-# (snapshot=on). The run writes to a fresh copy of it,
-# build/test-disk.img (kept for a look, e.g. debugfs, after a failure): the
-# image itself is never changed.
+# Defaults: mihos.iso, disk.img and part.img in build/<target>/images/ (make
+# all builds them; TARGET, default x86_64-pc). The log and the disk copy go to
+# build/<target>/test/.
+#
+# The disk (an ext2 image) is the IDE primary master, the partitioned disk (an
+# MBR, the installed system on partition 1) the primary slave, the CD stays
+# the secondary master. The partitioned disk is never changed (snapshot=on).
+# The run writes to a fresh copy of the disk, test/test-disk.img (kept for a
+# look, e.g. debugfs, after a failure): the image itself is never changed.
 #
 # The referee: e2fsck -fn on the copy (bitmaps, free counts, i_blocks, block
 # maps, directories, link counts) and dumpe2fs's state (the halt marks the
@@ -21,19 +24,22 @@
 # Environment: QEMU (default qemu-system-x86_64), TIMEOUT in seconds (default
 # 120), IMAGE (default mihos-compiler), FSCK: auto (default: check when Docker
 # and the image are there, else say it was skipped), 1 (the check is required),
-# 0 (no check). The log stays in run-tests.log.
+# 0 (no check). The log stays in test/run-tests.log.
 
 set -u
 
-iso=${1:-mihos.iso}
-disk=${2:-disk.img}
-part=${3:-part.img}
+target=${TARGET:-x86_64-pc}
+images=build/$target/images
+test_dir=build/$target/test
+iso=${1:-$images/mihos.iso}
+disk=${2:-$images/disk.img}
+part=${3:-$images/part.img}
 qemu=${QEMU:-qemu-system-x86_64}
 limit=${TIMEOUT:-120}
 image=${IMAGE:-mihos-compiler}
 fsck=${FSCK:-auto}
-log=run-tests.log
-copy=build/test-disk.img
+log=$test_dir/run-tests.log
+copy=$test_dir/test-disk.img
 
 if [ ! -f "$iso" ]; then
     echo "run-tests: $iso not found (build it first: make all, in Docker)" >&2
@@ -70,19 +76,19 @@ auto | 1)
     ;;
 esac
 
-mkdir -p build
+mkdir -p "$test_dir"
 cp "$disk" "$copy" || exit 2
 
 # A Windows QEMU or Docker needs Windows paths, and Git Bash must not rewrite them
 log_arg=$log
 disk_arg=$copy
 part_arg=$part
-build_dir=$PWD/build
+test_mount=$PWD/$test_dir
 if command -v cygpath >/dev/null 2>&1; then
     log_arg=$(cygpath -m "$PWD/$log")
     disk_arg=$(cygpath -m "$PWD/$copy")
-    part_arg=$(cygpath -m "$PWD/$part")
-    build_dir=$(cygpath -m "$build_dir")
+    part_arg=$(cygpath -m "$(realpath "$part")")
+    test_mount=$(cygpath -m "$test_mount")
 fi
 
 rm -f "$log"
@@ -135,7 +141,7 @@ fi
 
 # -f: check even though the file system says it is clean; -n: change nothing, answer no.
 # Exit status: 0 clean; 4 errors left uncorrected (with -n, any error); 8 and up: it could not run
-report=$(MSYS_NO_PATHCONV=1 docker run --rm -v "$build_dir:/disk" "$image" e2fsck -fn /disk/test-disk.img 2>&1)
+report=$(MSYS_NO_PATHCONV=1 docker run --rm -v "$test_mount:/disk" "$image" e2fsck -fn /disk/test-disk.img 2>&1)
 status=$?
 case $status in
 0) ;;
@@ -152,7 +158,7 @@ case $status in
 esac
 
 # The mount cleared s_state's clean bit (the self-test checks that); only the halt sets it again
-state=$(MSYS_NO_PATHCONV=1 docker run --rm -v "$build_dir:/disk" "$image" dumpe2fs -h /disk/test-disk.img 2>/dev/null |
+state=$(MSYS_NO_PATHCONV=1 docker run --rm -v "$test_mount:/disk" "$image" dumpe2fs -h /disk/test-disk.img 2>/dev/null |
     sed -n 's/^Filesystem state: *//p')
 if [ "$state" != "clean" ]; then
     echo "run-tests: FAIL (the volume says '$state' after the halt, not clean, ${elapsed}s)"

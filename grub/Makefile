@@ -1,8 +1,8 @@
 include ../common.mk
 
-ISO_DIR ?= $(PROJECT_ROOT)/isodir
+ISO_DIR ?= $(STAGING_DIR)/iso
 GRUB_DIR := $(ISO_DIR)/boot/grub
-ISO := $(PROJECT_ROOT)/mihos.iso
+ISO := $(IMAGES_DIR)/mihos.iso
 
 GRUB ?= grub-mkrescue
 GRUBFLAGS ?= /usr/lib/grub/i386-pc
@@ -22,7 +22,7 @@ PROGRAMS := $(filter-out %.elf,$(foreach dir,$(PROGRAM_DIRS),$(wildcard $(SYSROO
 # can be mounted on it
 MOUNT_POINTS := dev mnt
 
-INITRD_STAGING := $(BINARY_DIR)/initrd
+INITRD_STAGING := $(STAGING_DIR)/initrd
 INITRD := $(BINARY_DIR)/initrd.tar
 staging_path = $(INITRD_STAGING)$(patsubst $(SYSROOT_DIR)%,%,$1)
 
@@ -51,4 +51,5 @@ $(ISO): $(BOOT_DIR)/kernel $(INITRD) $(GRUB_CFG)
 	cp $(GRUB_CFG) $(GRUB_DIR)
 	cp $(BOOT_DIR)/kernel $(ISO_DIR)/boot/mihos.kernel
 	cp $(INITRD) $(ISO_DIR)/boot/initrd.tar
+	mkdir -p $(@D)
 	$(GRUB) $(GRUBFLAGS) -o $@ $(ISO_DIR)

@@ -1,1 +1,1 @@
-qemu-system-x86_64 -no-reboot -no-shutdown -d int -monitor stdio -cdrom mihos.iso
+qemu-system-x86_64 -no-reboot -no-shutdown -d int -monitor stdio -cdrom build\x86_64-pc\images\mihos.iso

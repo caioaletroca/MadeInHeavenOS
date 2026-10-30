@@ -3,17 +3,22 @@ ARCH ?= x86_64
 PLATFORM ?= pc
 HOST ?= x86_64-mihos
 
-BUILD_ID := $(HOST)/$(ARCH)-$(PLATFORM)
-KERNEL := kernel/build/$(BUILD_ID)/kernel
+# Everything built goes under build/<target>/ (the folders are listed in common.mk)
+TARGET := $(ARCH)-$(PLATFORM)
+OUTPUT_DIR := build/$(TARGET)
+IMAGES_DIR := $(OUTPUT_DIR)/images
+STAGING_DIR := $(OUTPUT_DIR)/staging
+
+KERNEL := $(OUTPUT_DIR)/objects/kernel/kernel
 OBJDUMP ?= $(HOST)-objdump
 
-DISK_IMAGE := disk.img
+DISK_IMAGE := $(IMAGES_DIR)/disk.img
 DISK_SIZE := 4M
 DISK_FILES := $(shell find disk -type f)
-DISK_STAGING := build/disk
-PART_IMAGE := part.img
-PART_ROOT_STAGING := build/root
-INITRD := grub/build/$(BUILD_ID)/initrd.tar
+DISK_STAGING := $(STAGING_DIR)/disk
+PART_IMAGE := $(IMAGES_DIR)/part.img
+PART_ROOT_STAGING := $(STAGING_DIR)/root
+INITRD := $(OUTPUT_DIR)/objects/grub/initrd.tar
 
 .PHONY: all headers libc kernel user grub install clean purge dump print-config
 
@@ -33,7 +38,7 @@ all: grub $(DISK_IMAGE) $(PART_IMAGE)
 #             long (big.txt's content, 300 blocks), user (the ext2 test's own)
 $(DISK_IMAGE): $(DISK_FILES) Makefile
 	rm -rf $@ $(DISK_STAGING)
-	mkdir -p $(DISK_STAGING)
+	mkdir -p $(@D) $(DISK_STAGING)
 	cp -R disk/. $(DISK_STAGING)/
 	seq -f '%07g' 0 38399 > $(DISK_STAGING)/big.txt
 	printf 'start' > $(DISK_STAGING)/sparse
@@ -55,7 +60,7 @@ $(DISK_IMAGE): $(DISK_FILES) Makefile
 # system inside the partition and leaves the rest of the image as it is.
 $(PART_IMAGE): disk-tools/partition-disk.sh $(INITRD) Makefile
 	rm -rf $@ $(PART_ROOT_STAGING)
-	mkdir -p $(PART_ROOT_STAGING)
+	mkdir -p $(@D) $(PART_ROOT_STAGING)
 	tar -xf $(INITRD) -C $(PART_ROOT_STAGING)
 	sh disk-tools/partition-disk.sh $@
 	mke2fs -q -F -t ext2 -b 1024 -L mihos-root -E offset=$$((2048 * 512)),root_owner=0:0 \
@@ -85,22 +90,15 @@ grub: kernel user
 install: libc
 	$(MAKE) -C kernel install
 
+# clean: this target's folder; purge: every target's
 clean:
-	$(MAKE) -C libc clean
-	$(MAKE) -C kernel clean
-	$(MAKE) -C user clean
-	$(MAKE) -C grub clean
-	rm -rf isodir sysroot mihos.iso $(DISK_IMAGE) $(PART_IMAGE) build
+	rm -rf $(OUTPUT_DIR)
 
 purge:
-	$(MAKE) -C libc purge
-	$(MAKE) -C kernel purge
-	$(MAKE) -C user purge
-	$(MAKE) -C grub purge
-	rm -rf isodir sysroot mihos.iso $(DISK_IMAGE) $(PART_IMAGE) build
+	rm -rf build
 
 dump: $(KERNEL)
-	$(OBJDUMP) -d $(KERNEL) > mihos.txt
+	$(OBJDUMP) -d $(KERNEL) > $(OUTPUT_DIR)/mihos.txt
 
 print-config:
 	$(MAKE) -C kernel print-config

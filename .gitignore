@@ -46,8 +46,6 @@
 *.mod*
 *.cmd
 *.iso
-disk.img
-part.img
 *.kernel
 .tmp_versions/
 modules.order
@@ -58,11 +56,6 @@ dkms.conf
 # Emulator files
 *.ini
 bochslog.txt
-mihos.txt
-run-tests.log
 
-# Build results
+# Build results: everything under build/<target>/ (see common.mk)
 /build
-/*/build
-/isodir
-/sysroot

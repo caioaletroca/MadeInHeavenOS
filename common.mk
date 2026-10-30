@@ -11,11 +11,23 @@ $(error Unsupported ARCH '$(ARCH)': missing $(ARCH_CONFIG))
 endif
 include $(ARCH_CONFIG)
 
-BUILD_ID := $(HOST)/$(ARCH)-$(PLATFORM)
-BINARY_DIR := build/$(BUILD_ID)
+# Everything built goes under build/<target>/, one folder per target:
+#   images/   what runs: mihos.iso, disk.img, part.img
+#   sysroot/  headers, libraries and installed programs
+#   objects/  one folder per component: kernel/, libc/, user/, grub/
+#   staging/  trees that become images: iso/, initrd/, disk/, root/
+#   test/     run-tests.sh's log and disk copies
+# The component is the directory this Makefile runs in (kernel, libc, ...).
+TARGET := $(ARCH)-$(PLATFORM)
+PROJECT_ROOT ?= $(abspath ..)
+OUTPUT_DIR := $(PROJECT_ROOT)/build/$(TARGET)
+COMPONENT := $(notdir $(CURDIR))
+BINARY_DIR := $(OUTPUT_DIR)/objects/$(COMPONENT)
+IMAGES_DIR := $(OUTPUT_DIR)/images
+STAGING_DIR := $(OUTPUT_DIR)/staging
 
-libc := ../libc/$(BINARY_DIR)/libc.a
-libk := ../libc/$(BINARY_DIR)/libk.a
+libc := $(OUTPUT_DIR)/objects/libc/libc.a
+libk := $(OUTPUT_DIR)/objects/libc/libk.a
 
 #####################################################################
 # Common Programs and Flags
@@ -48,12 +60,11 @@ LDFLAGS_EXTRA := -nostdlib -lk -lgcc
 #####################################################################
 # Folders and paths
 SOURCE_DIR := .
-PROJECT_ROOT ?= $(abspath ..)
 ARCH_FAMILY_DIR := $(SOURCE_DIR)/arch/$(ARCH_FAMILY)
 ARCH_COMMON_DIR := $(ARCH_FAMILY_DIR)/common
 ARCH_DIR := $(ARCH_FAMILY_DIR)/$(ARCH)
 PLATFORM_DIR := $(SOURCE_DIR)/platform/$(PLATFORM)
-SYSROOT_DIR ?= $(PROJECT_ROOT)/sysroot
+SYSROOT_DIR ?= $(OUTPUT_DIR)/sysroot
 USR_DIR := $(SYSROOT_DIR)/usr
 INCLUDE_DIR := $(USR_DIR)/include
 BOOT_DIR := $(USR_DIR)/boot
@@ -95,14 +106,17 @@ print-config:
 	@echo ARCH=$(ARCH)
 	@echo PLATFORM=$(PLATFORM)
 	@echo HOST=$(HOST)
+	@echo TARGET=$(TARGET)
+	@echo OUTPUT_DIR=$(OUTPUT_DIR)
 	@echo BINARY_DIR=$(BINARY_DIR)
 	@echo SYSROOT_DIR=$(SYSROOT_DIR)
 
+# clean: this component's objects for this target; purge: for every target
 clean:
 	$(RM) $(BINARY_DIR)
 
 purge:
-	$(RM) build
+	$(RM) $(PROJECT_ROOT)/build/*/objects/$(COMPONENT)
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.c
 	mkdir -p $(@D)
