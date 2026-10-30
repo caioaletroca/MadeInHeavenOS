@@ -75,10 +75,10 @@ void kmain(uintptr_t boot_handoff)
     partition_init();
     block_devfs_init();
 
-    root_init(&kernel_args, &boot_info);
+    block_device_t *root_device = root_init(&kernel_args, &boot_info);
     devfs_mount();
     console_open();
-    ext2_init();
+    ext2_init(root_device);
 
     guard_selftest();
     hashtable_selftest();

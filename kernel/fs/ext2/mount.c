@@ -263,11 +263,14 @@ int ext2_mount(block_device_t *disk, vfs_node_t **root)
     return 0;
 }
 
-void ext2_init(void)
+void ext2_init(const block_device_t *root_device)
 {
     for (size_t i = 0; block_at(i) != NULL; i++)
     {
         block_device_t *disk = block_at(i);
+
+        if (disk == root_device)
+            continue;
 
         vfs_node_t *root;
         int ret = ext2_mount(disk, &root);
