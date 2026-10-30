@@ -6,10 +6,16 @@
 struct file_ops;
 
 /**
- * @brief Initializes the device file system and mounts it at /dev (panics if it cannot).
- * Once, after initrd_init (the mount point is in the initrd).
+ * @brief Creates the device file system's root, empty. Devices can register from
+ * here on; it is reachable as /dev only after devfs_mount. Once, after mm_init.
  */
 void devfs_init(void);
+
+/**
+ * @brief Mounts the device file system at /dev (panics if it cannot).
+ * Once, after the root file system is mounted (the mount point is in it).
+ */
+void devfs_mount(void);
 
 /**
  * @brief Registers a new device node in the /dev directory.

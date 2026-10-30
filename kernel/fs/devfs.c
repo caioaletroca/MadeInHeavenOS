@@ -129,7 +129,10 @@ void devfs_init(void)
     devfs_root.mode = 0755;
     devfs_root.parent = &devfs_root;
     list_init(&devfs_devices);
+}
 
+void devfs_mount(void)
+{
     int ret = vfs_mount("/dev", &devfs_root);
     if (ret < 0)
         panic("devfs: cannot mount /dev: %d\n", ret);

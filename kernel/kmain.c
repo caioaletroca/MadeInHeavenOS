@@ -62,6 +62,7 @@ void kmain(uintptr_t boot_handoff)
 
     initrd_init(&boot_info);
     devfs_init();
+    devfs_mount();
     mem_devices_init();
 
     scheduler_init(&boot_thread);
