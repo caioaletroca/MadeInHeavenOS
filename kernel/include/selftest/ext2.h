@@ -1,6 +1,8 @@
 #ifndef _SELFTEST_EXT2_H_
 #define _SELFTEST_EXT2_H_
 
+#include <driver/block.h>
+
 /**
  * Self-test for ext2 on the test disk mounted at /mnt: the root and its
  * listing (the symlink skipped), lookups, the node cache (one node per inode,
@@ -8,7 +10,10 @@
  * single and double indirect blocks and a hole, read-only opens; and broken
  * copies of the disk (bytes replaced by an overlay device) refused at mount or
  * giving -EIO in directories. Panics on failure.
+ *
+ * @param root_device The disk mounted as "/" (root_init), or NULL for the
+ * initrd: the refusals outside /mnt depend on which file system "/" is.
  */
-void ext2_selftest(void);
+void ext2_selftest(const block_device_t *root_device);
 
 #endif // _SELFTEST_EXT2_H_

@@ -16,6 +16,11 @@
 #define ELF_MAGIC "\x7F" "ELF"
 #define HELLO "/usr/tests/hello"
 
+// "/" is an ext2 on a disk (root=), not the initrd: what is the initrd's own
+// (its root's listing, the tar headers' modes and times, read-only) is checked
+// only in the live boot. The tree is the same in both: the disk holds the initrd's files
+static bool root_on_disk;
+
 /**
  * Looks up a path that must exist with the given type; returns the reference.
  */
@@ -172,17 +177,21 @@ static void vfs_test_readdir(void)
     vfs_node_t *tests = vfs_expect("/usr/tests", VFS_DIRECTORY);
     vfs_node_t *hello = vfs_expect(HELLO, VFS_FILE);
 
-    // The root: "." and ".." are both itself, then the archive's directories in order.
-    // "dev" and "mnt" are the initrd's own directories (readdir does not follow mounts): no inode to compare
+    // The initrd's root: "." and ".." are both itself, then the archive's directories in order.
+    // "dev" and "mnt" are the initrd's own directories (readdir does not follow mounts): no inode
+    // to compare. The disk's root lists lost+found too, in the order mke2fs wrote it
     vfs_expect_entry(root, 0, ".", VFS_DIRECTORY, root->ino);
     vfs_expect_entry(root, 1, "..", VFS_DIRECTORY, root->ino);
-    vfs_expect_entry(root, 2, "bin", VFS_DIRECTORY, 0);
-    vfs_expect_entry(root, 3, "dev", VFS_DIRECTORY, 0);
-    vfs_expect_entry(root, 4, "mnt", VFS_DIRECTORY, 0);
-    vfs_expect_entry(root, 5, "sbin", VFS_DIRECTORY, 0);
-    vfs_expect_entry(root, 6, "usr", VFS_DIRECTORY, usr->ino);
-    if (vfs_readdir(root, 7, &entry) != 0 || vfs_readdir(root, 100, &entry) != 0)
-        panic("VFS self-test: readdir past the root's last entry did not return 0\n");
+    if (!root_on_disk)
+    {
+        vfs_expect_entry(root, 2, "bin", VFS_DIRECTORY, 0);
+        vfs_expect_entry(root, 3, "dev", VFS_DIRECTORY, 0);
+        vfs_expect_entry(root, 4, "mnt", VFS_DIRECTORY, 0);
+        vfs_expect_entry(root, 5, "sbin", VFS_DIRECTORY, 0);
+        vfs_expect_entry(root, 6, "usr", VFS_DIRECTORY, usr->ino);
+        if (vfs_readdir(root, 7, &entry) != 0 || vfs_readdir(root, 100, &entry) != 0)
+            panic("VFS self-test: readdir past the root's last entry did not return 0\n");
+    }
 
     vfs_expect_entry(usr, 0, ".", VFS_DIRECTORY, usr->ino);
     vfs_expect_entry(usr, 1, "..", VFS_DIRECTORY, root->ino);
@@ -210,38 +219,39 @@ static void vfs_test_readdir(void)
     vfs_node_put(root);
 }
 
-// Every record of the root, as vfs_file_getdents packs it
-static const char *const root_names[] = {".", "..", "bin", "dev", "mnt", "sbin", "usr"};
-#define ROOT_COUNT 7
-#define ROOT_RECORDS 112 // 7 records of 16 bytes: 11-byte header + name + '\0', rounded to 8
-#define SBIN_INDEX 5
+// Every record of /usr, as vfs_file_getdents packs it: the same in both boots (it holds only tests)
+static const char *const usr_names[] = {".", "..", "tests"};
+static const uint16_t usr_lengths[] = {16, 16, 24}; // 11-byte header + name + '\0', rounded to 8
+#define USR_COUNT 3
+#define USR_RECORDS 56
+#define TESTS_INDEX 2
 
 static void vfs_test_getdents(void)
 {
     struct file *file;
     if (vfs_open("/sbin/init", O_RDONLY | O_DIRECTORY, 0, &file) != -ENOTDIR)
         panic("VFS self-test: O_DIRECTORY on a file did not return -ENOTDIR\n");
-    if (vfs_open("/", O_RDONLY | O_DIRECTORY, 0, &file) != 0)
-        panic("VFS self-test: opening / with O_DIRECTORY failed\n");
+    if (vfs_open("/usr", O_RDONLY | O_DIRECTORY, 0, &file) != 0)
+        panic("VFS self-test: opening /usr with O_DIRECTORY failed\n");
 
     // Zeroed, like sys_getdents does; the byte after `size` is a canary
-    unsigned char buffer[ROOT_RECORDS + 16];
+    unsigned char buffer[USR_RECORDS + 16];
     uint64_t next;
     long n;
 
     scoped_guard(mutex, &file->position_lock)
     {
-        // The whole root at once
+        // The whole directory at once
         memset(buffer, 0, sizeof(buffer));
         n = vfs_file_getdents(file, buffer, sizeof(buffer), &next);
-        if (n != ROOT_RECORDS || next != ROOT_COUNT)
-            panic("VFS self-test: getdents of / returned %ld, next %u\n", n, (unsigned int)next);
+        if (n != USR_RECORDS || next != USR_COUNT)
+            panic("VFS self-test: getdents of /usr returned %ld, next %u\n", n, (unsigned int)next);
 
         size_t used = 0;
-        for (size_t i = 0; i < ROOT_COUNT; i++)
+        for (size_t i = 0; i < USR_COUNT; i++)
         {
             const struct mihos_dirent *record = (const void *)(buffer + used);
-            if (record->d_reclen != 16 || strcmp(record->d_name, root_names[i]) != 0 ||
+            if (record->d_reclen != usr_lengths[i] || strcmp(record->d_name, usr_names[i]) != 0 ||
                 record->d_type != MIHOS_DT_DIR)
                 panic("VFS self-test: getdents record %zu is wrong ('%s', %u bytes)\n", i, record->d_name,
                       (unsigned int)record->d_reclen);
@@ -250,17 +260,17 @@ static void vfs_test_getdents(void)
 
         // At the end: 0, and next stays
         file->offset = next;
-        if (vfs_file_getdents(file, buffer, sizeof(buffer), &next) != 0 || next != ROOT_COUNT)
+        if (vfs_file_getdents(file, buffer, sizeof(buffer), &next) != 0 || next != USR_COUNT)
             panic("VFS self-test: getdents at the end did not return 0\n");
 
-        // "sbin" fills its 16 bytes exactly: nothing may be written after them
-        file->offset = SBIN_INDEX;
+        // "tests" fills its 24 bytes exactly: nothing may be written after them
+        file->offset = TESTS_INDEX;
         memset(buffer, 0, sizeof(buffer));
-        buffer[16] = 0xA5;
-        n = vfs_file_getdents(file, buffer, 16, &next);
-        if (n != 16 || next != SBIN_INDEX + 1 || buffer[16] != 0xA5)
+        buffer[24] = 0xA5;
+        n = vfs_file_getdents(file, buffer, 24, &next);
+        if (n != 24 || next != TESTS_INDEX + 1 || buffer[24] != 0xA5)
             panic("VFS self-test: getdents into an exact fit returned %ld, next %u, canary 0x%x\n", n,
-                  (unsigned int)next, buffer[16]);
+                  (unsigned int)next, buffer[24]);
 
         // Not even one record fits
         file->offset = 0;
@@ -306,18 +316,22 @@ static int64_t vfs_expect_stat(const char *path, uint32_t mode)
 
 static void vfs_test_stat(void)
 {
-    // Files and listed directories carry the tar header's permissions and time
-    int64_t hello = vfs_expect_stat(HELLO, MIHOS_S_IFREG | 0755);
-    int64_t tests = vfs_expect_stat("/usr/tests", MIHOS_S_IFDIR | 0755);
-    if (hello < MTIME_MIN || hello > MTIME_MAX || tests < MTIME_MIN || tests > MTIME_MAX)
-        panic("VFS self-test: implausible mtime (hello %ld, /usr/tests %ld)\n", (long)hello, (long)tests);
+    // The initrd's files and listed directories carry the tar header's permissions and time
+    // (ext2's stat, with its link counts, is the ext2 self-test's)
+    if (!root_on_disk)
+    {
+        int64_t hello = vfs_expect_stat(HELLO, MIHOS_S_IFREG | 0755);
+        int64_t tests = vfs_expect_stat("/usr/tests", MIHOS_S_IFDIR | 0755);
+        if (hello < MTIME_MIN || hello > MTIME_MAX || tests < MTIME_MIN || tests > MTIME_MAX)
+            panic("VFS self-test: implausible mtime (hello %ld, /usr/tests %ld)\n", (long)hello, (long)tests);
 
-    // The archive never lists "usr/" or the root: defaults 0755 and no time. A file's
-    // values must not leak onto the directories its path passes through
-    if (vfs_expect_stat("/usr", MIHOS_S_IFDIR | 0755) != 0)
-        panic("VFS self-test: /usr took the mtime of an entry below it\n");
-    if (vfs_expect_stat("/", MIHOS_S_IFDIR | 0755) != 0)
-        panic("VFS self-test: the root has an mtime\n");
+        // The archive never lists "usr/" or the root: defaults 0755 and no time. A file's
+        // values must not leak onto the directories its path passes through
+        if (vfs_expect_stat("/usr", MIHOS_S_IFDIR | 0755) != 0)
+            panic("VFS self-test: /usr took the mtime of an entry below it\n");
+        if (vfs_expect_stat("/", MIHOS_S_IFDIR | 0755) != 0)
+            panic("VFS self-test: the root has an mtime\n");
+    }
 
     // An open file is its lookup's node: what fstat reports is that node's stat
     struct file *file;
@@ -495,7 +509,8 @@ static void vfs_test_devices(void)
     vfs_expect_error("/dev/null/", -ENOTDIR);
 
     // Initrd files stay read-only; a missing path is ENOENT before any access check
-    if (vfs_open(HELLO, O_WRONLY, 0, &file) != -EROFS || vfs_open("/nope", O_WRONLY, 0, &file) != -ENOENT)
+    if ((!root_on_disk && vfs_open(HELLO, O_WRONLY, 0, &file) != -EROFS) ||
+        vfs_open("/nope", O_WRONLY, 0, &file) != -ENOENT)
         panic("VFS self-test: write access outside /dev gave the wrong error\n");
 
     // Registration refuses duplicates and bad names, and changes nothing then
@@ -516,8 +531,10 @@ static void vfs_test_devices(void)
     vfs_node_put(null);
 }
 
-void vfs_selftest(void)
+void vfs_selftest(const block_device_t *root_device)
 {
+    root_on_disk = root_device != NULL;
+
     // Every lookup returns a reference and every step drops one: counts must not move
     vfs_node_t *root = vfs_expect("/", VFS_DIRECTORY);
     vfs_node_t *hello = vfs_expect(HELLO, VFS_FILE);

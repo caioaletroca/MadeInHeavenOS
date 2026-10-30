@@ -67,6 +67,10 @@
 
 static char long_path[sizeof(MNT "/") + LONG_NAME_LENGTH + 1];
 
+// "/" is an ext2 on a disk (root=), writable, not the read-only initrd: the
+// refusals that name the initrd's files are checked only in the live boot
+static bool root_on_disk;
+
 static vfs_node_t *ext2_expect(const char *path, vfs_node_type_t type)
 {
     vfs_node_t *node = NULL;
@@ -905,7 +909,7 @@ static void open_expect(const char *path, int flags, int error)
  * names need more than the block: the directory gets a second one (its size and
  * i_blocks on the disk), every name looks up to its inode. Then the refusals,
  * from the path (EISDIR, ENOENT, ENOTDIR, ENAMETOOLONG), the file system (EROFS
- * on the initrd and devfs) and the symlink's name (taken: ENOENT, EEXIST with
+ * on devfs, and on the initrd in the live boot) and the symlink's name (taken: ENOENT, EEXIST with
  * O_EXCL). e2fsck checks the result (fsck-test.sh).
  */
 static uint32_t create_free_inodes, create_free_blocks; // before ext2_test_create, for ext2_test_unlink
@@ -1030,7 +1034,8 @@ static void ext2_test_create(void)
     open_expect(MNT "/grow/dir/", O_WRONLY | O_CREAT, -EISDIR);
     open_expect(MNT "/nope/new", O_WRONLY | O_CREAT, -ENOENT);
     open_expect(MNT "/hello.txt/new", O_WRONLY | O_CREAT, -ENOTDIR);
-    open_expect("/usr/new", O_WRONLY | O_CREAT, -EROFS);
+    if (!root_on_disk)
+        open_expect("/usr/new", O_WRONLY | O_CREAT, -EROFS);
     open_expect("/dev/new", O_WRONLY | O_CREAT, -EROFS);
     open_expect(MNT "/link", O_WRONLY | O_CREAT, -ENOENT);
     open_expect(MNT "/link", O_WRONLY | O_CREAT | O_EXCL, -EEXIST);
@@ -1071,7 +1076,7 @@ static void unlink_expect(const char *path, int error)
  * the end grow/ lists its 5 files again, and the free counts are what they were
  * before the creates, but for grow/'s second block (directories never shrink).
  * Then the refusals: EISDIR (a directory, with or without '/', the dots, "/"),
- * ENOTDIR, ENOENT (missing, the symlink), EROFS (the initrd).
+ * ENOTDIR, ENOENT (missing, the symlink), EROFS (devfs; the initrd in the live boot).
  */
 static void ext2_test_unlink(void)
 {
@@ -1152,7 +1157,9 @@ static void ext2_test_unlink(void)
     unlink_expect(MNT "/hello.txt/", -ENOTDIR);
     unlink_expect(MNT "/nope", -ENOENT);
     unlink_expect(MNT "/link", -ENOENT);
-    unlink_expect("/sbin/init", -EROFS);
+    if (!root_on_disk) // on the disk's root it would delete init
+        unlink_expect("/sbin/init", -EROFS);
+    unlink_expect("/dev/null", -EROFS); // devfs: read-only in both boots
     if (disk_free_inodes(disk, &now_group0) != create_free_inodes)
         panic("ext2 self-test: a refused unlink changed the free inodes\n");
 }
@@ -1288,7 +1295,9 @@ static void ext2_test_dirs(void)
     mkdir_expect(MNT "/docs", -EEXIST);
     mkdir_expect(MNT "/link", -EEXIST); // a symlink: lookup cannot see it, but the name is taken
     mkdir_expect("/", -EEXIST);
-    mkdir_expect("/usr/new", -EROFS);
+    if (!root_on_disk)
+        mkdir_expect("/usr/new", -EROFS);
+    mkdir_expect("/dev/new", -EROFS); // devfs: read-only in both boots
     mkdir_expect(MNT "/nope/new", -ENOENT);
     mkdir_expect(MNT "/hello.txt/new", -ENOTDIR);
     rmdir_expect(MNT "/hello.txt", -ENOTDIR);
@@ -1298,8 +1307,12 @@ static void ext2_test_dirs(void)
     rmdir_expect(MNT "/docs/.", -EINVAL);
     rmdir_expect(MNT "/docs/..", -ENOTEMPTY);
     rmdir_expect("/", -EBUSY);
-    rmdir_expect("/usr", -EROFS);
-    rmdir_expect(MNT, -EROFS); // the mount point: its parent is the initrd
+    rmdir_expect("/usr", root_on_disk ? -ENOTEMPTY : -EROFS);
+
+    // A mount point: on the initrd its parent cannot change at all (EROFS first, as in Linux);
+    // on the disk's writable root the directory is busy, though empty on the disk itself
+    rmdir_expect(MNT, root_on_disk ? -EBUSY : -EROFS);
+    rmdir_expect("/dev", root_on_disk ? -EBUSY : -EROFS);
     if (disk_used_dirs(disk) != used_dirs || disk_free_inodes(disk, &now_group0) != free)
         panic("ext2 self-test: a refused mkdir or rmdir changed the counts\n");
 }
@@ -1407,8 +1420,10 @@ static void ext2_test_full(void)
     kfree(buffer);
 }
 
-void ext2_selftest(void)
+void ext2_selftest(const block_device_t *root_device)
 {
+    root_on_disk = root_device != NULL;
+
     memcpy(long_path, MNT "/", sizeof(MNT));
     memset(long_path + sizeof(MNT), 'a', LONG_NAME_LENGTH);
     long_path[sizeof(MNT) + LONG_NAME_LENGTH] = '\0';

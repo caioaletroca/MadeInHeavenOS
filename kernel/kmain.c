@@ -86,10 +86,10 @@ void kmain(uintptr_t boot_handoff)
     scheduler_selftest();
     console_selftest();
     user_selftest();
-    vfs_selftest();
+    vfs_selftest(root_device);
     block_selftest();
     partition_selftest();
-    ext2_selftest(); // after the block one: that one counts cache hits and misses
+    ext2_selftest(root_device); // after the block one: that one counts cache hits and misses
     elf_selftest();
     kprintf("self-tests: ok\n"); // each one panics on failure
 
