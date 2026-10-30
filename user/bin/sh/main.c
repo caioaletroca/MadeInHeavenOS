@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include "sh.h"
 
 static void print_header(void)
@@ -10,7 +11,11 @@ static void print_header(void)
 
 static void print_prompt(void)
 {
-    printf("mihos>");
+    char cwd[CWD_MAX];
+    if (getcwd(cwd, sizeof(cwd)) == NULL)
+        strlcpy(cwd, "?", sizeof(cwd));
+
+    printf("mihos:%s> ", cwd);
 }
 
 int main(void)

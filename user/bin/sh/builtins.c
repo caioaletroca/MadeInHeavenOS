@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <errno.h>
 
 // Builtin command definitions for the shell
 typedef int (*builtin_func_t)(shell_t *sh, int argc, char *argv[]);
@@ -19,12 +21,16 @@ typedef struct builtin
 static int builtin_exit(shell_t *shell, int argc, char *argv[]);
 static int builtin_help(shell_t *shell, int argc, char *argv[]);
 static int builtin_history(shell_t *shell, int argc, char *argv[]);
+static int builtin_cd(shell_t *shell, int argc, char *argv[]);
+static int builtin_pwd(shell_t *shell, int argc, char *argv[]);
 
 static const builtin_t builtins[] =
     {
+        {"cd", builtin_cd, "cd [dir]: change the current directory (default: $HOME, else /)"},
         {"exit", builtin_exit, "exit [n]: leave the shell with status n (default: the last status)"},
         {"help", builtin_help, "help: list the builtins"},
         {"history", builtin_history, "history: list the last commands"},
+        {"pwd", builtin_pwd, "pwd: print the current directory"},
 };
 
 /**
@@ -76,6 +82,56 @@ static int builtin_history(shell_t *sh, int argc, char *argv[])
 
     history_show(&sh->history);
 
+    return 0;
+}
+
+/**
+ * Builtin command: cd
+ * Usage: cd [dir]
+ * Change the current directory to 'dir' (default: $HOME, else /)
+ */
+static int builtin_cd(shell_t *sh, int argc, char *argv[])
+{
+    (void)sh;
+
+    if (argc > 2)
+    {
+        fprintf(stderr, "cd: too many arguments\n");
+        return 1;
+    }
+
+    const char *dir = argc > 1 ? argv[1] : getenv("HOME");
+    if (dir == NULL || dir[0] == '\0')
+        dir = "/";
+
+    if (chdir(dir) < 0)
+    {
+        fprintf(stderr, "cd: %s: %s\n", dir, strerror(errno));
+        return 1;
+    }
+
+    return 0;
+}
+
+/**
+ * Builtin command: pwd
+ * Usage: pwd
+ * Print the current working directory
+ */
+static int builtin_pwd(shell_t *sh, int argc, char *argv[])
+{
+    (void)sh;   // unused parameter
+    (void)argc; // unused parameter
+    (void)argv; // unused parameter
+
+    char path[CWD_MAX];
+    if (getcwd(path, sizeof(path)) == NULL)
+    {
+        fprintf(stderr, "pwd: %s\n", strerror(errno));
+        return 1;
+    }
+
+    printf("%s\n", path);
     return 0;
 }
 

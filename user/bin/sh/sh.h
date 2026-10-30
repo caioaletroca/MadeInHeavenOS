@@ -3,6 +3,7 @@
 
 #include "history.h"
 
+#define CWD_MAX 1024
 #define COMMAND_MAX 1024
 #define MAX_ARGS 64
 
