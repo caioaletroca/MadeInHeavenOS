@@ -77,6 +77,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+83a8989 build: put every output under build/<target>/
+81b3725 docs(architecture): document the root partition and the R2 decision in handoff
 641a72b build: install the root file system on part.img's partition 1
 9825e91 docs(roadmap): record the kernel shape, hardware targets and root-on-disk plan
 a7d2936 docs(architecture): document MBR partitions and part.img in handoff
@@ -784,7 +786,7 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
 ### Programs and the ELF loader (`exec/`, `init.c`, `user/`)
 
 ```text
-user/tests/hello ─build─▶ sysroot/usr/tests/hello ─grub/Makefile─▶ initrd.tar (usr/tests/hello)
+user/tests/hello ─build─▶ <build/x86_64-pc/>sysroot/usr/tests/hello ─grub/Makefile─▶ initrd.tar (usr/tests/hello)
   ─ISO /boot/initrd.tar─▶ module "initrd" ─▶ initrd_init: tree of nodes, mounted as "/"
   ─▶ vfs_lookup("/usr/tests/hello") / vfs_read_file (kmalloc'd copy)
 init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words of the cmdline} ─▶ exec_load
@@ -1217,10 +1219,10 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   check a failed write looks fine). **`ata_flush`:** the mutex, wait ready, select
   `0xE0 | slave << 4` (no address), `ata_irq_clear`, `CACHE FLUSH` (`0xE7`), one `ata_wait_irq`
   (ERR/DF → `-EIO`); no data phase.
-- **Test disk** (`Makefile`): `disk.img`, 4 MiB ext2 with 1 KiB blocks, label `mihos-test`,
-  root-owned, `mke2fs -q -F -t ext2 -b 1024 -L mihos-test -E root_owner=0:0 -d build/disk`,
-  rebuilt when a file in `disk/` or the Makefile changes; `make clean` deletes it and `build/`.
-  `build/disk` is `disk/` (`hello.txt`, `empty`, `docs/README`, `docs/deep/nested/file.txt`;
+- **Test disk** (`Makefile`): `disk.img` (in `build/<target>/images/`), 4 MiB ext2 with 1 KiB
+  blocks, label `mihos-test`, root-owned, `mke2fs -q -F -t ext2 -b 1024 -L mihos-test -E
+  root_owner=0:0 -d <staging>/disk`, rebuilt when a file in `disk/` or the Makefile changes;
+  `make clean` deletes it with the rest of `build/<target>/`. `staging/disk` is `disk/` (`hello.txt`, `empty`, `docs/README`, `docs/deep/nested/file.txt`;
   `.gitattributes` keeps them byte-exact, `-text`) plus generated files: `big.txt` (300 KiB of
   `"%07d\n"` lines holding their own number: direct, single and double indirect blocks),
   `sparse` (`"start"`, a hole to 16384, `"end"`: holes in `i_block[1..11]` and inside the
@@ -1236,7 +1238,7 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   (32768 sectors), an MBR written with `printf` (octal escapes: dash has no `\x`) and `dd` (the
   build image has no `sfdisk`). Slot 1 Linux (`0x83`) at 2048, 24576 sectors (12 MiB): **the
   installed system**, an ext2 (1 KiB blocks, label `mihos-root`, owner 0) holding the
-  initrd's tree (`initrd.tar` unpacked into `build/root`, then `mke2fs -E offset=1048576 -d`,
+  initrd's tree (`initrd.tar` unpacked into `staging/root`, then `mke2fs -E offset=1048576 -d`,
   which writes inside the partition and leaves the rest of the image alone); the root of the
   planned "from disk" boot. Slot 2 empty; slot 3 extended (`0x05`) at 26624; slot 4 Linux at
   28672, 2047 sectors, text markers at its first and last sector (`mihos-part4 first`/`last`);
@@ -2235,7 +2237,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     (logical) partitions and GPT are logged and skipped (debt). Mounting ext2 from a partition
     needs nothing new (`ext2_init` tries every block device in order), but no test disk has
     one yet.
-- **Next:** the root on the disk. Agreed design (Linux-like):
+- **Build layout (done):** every output under `build/<target>/` (`BUILD_RUN.md`).
+- **Next:** the root on the disk, **step R2** (the user writes it; start the session by laying
+  it out file by file: where the command line is split, `root_init`, the kmain reorder,
+  `ext2_init` skipping the root device, the panic with the device list). R1 is done. Agreed
+  design (Linux-like):
   - **Two boots from the CD's GRUB menu.** "Live": the initrd is `/`, as today (the initrd is
     the live system, like a live USB). "From disk": `root=hdb1` on the kernel command line,
     ext2 on that device is `/`, and GRUB does not load the initrd at all. Leading `name=value`
@@ -2540,7 +2546,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 ## Commands
 
-Build (inside the Docker image):
+Build (inside the Docker image). Everything lands in `build/x86_64-pc/` (`images/`,
+`sysroot/`, `objects/`, `staging/`, `test/`: see `BUILD_RUN.md`); `make clean` deletes that
+folder, `make purge` all of `build/`:
 
 ```sh
 make clean
@@ -2551,17 +2559,21 @@ make print-config
 Inspect a user program's segments (each `LOAD` page-aligned, no overlaps):
 
 ```sh
-x86_64-mihos-readelf -l sysroot/usr/tests/hello
+x86_64-mihos-readelf -l build/x86_64-pc/sysroot/usr/tests/hello
 ```
 
-`make all` also builds `disk.img` (needs `mke2fs`: rebuild the Docker image once after a
+The commands below run from the repository root; the images are in
+`build/x86_64-pc/images/` (written `images/` here).
+
+`make all` also builds `disk.img` and `part.img` (needs `mke2fs`: rebuild the Docker image once after a
 Dockerfile change with `docker build . -t mihos-compiler` from `cross-compiler/`, **not**
 `docker-build.bat`: its `robocopy` refreshes the image's sysroot copy, which invalidates the
 cache before the GCC build and rebuilds the whole cross-compiler).
 
 Run Bochs (`port_e9_hack: enabled=1` in `.bochsrc` sends the output to its console; the window
-closes by itself at `system halted`; the disk needs `ata0-slave: type=disk, path=disk.img,
-mode=volatile`, or the block self-test panics; `volatile` drops the writes at exit, like QEMU's
+closes by itself at `system halted`; `ata0-master: type=cdrom,
+path=build/x86_64-pc/images/mihos.iso, status=inserted`; the disk needs `ata0-slave:
+type=disk, path=build/x86_64-pc/images/disk.img, mode=volatile`, or the block self-test panics; `volatile` drops the writes at exit, like QEMU's
 `-snapshot`, where `flat` would keep them in `disk.img`):
 
 ```sh
@@ -2572,18 +2584,19 @@ Run QEMU (verifies keys Bochs drops; `cpu_breakpoint` is a no-op there). `-debug
 the output to the terminal; `-no-shutdown` keeps the window after the power off:
 
 ```sh
-qemu-system-x86_64 -cdrom mihos.iso -drive file=disk.img,format=raw,if=ide,index=0 -snapshot -m 1024 -no-reboot -no-shutdown -debugcon stdio
-qemu-system-x86_64 -cdrom mihos.iso -drive file=disk.img,format=raw,if=ide,index=0 -snapshot -m 1024 -no-reboot -no-shutdown -d int,cpu_reset -D qemu.log
+qemu-system-x86_64 -cdrom images/mihos.iso -drive file=images/disk.img,format=raw,if=ide,index=0 -snapshot -m 1024 -no-reboot -no-shutdown -debugcon stdio
+qemu-system-x86_64 -cdrom images/mihos.iso -drive file=images/disk.img,format=raw,if=ide,index=0 -snapshot -m 1024 -no-reboot -no-shutdown -d int,cpu_reset -D qemu.log
 ```
 
 Automatic test run, no window (about 10 s; exits 0 only after a clean power off with
-`tests: N passed, 0 failed` and no `FAIL` line; prints the log otherwise, kept in `run-tests.log`):
+`tests: N passed, 0 failed` and no `FAIL` line; prints the log otherwise, kept in
+`build/x86_64-pc/test/run-tests.log`; `TARGET=` picks another target's folder):
 
 ```sh
 ./run-tests.sh
 ```
 
-The run writes to `build/test-disk.img`, a fresh copy of `disk.img` (the image itself never
+The run writes to `build/x86_64-pc/test/test-disk.img`, a fresh copy of `disk.img` (the image itself never
 changes), and after the tests checks it with `e2fsck -fn` and `dumpe2fs`'s state in the
 `mihos-compiler` image: it passes only if the disk is consistent and the halt left it clean.
 `FSCK=auto` (default) skips that, saying so, without Docker or the image; `FSCK=1` requires
@@ -2592,7 +2605,7 @@ it, `FSCK=0` turns it off. The copy stays for `debugfs` after a failure.
 The same by hand (on Windows the log path must be a Windows path):
 
 ```sh
-qemu-system-x86_64 -cdrom mihos.iso -drive file=disk.img,format=raw,if=ide,index=0 -snapshot -m 1024 -no-reboot -display none -debugcon file:run.log
+qemu-system-x86_64 -cdrom images/mihos.iso -drive file=images/disk.img,format=raw,if=ide,index=0 -snapshot -m 1024 -no-reboot -display none -debugcon file:run.log
 ```
 
 Local, intentionally uncommitted: `.bochsrc`, `bx_enh_dbg.ini`.

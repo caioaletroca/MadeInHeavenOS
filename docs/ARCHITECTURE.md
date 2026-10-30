@@ -5,7 +5,8 @@ one user-mode driver experiment) planned on top: see `ROADMAP.md`, "Kernel shape
 
 ```text
 Docker x86_64-mihos toolchain
-  -> libc/libk.a -> kernel ELF -> sysroot -> isodir -> mihos.iso
+  -> libc/libk.a -> kernel ELF -> sysroot -> staging/iso -> images/mihos.iso
+     (all under build/<target>/: see BUILD_RUN.md)
   -> QEMU / Bochs -> GRUB Multiboot2 -> _start -> boot64 -> kmain
 ```
 
