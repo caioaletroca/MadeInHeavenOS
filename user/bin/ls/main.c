@@ -7,7 +7,7 @@
 
 #define EXIT_BAD_ARGUMENTS 2
 
-#define BASE_PATH "/"
+#define BASE_PATH "."
 
 /**
  * Lists the contents of a directory.
