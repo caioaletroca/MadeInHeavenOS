@@ -50,9 +50,9 @@ typedef struct initrd_node
     vfs_node_t base; // what the VFS sees (the "base class")
     char *name;      // kmalloc'd copy, '\0'-terminated
     size_t name_length;
-    const void *data; // files: their bytes inside the tar
-    list_t children;  // directories: initrd_node_t's, via sibling
-    list_t child_link;   // link in the parent's children
+    const void *data;  // files: their bytes inside the tar
+    list_t children;   // directories: initrd_node_t's, via sibling
+    list_t child_link; // link in the parent's children
 } initrd_node_t;
 
 // The initrd_node_t around a vfs_node_t (C#: (InitrdNode)node)
@@ -388,11 +388,11 @@ static const boot_module_t *initrd_module(const boot_info_t *info)
     return NULL;
 }
 
-void initrd_init(const boot_info_t *boot_info)
+vfs_node_t *initrd_init(const boot_info_t *boot_info)
 {
     const boot_module_t *module = initrd_module(boot_info);
     if (module == NULL)
-        panic("initrd: no '%s' boot module\n", INITRD_MODULE);
+        return NULL;
 
     initrd_image = phys_to_kern(module->start);
     initrd_size = module->end - module->start;
@@ -431,5 +431,5 @@ void initrd_init(const boot_info_t *boot_info)
     while ((header = tar_next(&offset, &size, &data)) != NULL)
         initrd_add_entry(root, header, size, data);
 
-    vfs_mount_root(&root->base);
+    return &root->base;
 }
