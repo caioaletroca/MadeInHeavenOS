@@ -172,9 +172,12 @@ static void test_refusals(void)
     errno = 0;
     CHECK(open("/dev/nope", O_RDONLY) == -1 && errno == ENOENT);
 
-    // Write access is still refused outside /dev
-    errno = 0;
-    CHECK(open("/usr/tests/hello", O_WRONLY) == -1 && errno == EROFS);
+    // Write access is still refused on the initrd (read-only); the disk's root takes it
+    if (!test_root_on_disk())
+    {
+        errno = 0;
+        CHECK(open("/usr/tests/hello", O_WRONLY) == -1 && errno == EROFS);
+    }
 }
 
 int main(void)

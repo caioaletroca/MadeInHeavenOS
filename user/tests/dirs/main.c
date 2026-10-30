@@ -9,13 +9,14 @@
 
 /*
  * Directories: opendir/readdir/rewinddir/closedir, and the getdents records
- * under them. The initrd's layout is known: / holds bin, dev, mnt, sbin and
- * usr (in archive order), /usr/tests holds every test, this one included.
+ * under them. The layout is the same in both boots: /usr holds only tests,
+ * /usr/tests holds every test, this one included. The root differs (the disk's
+ * has lost+found, in its own order), so only /usr's records are spelled out.
  */
 
 #define TESTS "/usr/tests"
-#define ROOT_COUNT 7
-#define ROOT_RECORDS 112 // ".", "..", "bin", "dev", "mnt", "sbin", "usr": 16 bytes each
+#define USR_COUNT 3
+#define USR_RECORDS 56 // "." and "..": 16 bytes each, "tests": 24
 
 // One directory's listing, as readdir returns it
 typedef struct listing
@@ -156,10 +157,10 @@ static int records_match(const void *buffer, long n, const char *const expected[
 
 static void test_getdents(void)
 {
-    static const char *const root[] = {".", "..", "bin", "dev", "mnt", "sbin", "usr"};
+    static const char *const usr[] = {".", "..", "tests"};
     uint64_t buffer[64]; // 512 bytes, 8-aligned like the records
 
-    int fd = open("/", O_RDONLY | O_DIRECTORY);
+    int fd = open("/usr", O_RDONLY | O_DIRECTORY);
     CHECK(fd >= 0);
 
     // Too small for one record
@@ -168,10 +169,10 @@ static void test_getdents(void)
 
     // Exactly one record, then the rest, then the end (again and again)
     CHECK(getdents(fd, buffer, 16) == 16);
-    CHECK(records_match(buffer, 16, root, 1) == 1);
+    CHECK(records_match(buffer, 16, usr, 1) == 1);
     long n = getdents(fd, buffer, sizeof(buffer));
-    CHECK(n == ROOT_RECORDS - 16);
-    CHECK(records_match(buffer, n, root + 1, ROOT_COUNT - 1) == ROOT_COUNT - 1);
+    CHECK(n == USR_RECORDS - 16);
+    CHECK(records_match(buffer, n, usr + 1, USR_COUNT - 1) == USR_COUNT - 1);
     CHECK(getdents(fd, buffer, sizeof(buffer)) == 0);
     CHECK(getdents(fd, buffer, sizeof(buffer)) == 0);
 
@@ -180,8 +181,8 @@ static void test_getdents(void)
     errno = 0;
     CHECK(getdents(fd, (void *)8, sizeof(buffer)) == -1 && errno == EFAULT);
     n = getdents(fd, buffer, sizeof(buffer));
-    CHECK(n == ROOT_RECORDS);
-    CHECK(records_match(buffer, n, root, ROOT_COUNT) == ROOT_COUNT);
+    CHECK(n == USR_RECORDS);
+    CHECK(records_match(buffer, n, usr, USR_COUNT) == USR_COUNT);
 
     // The padding after each name is zero (no kernel memory leaks out)
     const unsigned char *bytes = (const unsigned char *)buffer;
@@ -232,7 +233,7 @@ static void test_getdents(void)
     CHECK(getdents(99, buffer, sizeof(buffer)) == -1 && errno == EBADF);
 }
 
-// /dev is another file system mounted on the initrd's dev/: listing it lists devfs
+// /dev is another file system mounted on the root's dev/: listing it lists devfs
 static void test_mounted(void)
 {
     DIR *dir = opendir("/dev");
@@ -251,6 +252,20 @@ static void test_mounted(void)
     // Lookups step out of the mount through ".."
     dir = opendir("/dev/../usr/tests");
     CHECK(dir != NULL);
+    if (dir != NULL)
+        closedir(dir);
+
+    // A mount point cannot be removed: on the initrd nothing can (EROFS comes first, as in
+    // Linux); on the disk's writable root the directory is busy (empty on the disk itself)
+    int refused = test_root_on_disk() ? EBUSY : EROFS;
+    errno = 0;
+    CHECK(rmdir("/dev") == -1 && errno == refused);
+    errno = 0;
+    CHECK(rmdir("/mnt") == -1 && errno == refused);
+    errno = 0;
+    CHECK(rmdir("/mnt/") == -1 && errno == refused);
+    dir = opendir("/mnt");
+    CHECK(dir != NULL); // still there
     if (dir != NULL)
         closedir(dir);
 }

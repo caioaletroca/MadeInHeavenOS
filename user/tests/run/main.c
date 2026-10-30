@@ -10,9 +10,14 @@
 /*
  * Test runner: spawns every test of a set in order and compares its exit
  * status with the expected one. /sbin/init starts it from grub.cfg:
- *   /usr/tests/run               the automatic tests
+ *   /usr/tests/run               the automatic tests, live (the initrd is /)
+ *   /usr/tests/run disk          the automatic tests, booted from the disk
  *   /usr/tests/run interactive   the tests that need typing
  * Exits with the number of failed tests.
+ *
+ * Tests get the runner's environment plus TEST_ROOT: "disk" or "initrd",
+ * which file system / is (test.h's test_root_on_disk). Only grub.cfg knows
+ * which boot it chose, so it says so here.
  *
  * The automatic set is every program in TESTS_DIR except this runner and the
  * interactive tests, found with readdir and run in name order, so a new test
@@ -22,6 +27,10 @@
 #define TESTS_DIR "/usr/tests"
 #define TESTS_MAX 64
 #define PATH_MAX_TEST 288 // TESTS_DIR + '/' + a 255-byte name + '\0'
+#define ENVIRON_MAX 32
+
+// The tests' environment: environ plus TEST_ROOT, and the NULL
+static char *test_environ[ENVIRON_MAX + 2];
 
 typedef struct expectation
 {
@@ -68,7 +77,7 @@ static int test_run(const char *name, int expected)
     char *argv[] = {path, NULL};
     pid_t pid;
 
-    int error = posix_spawn(&pid, path, NULL, NULL, argv, environ);
+    int error = posix_spawn(&pid, path, NULL, NULL, argv, test_environ);
     if (error != 0)
     {
         printf("test %s: FAIL (could not start: %d)\n", path, error);
@@ -148,10 +157,41 @@ static int tests_find(char *names[], int max)
     return count;
 }
 
+/*
+ * Fills test_environ: every variable of environ (but an inherited TEST_ROOT),
+ * then TEST_ROOT=root. Returns -1 if environ has more than ENVIRON_MAX.
+ */
+static int environ_build(const char *root)
+{
+    static char root_variable[32];
+    snprintf(root_variable, sizeof(root_variable), "TEST_ROOT=%s", root);
+
+    size_t count = 0;
+    for (size_t i = 0; environ[i] != NULL; i++)
+    {
+        if (strncmp(environ[i], "TEST_ROOT=", 10) == 0)
+            continue;
+        if (count == ENVIRON_MAX)
+            return -1;
+        test_environ[count++] = environ[i];
+    }
+
+    test_environ[count++] = root_variable;
+    test_environ[count] = NULL;
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     int passed = 0;
     int failed = 0;
+
+    int on_disk = argc > 1 && strcmp(argv[1], "disk") == 0;
+    if (environ_build(on_disk ? "disk" : "initrd") < 0)
+    {
+        printf("tests: FAIL (more than %d environment variables)\n", ENVIRON_MAX);
+        return 1;
+    }
 
     if (argc > 1 && strcmp(argv[1], "interactive") == 0)
     {

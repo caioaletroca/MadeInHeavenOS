@@ -357,8 +357,11 @@ static void test_truncate(void)
     CHECK(truncate(MNT "/docs", 0) == -1 && errno == EISDIR);
     errno = 0;
     CHECK(truncate("/dev/null", 0) == -1 && errno == EINVAL);
-    errno = 0;
-    CHECK(truncate("/usr/tests/ext2", 0) == -1 && errno == EROFS);
+    if (!test_root_on_disk()) // on the disk's root it would truncate this very test
+    {
+        errno = 0;
+        CHECK(truncate("/usr/tests/ext2", 0) == -1 && errno == EROFS);
+    }
     errno = 0;
     CHECK(truncate(MNT "/nope", 0) == -1 && errno == ENOENT);
 }
@@ -395,8 +398,11 @@ static void test_create(void)
     CHECK(open(MNT "/nope/made", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
     errno = 0;
     CHECK(open(MNT "/link", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
-    errno = 0;
-    CHECK(creat("/usr/tests/made", 0644) == -1 && errno == EROFS);
+    if (!test_root_on_disk()) // the initrd is read-only
+    {
+        errno = 0;
+        CHECK(creat("/usr/tests/made", 0644) == -1 && errno == EROFS);
+    }
 }
 
 /*
@@ -446,8 +452,11 @@ static void test_unlink(void)
     CHECK(unlink(MNT "/nope") == -1 && errno == ENOENT);
     errno = 0;
     CHECK(unlink(MNT "/link") == -1 && errno == ENOENT);
-    errno = 0;
-    CHECK(unlink("/usr/tests/ext2") == -1 && errno == EROFS);
+    if (!test_root_on_disk()) // on the disk's root it would delete this very test
+    {
+        errno = 0;
+        CHECK(unlink("/usr/tests/ext2") == -1 && errno == EROFS);
+    }
 }
 
 /*
@@ -493,8 +502,11 @@ static void test_dirs(void)
 
     errno = 0;
     CHECK(mkdir(MNT "/docs", 0755) == -1 && errno == EEXIST);
-    errno = 0;
-    CHECK(mkdir("/usr/tests/udir", 0755) == -1 && errno == EROFS);
+    if (!test_root_on_disk()) // the initrd is read-only
+    {
+        errno = 0;
+        CHECK(mkdir("/usr/tests/udir", 0755) == -1 && errno == EROFS);
+    }
     errno = 0;
     CHECK(rmdir(MNT "/hello.txt") == -1 && errno == ENOTDIR);
     errno = 0;

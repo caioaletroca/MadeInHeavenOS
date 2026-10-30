@@ -8,9 +8,11 @@
 /*
  * Files through the VFS: open, read at an advancing offset, lseek, close, and
  * the errors around them. Reads /usr/tests/hello (any program would do).
+ * Booted from the disk, also writes a file on the root itself.
  */
 
 #define FILE_PATH "/usr/tests/hello"
+#define ROOT_FILE "/files-test"
 #define FILES_MAX 16 // PROCESS_MAX_FILES in the kernel
 
 // Reads the whole file in pieces of `piece` bytes; returns the total, or -1
@@ -123,10 +125,13 @@ static void test_errors(void)
     CHECK(open("usr/tests/hello", O_RDONLY) == -1 && errno == ENOENT); // relative
     errno = 0;
     CHECK(open(FILE_PATH "/", O_RDONLY) == -1 && errno == ENOTDIR);
-    errno = 0;
-    CHECK(open(FILE_PATH, O_WRONLY) == -1 && errno == EROFS);
-    errno = 0;
-    CHECK(open(FILE_PATH, O_RDWR) == -1 && errno == EROFS);
+    if (!test_root_on_disk()) // the initrd is read-only
+    {
+        errno = 0;
+        CHECK(open(FILE_PATH, O_WRONLY) == -1 && errno == EROFS);
+        errno = 0;
+        CHECK(open(FILE_PATH, O_RDWR) == -1 && errno == EROFS);
+    }
     errno = 0;
     CHECK(open(FILE_PATH, 0x100) == -1 && errno == EINVAL); // unknown flag
     errno = 0;
@@ -190,6 +195,32 @@ static void test_table_full(void)
     close(3);
 }
 
+/*
+ * Booted from the disk, / is the installed system's ext2, writable: a file made
+ * in / itself (not under /mnt) is written, read back and removed again.
+ */
+static void test_root_writable(void)
+{
+    static const char text[] = "written on the root";
+    char buffer[sizeof(text)];
+
+    int fd = open(ROOT_FILE, O_RDWR | O_CREAT | O_EXCL, 0644);
+    CHECK(fd >= 0);
+    CHECK(write(fd, text, sizeof(text)) == (ssize_t)sizeof(text));
+    CHECK(lseek(fd, 0, SEEK_SET) == 0);
+    CHECK(read(fd, buffer, sizeof(buffer)) == (ssize_t)sizeof(buffer) && memcmp(buffer, text, sizeof(text)) == 0);
+    CHECK(close(fd) == 0);
+
+    // Again by path, from a new open
+    fd = open(ROOT_FILE, O_RDONLY);
+    CHECK(fd >= 0 && read_all(fd, 7) == (long)sizeof(text));
+    close(fd);
+
+    CHECK(unlink(ROOT_FILE) == 0);
+    errno = 0;
+    CHECK(open(ROOT_FILE, O_RDONLY) == -1 && errno == ENOENT);
+}
+
 int main(void)
 {
     test_open_read();
@@ -197,5 +228,7 @@ int main(void)
     test_independent_offsets();
     test_errors();
     test_table_full();
+    if (test_root_on_disk())
+        test_root_writable();
     return test_status();
 }

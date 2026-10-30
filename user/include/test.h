@@ -2,6 +2,8 @@
 #define _USER_TEST_H_
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /*
  * Checks for the programs in user/tests. Each test is one translation unit:
@@ -26,6 +28,17 @@ static int test_failures;
 static inline int test_status(void)
 {
     return test_failures;
+}
+
+/*
+ * Whether / is the installed system on the disk (writable ext2) rather than
+ * the initrd (read-only, the archive's layout): the runner's TEST_ROOT. Checks
+ * that only hold for one of the two boots ask this first.
+ */
+static inline int test_root_on_disk(void)
+{
+    const char *root = getenv("TEST_ROOT");
+    return root != NULL && strcmp(root, "disk") == 0;
 }
 
 #endif /* _USER_TEST_H_ */
