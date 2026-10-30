@@ -16,7 +16,7 @@ build/
     ├── sysroot/     headers, libraries, installed programs (bin/, sbin/, usr/)
     ├── objects/     one folder per component: kernel/, libc/, user/, grub/ (+ initrd.tar)
     ├── staging/     trees that become images: iso/, initrd/, disk/, root/
-    ├── test/        run-tests.sh: run-tests.log, test-disk.img (the run's disk copy)
+    ├── test/        run-tests.sh: run-tests-live.log, run-tests-disk.log, test-disk.img and test-part.img (the last run's disk copies)
     └── mihos.txt    make dump (kernel disassembly)
 ```
 

@@ -190,8 +190,11 @@ docs/                     # handoff, roadmap
    allocator, growing files and `s_state` done, checked by e2fsck; namespace: truncate, the
    inode allocator, creating and deleting files, `O_APPEND`, `mkdir`/`rmdir` and a full-disk
    test done: **ext2 writing is complete**; the test suite reviewed after it; IRQ-driven ATA
-   and MBR partitions done), then the root on the disk: `root=` on the kernel command line,
-   a pre-installed ext2 on a partition, the initrd as the live system; the installer is phase G).
+   and MBR partitions done; the root on the disk done: `root=` on the kernel command line,
+   a pre-installed ext2 on a partition, the initrd as the live system, the tests run in both
+   boots; the installer is phase G).
+8. Next: to be chosen between phase C (the process model) and phase B's hardware path (PCI,
+   then AHCI/NVMe; GPT).
 
 ## Reference projects
 

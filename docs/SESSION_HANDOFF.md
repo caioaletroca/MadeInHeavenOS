@@ -28,8 +28,13 @@ Working x86-64 PC kernel with:
   `open`/`lseek` on files, `getdents` on directories, `stat`/`fstat`; mounts, with devfs
   mounted at `/dev` with `/dev/null`, `/dev/zero` and `/dev/console`; `ioctl` (`TIOCGWINSZ`)
 - **ELF64 loader**: user programs built separately (`user/`), validated and mapped by `elf_load`
-- **`/sbin/init` as pid 1**: the only program the kernel starts (the kernel command line is its
-  arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
+- **The root on a disk or the initrd**: the kernel command line's leading `name=value` words
+  are the kernel's (`root=hdb1`), the rest is init's. `root=` mounts the ext2 on that block
+  device as `/` (failing → a panic listing the block devices); without it the initrd is `/`.
+  Two boots from the CD: "live" (the initrd) and "from disk" (`part.img`'s partition 1, the
+  installed system, no initrd loaded); `./run-tests.sh` runs the tests in both
+- **`/sbin/init` as pid 1**: the only program the kernel starts (the kernel command line, after
+  the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
   `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
@@ -77,6 +82,19 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+162efc4 test: run the tests live and from the disk
+7efed25 build(grub): boot the tests and the shell from the disk
+3ec18da test: tell the user tests which file system / is
+31ad553 test: run the kernel self-tests with the root on a disk too
+ab936a9 fix(fs): refuse rmdir of a mount point
+1700d79 feat(fs): skip the root's disk when mounting /mnt
+3cc1a7b feat(fs): mount the root file system from root=
+490752d feat(libc): add ENODEV
+1c14483 refactor(fs): return the initrd's root instead of mounting it
+dc1d6ca refactor(driver): open /dev/console apart from starting the console
+65c5534 refactor(fs): mount devfs apart from creating it
+378bbf3 feat(kernel): give leading name=value words of the command line to the kernel
+197ec65 docs: document the build/<target>/ layout
 83a8989 build: put every output under build/<target>/
 81b3725 docs(architecture): document the root partition and the R2 decision in handoff
 641a72b build: install the root file system on part.img's partition 1
@@ -355,7 +373,8 @@ kernel/
 │   └── x86_64/                   # boot, ISR stubs, gdt64.S, tss.c, arch.c, context.c, isr.c, paging.c
 ├── platform/pc/                  # pic, pit, ps2, keyboard, vga, screen (CP437), multiboot2, ata, platform.c
 ├── sched/ mm/ driver/ sys/ fs/ exec/ selftest/
-├── init.c                        # init_start: starts /sbin/init (pid 1), halts when it exits
+├── init.c                        # init_start: starts /sbin/init (pid 1), panics if it exits
+├── kernel_args.c                 # the command line's leading name=value words (root=)
 └── kmain.c
 ```
 
@@ -438,19 +457,21 @@ from the same directory.
 ### Boot sequence (`kmain`)
 
 ```text
-tty_init → platform_boot_info_init → arch_init [TSS first] → input_init → platform_init (PIC, PS/2, keyboard IRQ, ATA disks)
-→ mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init] → initrd_init(&boot_info)
-→ devfs_init [mounted on /dev] → mem_devices_init [/dev/null, /dev/zero]
+tty_init → platform_boot_info_init → kernel_args_parse [root=; init's words] → arch_init [TSS first]
+→ input_init → platform_init (PIC, PS/2, keyboard IRQ, ATA disks)
+→ mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init]
+→ devfs_init [its root, not mounted yet: devices can register] → mem_devices_init [/dev/null, /dev/zero]
 → scheduler_init [idle thread]
-→ threads_init [reaper] → console_init(&keymap_abnt2) [/dev/console, console thread]
+→ threads_init [reaper] → console_init(&keymap_abnt2) [registers /dev/console, console thread]
 → block_cache_init [64 buffers] → timer_init(TIMER_FREQUENCY_HZ) → irq_enable
 → partition_init [hdb1…: reads each disk's MBR, so after irq_enable]
 → block_devfs_init [/dev/hda…, /dev/hdb1…: the disks platform_init found and their partitions]
-→ ext2_init [first ext2 disk on /mnt; after irq_enable: disk commands wait for their IRQ]
+→ root_init [/: ext2 on root=, or the initrd; a disk needs irq_enable, so here] → devfs_mount [/dev]
+→ console_open [/dev/console: init's fds 0-2] → ext2_init(root_device) [first other ext2 disk on /mnt]
 → guard_selftest → hashtable_selftest → mm_selftest
-→ scheduler_selftest [+ sync tests] → console_selftest → user_selftest → vfs_selftest
-→ block_selftest → partition_selftest → ext2_selftest → elf_selftest
-→ init_start(&boot_info) [starts /sbin/init, waits; init exiting = panic; init halts via SYS_REBOOT]
+→ scheduler_selftest [+ sync tests] → console_selftest → user_selftest → vfs_selftest(root_device)
+→ block_selftest → partition_selftest → ext2_selftest(root_device) → elf_selftest
+→ init_start(init_args) [starts /sbin/init, waits; init exiting = panic; init halts via SYS_REBOOT]
 ```
 
 ## Memory management
@@ -767,9 +788,10 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   `PAGE_SIZE`, `st_blocks` in 512-byte units (0 for devices), all three times = `node->mtime` (read-only, no clock), `st_dev` = `node->dev`,
   `st_rdev` = `node->rdev`; `st_uid`, `st_gid` 0.
 - **Console backend** (`driver/console.c`): `console_init` registers `console` in devfs (5:1,
-  `0600`, Linux's numbers and mode) with the console's `file_ops`, then `vfs_open`s
+  `0600`, Linux's numbers and mode) with the console's `file_ops`; `console_open`, once `/`
+  and `/dev` are mounted (Linux's `console_on_rootfs`), `vfs_open`s
   `/dev/console` read-write for itself and keeps that reference forever. `console_file()`
-  returns a new reference to that one file; init gets it three times, as fds 0, 1 and 2 (one
+  (a panic before `console_open`) returns a new reference to that one file; init gets it three times, as fds 0, 1 and 2 (one
   open file shared, as if `dup`ed: Linux opens `/dev/console` once for init and dups it).
   Its `ioctl` answers `TIOCGWINSZ` (`SCREEN_HEIGHT` × `SCREEN_WIDTH`, no pixels) and gives
   `-ENOTTY` for anything else, like Linux's tty layer.
@@ -787,9 +809,10 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
 
 ```text
 user/tests/hello ─build─▶ <build/x86_64-pc/>sysroot/usr/tests/hello ─grub/Makefile─▶ initrd.tar (usr/tests/hello)
-  ─ISO /boot/initrd.tar─▶ module "initrd" ─▶ initrd_init: tree of nodes, mounted as "/"
+  ─ISO /boot/initrd.tar─▶ module "initrd" ─▶ initrd_init: tree of nodes ─▶ root_init mounts it as "/"
+  (or, with root=, part.img's partition 1 holds the same tree as ext2: staging/root, mke2fs -d)
   ─▶ vfs_lookup("/usr/tests/hello") / vfs_read_file (kmalloc'd copy)
-init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words of the cmdline} ─▶ exec_load
+init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init's words} ─▶ exec_load
            ─▶ process_create_init (pid 1) + console fds 0-2 + start ─▶ process_wait ─▶ halt
 /sbin/init ─spawn─▶ /usr/tests/run ─spawn─▶ each test ─waitpid─▶ compare with its table
 ```
@@ -809,13 +832,19 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   entries in archive order (the tests expect `bin dev sbin usr`). The Makefile is a
   prerequisite of the archive, so a layout change repacks it. The ISO is rebuilt from
   scratch: `/boot/mihos.kernel`, `/boot/initrd.tar`, `/boot/grub/grub.cfg`.
-- **`grub.cfg`**: each entry is `multiboot2 /boot/mihos.kernel <init's arguments>` (GRUB passes
-  the words after the kernel path as the command line, without the path) and
-  `module2 /boot/initrd.tar initrd`. A new program needs no line.
+- **`grub.cfg`**: each entry is `multiboot2 /boot/mihos.kernel [name=value ...] <init's
+  arguments>` (GRUB passes the words after the kernel path as the command line, without the
+  path) and, live, `module2 /boot/initrd.tar initrd`. A new program needs no line. Entries by
+  `--id`: `tests` (the default), `interactive`, `shell`, and from the disk (`root=hdb1`, no
+  module) `tests-disk` (`once /usr/tests/run disk`) and `shell-disk`. A scripted run picks
+  one with no menu: GRUB's `smbios` reads the SMBIOS product name (type 1, string 5), and
+  `mihos-entry:<id>` (QEMU's `-smbios type=1,product=...`, `run-tests.sh`) sets `default`
+  to that id and `timeout` 0; Bochs and real machines have another name, so they get the menu.
+  `hdb1` is QEMU's name; with part.img as Bochs's `ata1-master` it is `hdc1` (edit the entry).
 - **Modules** (`boot_info.modules[]`, Multiboot2 tag 3): physical `[start, end)` plus the whole module
   string as `name`, copied with `strlcpy` (the Multiboot2 structure is not protected after boot).
-- **Initrd** (`fs/initrd.c`): `initrd_init(info)` finds the module named `initrd` (first word of
-  its string), then walks every ustar header once: magic `ustar`, checksum (the 512 bytes summed
+- **Initrd** (`fs/initrd.c`): `initrd_init(info)` (called by `root_init`, only without
+  `root=`) finds the module named `initrd` (first word of its string; none → `NULL`), then walks every ustar header once: magic `ustar`, checksum (the 512 bytes summed
   with the checksum field counted as spaces), octal size (`tar_parse_octal`: optional leading spaces,
   digits up to a NUL/space), and data inside the module (`size > initrd_size - data` → panic). A
   corrupt archive panics, so the build trusts it: `tar_next` steps header + data rounded to 512,
@@ -826,7 +855,8 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   looking one component ahead: every component before the last is a directory, found or created
   (`initrd_find_or_create_dir`, `mkdir -p`: tar lists `usr/tests/` but never `usr/`), the last is the file
   (type `'0'`/`'\0'`) or directory (`'5'`); other types are skipped; a name that is both a file
-  and a directory, or a file listed twice, panics. The root is its own parent; `vfs_mount_root`.
+  and a directory, or a file listed twice, panics. The root is its own parent, returned with
+  one reference (the caller mounts it).
   Ops: `lookup` (linear search of `children`, returns a new reference), `read` (copies
   `min(count, size - offset)` from `data`), `readdir` (index 0 `.` = the node, 1 `..` =
   `parent`, then the children in archive order, walking the list from the start each call), no
@@ -868,7 +898,10 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   through; a file → `-ENOTDIR`; `/` or an already mounted directory → `-EBUSY`: lookup has
   crossed into the existing root, so "mounted" shows as landing on a node with `mount_point`), then
   `point->mounted_root = root`, `root->mount_point = point`, and keeps a reference on both forever (no
-  unmount; mounts happen at boot, so no lock). `vfs_lookup` crosses **down** after every step
+  unmount; mounts happen at boot, so no lock). A mount point cannot be removed: `vfs_rmdir`
+  answers `-EBUSY` when the path looks up to a node with `mount_point` (`vfs_is_mount_point`),
+  after the read-only check (`-EROFS` first, as Linux; on a writable root `/mnt` and `/dev`
+  are empty directories ext2 would remove). `vfs_lookup` crosses **down** after every step
   (`while (node->mounted_root)`: get the root, put the point; stacked mounts work), and `..` first
   climbs **out** (`while (up->mount_point) up = up->mount_point`, no references needed: pinned by the
   mounts), then takes `parent`. Readdir does not follow mounts: `/` lists the initrd's `dev`
@@ -878,9 +911,10 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   ├── bin/ sbin/ usr/
   └── dev/ ─mounted_root─▶ (root, ino 1) ─mount_point─▶ dev/
   ```
-- **devfs** (`fs/devfs.c`, `include/fs/devfs.h`): `devfs_init()` right after `initrd_init`
-  takes the second dev id, makes a static root (`VFS_DIRECTORY`, ino 1, `0755`, its own
-  parent, never released) and `vfs_mount`s it on `/dev` (panics if that fails). `lookup` →
+- **devfs** (`fs/devfs.c`, `include/fs/devfs.h`): `devfs_init()` after `mm_init`
+  takes a dev id, makes a static root (`VFS_DIRECTORY`, ino 1, `0755`, its own
+  parent, never released); devices register into it from then on. `devfs_mount()`, after
+  `root_init` (the mount point is in the root), `vfs_mount`s it on `/dev` (panics if that fails). `lookup` →
   `-ENOENT` and `readdir` → `.`/`..` only, until devices register (step (b)).
   **Devices:** `devfs_register(name, mode, rdev, &file_ops)` (boot time, no lock): `NULL`,
   empty, over `VFS_NAME_MAX` or containing `/` → `-EINVAL`, already there → `-EEXIST`; a
@@ -926,9 +960,9 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", words
   Strings at the top, `sp = ALIGN_DOWN(strings - words * 8, 16)`; the pointer vector is built in a
   `kmalloc`'d buffer (string addresses are known while writing the strings) and written once.
   Everything ≤ `ARGS_MAX` (a quarter of the stack) or `-E2BIG`.
-- **`init_start(info)`** (`init.c`): `vfs_read_file("/sbin/init")` (error → panic; the copy is
-  never freed: `program_run` returns only when init exits, then the kernel panics), copies the
-  kernel command line into a `BOOT_CMDLINE_MAX` buffer, `argv[0] = "/sbin/init"`, then splits the
+- **`init_start(arguments)`** (`init.c`): `vfs_read_file("/sbin/init")` (error → panic; the copy is
+  never freed: `program_run` returns only when init exits, then the kernel panics), copies
+  init's part of the command line (`kernel_args.init_args`) into a `BOOT_CMDLINE_MAX` buffer, `argv[0] = "/sbin/init"`, then splits the
   copy in place at spaces into `&argv[1]` (`args_split`, at most `INIT_ARGS_MAX - 1` words; 8
   entries with the path), `program_run`s it (cannot start → panic) and panics if it ever returns
   (`init exited with status N`): init stops the system only through `SYS_REBOOT`.
@@ -1240,11 +1274,13 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   installed system**, an ext2 (1 KiB blocks, label `mihos-root`, owner 0) holding the
   initrd's tree (`initrd.tar` unpacked into `staging/root`, then `mke2fs -E offset=1048576 -d`,
   which writes inside the partition and leaves the rest of the image alone); the root of the
-  planned "from disk" boot. Slot 2 empty; slot 3 extended (`0x05`) at 26624; slot 4 Linux at
+  "from disk" boot (`root=hdb1`). Slot 2 empty; slot 3 extended (`0x05`) at 26624; slot 4 Linux at
   28672, 2047 sectors, text markers at its first and last sector (`mihos-part4 first`/`last`);
   sectors 30719 and up are in none. Rebuilt when the initrd changes. e2fsck reads the
-  partition as `'part.img?offset=1048576'`. QEMU: the primary slave (`hdb`), `snapshot=on`
-  in `run-tests.sh`, `-snapshot` in `run.bat`. Bochs: `ata1-master` (`hdc`) if added to the
+  partition as `'part.img?offset=1048576'`; dumpe2fs takes that for a `LABEL=`-style tag, so
+  `run-tests.sh` copies the partition out with `dd` (`skip=1 count=12` MiB) and checks the
+  copy. QEMU: the primary slave (`hdb`), a fresh copy per run in `run-tests.sh`
+  (`test/test-part.img`), `-snapshot` in `run.bat`. Bochs: `ata1-master` (`hdc`) if added to the
   local `.bochsrc`; without it the partition self-test skips.
 - **Block self-test** (`selftest/block.c`, after the VFS one): the first of `hda`…`hdd` (none
   → panic), 8192 sectors; sector 2 is the ext2 superblock (magic `0xEF53` at 56, block-size
@@ -1321,6 +1357,46 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   test write could disturb): a 2-sector read of its last sectors equals `hdb`'s 30717 and
   30718; a write to its sector 100 is at `hdb`'s 28772, then put back and flushed.
   `/dev/hdb1` and `/dev/hdb4`: `VFS_BLOCKDEV`, the partition's `rdev` and size.
+
+### The root file system (`kernel_args.c`, `fs/root.c`)
+
+```text
+GRUB: multiboot2 mihos.kernel root=hdb1 once /usr/tests/run disk
+        kernel_args_parse ─▶ root "hdb1" │ init_args "once /usr/tests/run disk"
+root_init: root "" ─▶ initrd_init ─▶ "/" = the initrd (live)        none ─▶ panic
+           root "hdb1" ─▶ block_find ─▶ ext2_mount ─▶ "/" = ext2     fails ─▶ panic + device list
+```
+
+- **The command line** (`kernel_args_parse`, right after `platform_boot_info_init`): a loop
+  over words; `strcspn(p, " ")` is the word, `strcspn(p, "= ")` stops at its `=`. The leading
+  words with `=` are the kernel's: `root=` copied into `kernel_args.root`
+  (`BLOCK_NAME_MAX`; longer → panic), any other name printed (`kernel: unknown parameter
+  'foo', ignored`). The first word without `=` and everything after it are init's:
+  `init_args` points into `boot_info.cmdline` (static, lives forever), no copy. `root=` with
+  an empty value means no `root=`.
+- **`root_init(args, info)`** (after `block_devfs_init`: a disk needs `irq_enable`; before
+  anything looks up a path): no `root=` → `initrd_init` (no `initrd` module → panic `no root=
+  and no initrd`); `root=` → `block_find`, `ext2_mount` (a missing device is `-ENODEV`, a
+  whole MBR disk `-EINVAL`); a failure prints `cannot mount root=NAME: ERR` and every block
+  device with its size in KiB, then panics (Linux's "VFS: Unable to mount root fs"). No
+  fallback: the "from disk" entry has no initrd, and the rescue is the live entry. Then
+  `vfs_mount_root` (takes its own reference) and the put of the creator's. Returns the root's
+  block device (`NULL` for the initrd), which kmain hands to `ext2_init` (it skips that
+  device: a second mount would be a second volume with its own bitmaps on the same disk) and
+  to the VFS and ext2 self-tests. The ext2 root is writable from the start (no read-only
+  mount, fsck and remount as Linux does: debt), marked not clean while mounted and clean
+  again at the halt (the halt hook), like `/mnt`.
+- **Order** (kmain): `devfs_init` and `console_init` only register; `devfs_mount` and
+  `console_open` come after `root_init`, since `/dev` and `/dev/console` are paths in the root.
+- **Tests per boot:** the kernel self-tests get `root_device`; the user tests get `TEST_ROOT`
+  (`disk`/`initrd`) from `/usr/tests/run`, which learns it from its argument (`disk`, in the
+  `tests-disk` entry): only grub.cfg knows which boot it chose. `test_root_on_disk()` in
+  `test.h`. What is the initrd's own is checked live only: its root listing (the disk's has
+  `lost+found`, in mke2fs's order), the tar headers' modes and times, `EROFS` on `/usr` and
+  `/sbin` (on the disk's root those calls would truncate or delete the tests and init).
+  Listings that must match exactly use `/usr` (only `tests`, the same in both). From disk:
+  `files` writes, reads back and removes `/files-test` on the root itself; `rmdir` of `/mnt`
+  and `/dev` is `EBUSY` (`EROFS` live), in the ext2 self-test and the `dirs` test.
 
 ### ext2 (`fs/ext2/`, `include/fs/ext2.h`)
 
@@ -2238,10 +2314,7 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     needs nothing new (`ext2_init` tries every block device in order), but no test disk has
     one yet.
 - **Build layout (done):** every output under `build/<target>/` (`BUILD_RUN.md`).
-- **Next:** the root on the disk, **step R2** (the user writes it; start the session by laying
-  it out file by file: where the command line is split, `root_init`, the kmain reorder,
-  `ext2_init` skipping the root device, the panic with the device list). R1 is done. Agreed
-  design (Linux-like):
+- **The root on the disk (done).** Agreed design (Linux-like):
   - **Two boots from the CD's GRUB menu.** "Live": the initrd is `/`, as today (the initrd is
     the live system, like a live USB). "From disk": `root=hdb1` on the kernel command line,
     ext2 on that device is `/`, and GRUB does not load the initrd at all. Leading `name=value`
@@ -2255,19 +2328,19 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **The disk is pre-installed by the build**, as an installer would leave it: `part.img`'s
     partition 1 holds an ext2 with the initrd's tree (see "Partitioned disk"). The installer
     itself (partitioning, `mkfs`, copying, a bootloader on the disk) is phase G.
-  - **Steps:** R1 (Claude, **done**) the root partition in `part.img` and the partition
-    self-test rewritten for it. R2 (user) `root=` parsing, the root mount (ext2 or the
-    initrd, the panic above), `/dev` and `/mnt` mounted after it (the disk needs
-    `irq_enable`), `ext2_init` skipping the root's device. R3 (Claude) the "from disk" GRUB
-    entry, `run-tests.sh` booting twice (live and from disk; `part.img` then on a copy, not
-    `snapshot=on`), e2fsck on the partition, the tests, docs. The GRUB entry waits for R2:
-    today's kernel would hand `root=hdb1` to init as an argument.
-  - **Tests that assume the initrd is `/`** (the `EROFS` checks in `devices` and `ext2`, the VFS
-    self-test's initrd nodes) are rewritten for the boot they run in or deleted: tests do not
-    shape the design.
-  - Kernel shape and hardware targets (PCI, NVMe/AHCI, xHCI, framebuffer) are decided in
-    `ROADMAP.md`.
-  Phase C (the process model) can also start: none of these block it.
+  - **R1 (done):** the root partition in `part.img` and the partition self-test rewritten for it.
+  - **R2 (done):** `kernel_args` (the command line split), `devfs_mount` and `console_open`
+    apart from their `_init`s, `initrd_init` returning its root, `ENODEV`, `root_init` and the
+    kmain reorder, `ext2_init` skipping the root's device (see "The root file system").
+  - **R3 (done):** the `tests-disk` and `shell-disk` GRUB entries picked by SMBIOS,
+    `run-tests.sh` booting twice on fresh copies with e2fsck and the state on the partition
+    too, the tests told which boot they run in (`TEST_ROOT`, `root_device`). It found that a
+    mount point could be removed on a writable root: `vfs_rmdir` answers `-EBUSY` now.
+- **Next: to be chosen.** Phase B's remaining pieces and phase C are both open; nothing blocks
+  either. Candidates: phase C (the process model: `fork` with copy-on-write, `execve`,
+  signals, pipes, `dup2`, `chdir`), which also unblocks the stdio-order and shell tests that
+  wait for pipes; or the hardware path from `ROADMAP.md` (PCI enumeration, then AHCI/NVMe), or
+  GPT. Kernel shape and hardware targets are decided in `ROADMAP.md`.
 
 ### Shell (`user/bin/sh/`)
 
@@ -2364,9 +2437,19 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `vfs_read_file` copies every program once more (archive → `kmalloc` buffer → address space);
   fine at ~100 KiB, replaced by mapping later. `kmalloc` above 1024 B rounds to a power-of-two
   number of pages.
-- The root on the disk (planned) is mounted writable from the start. Linux mounts it
+- The root on the disk is mounted writable from the start. Linux mounts it
   read-only, runs fsck, then remounts it writable; we have neither a remount nor an fsck of
   our own. Also no `rootwait`, `rootfstype=` or `ro`/`rw` options.
+- The command line: no `--` (everything after it would be init's, so init cannot get a
+  leading word with `=`); unknown kernel names are printed and dropped (Linux passes them to
+  init's environment); `root=` names a device by its name only (no `UUID=`/`LABEL=`/`PARTUUID=`),
+  so the same disk is `hdb1` in QEMU and `hdc1` in Bochs and the `*-disk` entries name QEMU's.
+- An initrd GRUB loads although `root=` is given is never read, and its memory stays reserved.
+- The scripted entry choice (SMBIOS product name) works where the product name can be set
+  (QEMU); the tests learn the boot from the runner's argument, which repeats what `root=`
+  says (only grub.cfg knows both).
+- `vfs_is_mount_point` looks the path up a second time after the parent's lookup (fine while
+  mounts happen at boot only).
 - Partitions: MBR primary ones only; extended partitions (a chain of tables inside slot 3)
   and GPT (`0xEE`: a header at sector 1, 128-byte entries) are logged and skipped; overlapping
   partitions are not refused. A disk and its partitions are separate cache keys: the same
@@ -2588,24 +2671,29 @@ qemu-system-x86_64 -cdrom images/mihos.iso -drive file=images/disk.img,format=ra
 qemu-system-x86_64 -cdrom images/mihos.iso -drive file=images/disk.img,format=raw,if=ide,index=0 -snapshot -m 1024 -no-reboot -no-shutdown -d int,cpu_reset -D qemu.log
 ```
 
-Automatic test run, no window (about 10 s; exits 0 only after a clean power off with
-`tests: N passed, 0 failed` and no `FAIL` line; prints the log otherwise, kept in
-`build/x86_64-pc/test/run-tests.log`; `TARGET=` picks another target's folder):
+Automatic test run, no window, twice: live (GRUB entry `tests`) and from the disk
+(`tests-disk`), about 15 s each. It stops at the first failing run and prints its log; it
+exits 0 only if both powered off cleanly with `tests: N passed, 0 failed` and no `FAIL`
+line. The logs stay in `build/x86_64-pc/test/run-tests-live.log` and `run-tests-disk.log`;
+`TARGET=` picks another target's folder:
 
 ```sh
 ./run-tests.sh
 ```
 
-The run writes to `build/x86_64-pc/test/test-disk.img`, a fresh copy of `disk.img` (the image itself never
-changes), and after the tests checks it with `e2fsck -fn` and `dumpe2fs`'s state in the
-`mihos-compiler` image: it passes only if the disk is consistent and the halt left it clean.
-`FSCK=auto` (default) skips that, saying so, without Docker or the image; `FSCK=1` requires
-it, `FSCK=0` turns it off. The copy stays for `debugfs` after a failure.
+Each run writes to fresh copies in `build/x86_64-pc/test/`, `test-disk.img` and
+`test-part.img` (the images themselves never change), and after the tests checks
+`test-disk.img` and partition 1 of `test-part.img` with `e2fsck -fn` and `dumpe2fs`'s state
+in the `mihos-compiler` image: it passes only if both are consistent and the halt left them
+clean. `FSCK=auto` (default) skips that, saying so, without Docker or the image; `FSCK=1`
+requires it, `FSCK=0` turns it off. The copies of the last run stay for `debugfs` after a
+failure.
 
-The same by hand (on Windows the log path must be a Windows path):
+The same by hand, from the disk (on Windows the paths must be Windows paths; without
+`-smbios` the GRUB menu shows, `-snapshot` keeps the images unchanged):
 
 ```sh
-qemu-system-x86_64 -cdrom images/mihos.iso -drive file=images/disk.img,format=raw,if=ide,index=0 -snapshot -m 1024 -no-reboot -display none -debugcon file:run.log
+qemu-system-x86_64 -cdrom images/mihos.iso -drive file=images/disk.img,format=raw,if=ide,index=0 -drive file=images/part.img,format=raw,if=ide,index=1 -snapshot -smbios type=1,product=mihos-entry:tests-disk -m 1024 -no-reboot -display none -debugcon file:run.log
 ```
 
 Local, intentionally uncommitted: `.bochsrc`, `bx_enh_dbg.ini`.
