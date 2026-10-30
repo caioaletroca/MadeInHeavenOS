@@ -24,6 +24,7 @@
 #define ESPIPE 29       // illegal seek
 #define EROFS 30        // read-only file system
 #define EMLINK 31       // too many links: a directory with the most subdirectories ext2 allows
+#define ERANGE 34       // result too large: a getcwd buffer too small for the path
 #define ENAMETOOLONG 36 // file name too long
 #define ENOSYS 38       // function not implemented
 #define ENOTEMPTY 39    // directory not empty

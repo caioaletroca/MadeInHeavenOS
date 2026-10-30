@@ -706,6 +706,30 @@ static long sys_chdir(uintptr_t path)
     return 0;
 }
 
+/**
+ * Get the current working directory of the calling process.
+ *
+ * @param buffer The buffer to receive the path.
+ * @param size The size of the buffer.
+ * @return The number of bytes written on success, or a negative error code on failure.
+ */
+static long sys_getcwd(uintptr_t buffer, size_t size)
+{
+    char *path = kmalloc(VFS_PATH_MAX);
+    if (path == NULL)
+        return -ENOMEM;
+
+    long ret = vfs_getcwd(path, VFS_PATH_MAX);
+    if (ret > 0 && (size_t)ret > size)
+        ret = -ERANGE;
+
+    if (ret > 0 && address_space_write(syscall_space(), buffer, path, (size_t)ret) != 0)
+        ret = -EFAULT;
+
+    kfree(path);
+    return ret;
+}
+
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {
     (void)arg3;
@@ -758,6 +782,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_rmdir((uintptr_t)arg0);
     case SYS_CHDIR:
         return sys_chdir((uintptr_t)arg0);
+    case SYS_GETCWD:
+        return sys_getcwd((uintptr_t)arg0, (size_t)arg1);
     default:
         return -ENOSYS;
     }
