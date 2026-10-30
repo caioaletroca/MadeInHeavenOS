@@ -37,6 +37,7 @@ typedef struct process
     wait_queue_t child_exits; // the parent sleeps here in wait; every child's exit wakes it
 
     struct file *files[PROCESS_MAX_FILES];
+    struct vfs_node *cwd; // the current directory, where relative paths start (one reference); NULL: the root
 
     spinlock_t lock;
 } process_t;
@@ -83,6 +84,14 @@ int process_start(process_t *p, uintptr_t entry, uintptr_t user_stack);
  * @param parent The parent process.
  */
 void process_files_inherit(process_t *child, process_t *parent);
+
+/**
+ * Give the child the parent's current directory (a reference of its own), as spawn does.
+ *
+ * @param child The child process.
+ * @param parent The parent process.
+ */
+void process_cwd_inherit(process_t *child, process_t *parent);
 
 /**
  * Add a child process to its parent's list of children.

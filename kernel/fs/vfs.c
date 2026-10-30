@@ -5,6 +5,8 @@
 #include <asm/memory.h>
 #include <sched/sync.h>
 #include <sched/spinlock.h>
+#include <sched/scheduler.h>
+#include <sched/process.h>
 #include <mm/kmalloc.h>
 #include <mihos/errno.h>
 #include <mihos/fcntl.h>
@@ -149,14 +151,31 @@ int vfs_mount(const char *path, vfs_node_t *root)
     return 0;
 }
 
+/**
+ * Determines the starting node for a path lookup.
+ *
+ * @param path The path to look up.
+ * @return The starting node for the lookup, with its reference count incremented.
+ */
+static vfs_node_t *vfs_lookup_start(const char *path)
+{
+    vfs_node_t *start = vfs_root;
+
+    thread_t *thread = scheduler_current();
+    if (path[0] != '/' && thread != NULL && thread->process != NULL && thread->process->cwd != NULL)
+        start = thread->process->cwd;
+
+    vfs_node_get(start);
+    return start;
+}
+
 int vfs_lookup(const char *path, vfs_node_t **out)
 {
-    if (path[0] != '/')
+    if (path[0] == '\0')
         return -ENOENT;
 
     size_t path_length = strlen(path);
-    vfs_node_t *node = vfs_root;
-    vfs_node_get(node);
+    vfs_node_t *node = vfs_lookup_start(path);
 
     for (;;)
     {
@@ -425,11 +444,17 @@ static int vfs_lookup_parent(const char *path, vfs_node_t **dir, const char **na
     if (end - start > VFS_NAME_MAX)
         return -ENAMETOOLONG;
 
-    char *parent_path = kmalloc(start + 1);
+    char *parent_path = kmalloc(start + 2);
     if (parent_path == NULL)
         return -ENOMEM;
-    memcpy(parent_path, path, start);
-    parent_path[start] = '\0';
+    // Ensure the parent path is null-terminated even if start is 0
+    if (start == 0)
+        memcpy(parent_path, ".", 2);
+    else
+    {
+        memcpy(parent_path, path, start);
+        parent_path[start] = '\0';
+    }
 
     vfs_node_t *d;
     int ret = vfs_lookup(parent_path, &d);

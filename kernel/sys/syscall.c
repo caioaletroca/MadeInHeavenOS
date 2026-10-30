@@ -285,6 +285,7 @@ static long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
     }
 
     process_files_inherit(child, parent);
+    process_cwd_inherit(child, parent);
 
     // The handle from process_create is the parent's reference, held until wait
     process_child_add(parent, child);

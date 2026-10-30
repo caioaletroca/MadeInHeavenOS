@@ -85,7 +85,8 @@ static void vfs_test_lookup(void)
 
     vfs_expect_error("/nope", -ENOENT);
     vfs_expect_error("/usr/nope/hello", -ENOENT);
-    vfs_expect_error("usr/tests/hello", -ENOENT); // relative: no current directory yet
+    vfs_expect_same(HELLO, "usr/tests/hello", VFS_FILE); // relative: a kernel thread starts at the root
+    vfs_expect_same("/", ".", VFS_DIRECTORY);
     vfs_expect_error("", -ENOENT);
     vfs_expect_error("/usr/tests/hell", -ENOENT);      // a prefix of a name
     vfs_expect_error("/usr/tests/hello.elf", -ENOENT); // the suffix programs lost

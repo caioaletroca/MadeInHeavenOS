@@ -123,7 +123,11 @@ static void test_opendir_errors(void)
     errno = 0;
     CHECK(opendir("/nope") == NULL && errno == ENOENT);
     errno = 0;
-    CHECK(opendir("usr") == NULL && errno == ENOENT); // relative: no current directory yet
+    CHECK(opendir("") == NULL && errno == ENOENT); // the empty path names nothing (POSIX)
+    DIR *relative = opendir("usr"); // relative, from the current directory (/)
+    CHECK(relative != NULL);
+    if (relative != NULL)
+        closedir(relative);
     errno = 0;
     CHECK(opendir("/usr/tests/hello/") == NULL && errno == ENOTDIR);
 

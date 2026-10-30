@@ -268,7 +268,12 @@ static void test_errors(void)
     CHECK(posix_spawn(&pid, "/usr/tests/missing", NULL, NULL, argv, NULL) == ENOENT);
     CHECK(posix_spawn(&pid, "/usr/tests", NULL, NULL, argv, NULL) == EACCES); // a directory
     CHECK(posix_spawn(&pid, "/usr/tests/hello/", NULL, NULL, argv, NULL) == ENOTDIR);
-    CHECK(posix_spawn(&pid, "usr/tests/hello", NULL, NULL, argv, NULL) == ENOENT); // relative
+    CHECK(posix_spawn(&pid, "", NULL, NULL, argv, NULL) == ENOENT);
+
+    // Relative: found from the current directory (/), and it runs (hello exits with 42)
+    int hello_status;
+    CHECK(posix_spawn(&pid, "usr/tests/hello", NULL, NULL, argv, NULL) == 0);
+    CHECK(waitpid(pid, &hello_status, 0) == pid && WIFEXITED(hello_status) && WEXITSTATUS(hello_status) == 42);
     CHECK(posix_spawn(&pid, self, NULL, NULL, (char *const *)1, NULL) == EFAULT);
     CHECK(posix_spawn(&pid, (const char *)1, NULL, NULL, argv, NULL) == EFAULT);
 

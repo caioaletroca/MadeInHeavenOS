@@ -125,7 +125,12 @@ static void test_errors(void)
     errno = 0;
     CHECK(stat("/nope", &st) == -1 && errno == ENOENT);
     errno = 0;
-    CHECK(stat("usr", &st) == -1 && errno == ENOENT); // relative: no current directory yet
+    CHECK(stat("", &st) == -1 && errno == ENOENT); // the empty path names nothing (POSIX)
+
+    // Relative, from the current directory (/): the same inode as the absolute path
+    struct stat usr;
+    CHECK(stat("usr", &st) == 0 && stat("/usr", &usr) == 0);
+    CHECK(S_ISDIR(st.st_mode) && st.st_ino == usr.st_ino && st.st_dev == usr.st_dev);
     errno = 0;
     CHECK(stat("/usr/tests/hello/", &st) == -1 && errno == ENOTDIR);
     errno = 0;

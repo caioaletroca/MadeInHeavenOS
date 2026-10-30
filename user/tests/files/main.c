@@ -122,7 +122,15 @@ static void test_errors(void)
     errno = 0;
     CHECK(open("/nope", O_RDONLY) == -1 && errno == ENOENT);
     errno = 0;
-    CHECK(open("usr/tests/hello", O_RDONLY) == -1 && errno == ENOENT); // relative
+    CHECK(open("", O_RDONLY) == -1 && errno == ENOENT); // the empty path names nothing (POSIX)
+
+    // Relative: from the current directory, / until someone changes it; the same file
+    int absolute = open(FILE_PATH, O_RDONLY);
+    int relative = open("usr/tests/hello", O_RDONLY);
+    CHECK(absolute >= 0 && relative >= 0);
+    CHECK(lseek(relative, 0, SEEK_END) == lseek(absolute, 0, SEEK_END));
+    close(relative);
+    close(absolute);
     errno = 0;
     CHECK(open(FILE_PATH "/", O_RDONLY) == -1 && errno == ENOTDIR);
     if (!test_root_on_disk()) // the initrd is read-only

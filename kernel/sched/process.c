@@ -20,7 +20,9 @@ static spinlock_t process_tree_lock = SPINLOCK_INIT;
 static process_t *init_process;
 
 /**
- * Allocates a new process ID in a thread-safe manner.
+ * @brief Allocates a new process ID in a thread-safe manner.
+ *
+ * @return The newly allocated process ID.
  */
 static uint32_t process_alloc_pid(void)
 {
@@ -29,7 +31,9 @@ static uint32_t process_alloc_pid(void)
 }
 
 /**
- * Closes all open file descriptors for the given process.
+ * @brief Closes all open file descriptors for the given process.
+ *
+ * @param p The process whose open file descriptors are to be closed.
  */
 static void process_close_files(process_t *p)
 {
@@ -43,6 +47,20 @@ static void process_close_files(process_t *p)
             file_put(p->files[i]);
             p->files[i] = NULL;
         }
+    }
+}
+
+/**
+ * @brief Releases the current working directory of the given process.
+ *
+ * @param p The process whose current working directory is to be released.
+ */
+static void process_cwd_put(process_t *p)
+{
+    if (p->cwd != NULL)
+    {
+        vfs_node_put(p->cwd);
+        p->cwd = NULL;
     }
 }
 
@@ -122,6 +140,13 @@ void process_files_inherit(process_t *child, process_t *parent)
     for (int fd = 0; fd < PROCESS_MAX_FILES; fd++)
         if (parent->files[fd] != NULL)
             child->files[fd] = file_get(parent->files[fd]);
+}
+
+void process_cwd_inherit(process_t *child, process_t *parent)
+{
+    child->cwd = parent->cwd;
+    if (child->cwd != NULL)
+        vfs_node_get(child->cwd);
 }
 
 void process_child_add(process_t *parent, process_t *child)
@@ -244,6 +269,9 @@ __attribute__((noreturn)) void process_exit(int status)
     // One thread per process: only this thread touches the table now (needs a lock with threads or fork)
     process_close_files(current);
 
+    // Release the current working directory of the process
+    process_cwd_put(current);
+
     // Dropped children: release our reference after the lock; each is freed once it exits too
     list_for_each_safe(pos, next, &orphans)
     {
@@ -289,6 +317,7 @@ void process_release(process_t *p)
 
     if (last)
     {
+        process_cwd_put(p);
         process_close_files(p);
         address_space_destroy(p->space);
         kfree(p);
