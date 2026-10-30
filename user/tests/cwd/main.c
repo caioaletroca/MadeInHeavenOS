@@ -10,8 +10,9 @@
 /*
  * The current directory: chdir, relative paths from it (across the /mnt mount
  * both ways), relative creates and removals, the errors that leave it where
- * it was, and a spawned child starting in it. Works on the test disk in /mnt:
- * the same in both boots.
+ * it was, getcwd (through mounts, the buffer's size, a removed directory),
+ * and a spawned child starting in it. Works on the test disk in /mnt: the
+ * same in both boots.
  */
 
 #define SELF "/usr/tests/cwd"
@@ -99,6 +100,43 @@ static void test_relative_changes(void)
     CHECK(stat("/mnt/cwd-dir", &st) == -1 && errno == ENOENT);
 }
 
+// getcwd names the current directory: path is where chdir goes, expected what getcwd must give
+static int cwd_is(const char *path, const char *expected)
+{
+    char buffer[128];
+    return chdir(path) == 0 && getcwd(buffer, sizeof(buffer)) == buffer && strcmp(buffer, expected) == 0;
+}
+
+static void test_getcwd(void)
+{
+    CHECK(cwd_is("/", "/"));
+    CHECK(cwd_is("/mnt", "/mnt")); // a mounted root: named by its mount point
+    CHECK(cwd_is("docs/deep/nested", "/mnt/docs/deep/nested"));
+    CHECK(cwd_is("../..", "/mnt/docs"));
+    CHECK(cwd_is("/usr/tests", "/usr/tests"));
+    CHECK(cwd_is("/dev", "/dev"));
+    CHECK(cwd_is("//mnt/./docs/../docs/", "/mnt/docs")); // getcwd gives the path, not what chdir got
+
+    // The buffer: exactly the path and its '\0' fits, one byte less is ERANGE, 0 bytes EINVAL
+    char buffer[16];
+    CHECK(getcwd(buffer, sizeof("/mnt/docs")) == buffer && strcmp(buffer, "/mnt/docs") == 0);
+    errno = 0;
+    CHECK(getcwd(buffer, sizeof("/mnt/docs") - 1) == NULL && errno == ERANGE);
+    errno = 0;
+    CHECK(getcwd(buffer, 0) == NULL && errno == EINVAL);
+    errno = 0;
+    CHECK(getcwd((char *)1, sizeof(buffer)) == NULL && errno == EFAULT);
+
+    // A removed directory has no name any more: ENOENT, though "." still works
+    CHECK(mkdir("/mnt/cwd-gone", 0755) == 0 && chdir("/mnt/cwd-gone") == 0);
+    CHECK(rmdir("/mnt/cwd-gone") == 0);
+    errno = 0;
+    CHECK(getcwd(buffer, sizeof(buffer)) == NULL && errno == ENOENT);
+    struct stat st;
+    CHECK(stat(".", &st) == 0 && S_ISDIR(st.st_mode));
+    CHECK(chdir("/") == 0); // the last reference: the directory is freed now (e2fsck checks)
+}
+
 // A child starts in its parent's directory, and its chdir is its own
 static void test_inherited(void)
 {
@@ -117,6 +155,8 @@ static void test_inherited(void)
 static int child_main(void)
 {
     CHECK(here_is("/mnt/docs"));
+    char buffer[32];
+    CHECK(getcwd(buffer, sizeof(buffer)) == buffer && strcmp(buffer, "/mnt/docs") == 0);
     CHECK(stat("README", (struct stat[1]){0}) == 0);
     CHECK(chdir("/") == 0 && here_is("/"));
     return test_status();
@@ -130,6 +170,7 @@ int main(int argc, char **argv)
     test_chdir();
     test_errors();
     test_relative_changes();
+    test_getcwd();
     test_inherited();
     return test_status();
 }
