@@ -2,7 +2,6 @@
 #include <asm/cpu.h>
 #include <asm/irq_flags.h>
 #include <addresses.h>
-#include <kprintf.h>
 #include <mm/mm.h>
 #include <driver/input.h>
 #include <driver/tty.h>
@@ -18,6 +17,8 @@
 #include <fs/initrd.h>
 #include <fs/devfs.h>
 #include <fs/ext2.h>
+#include <kprintf.h>
+#include <kernel_args.h>
 #include <boot_info.h>
 #include <init.h>
 
@@ -35,6 +36,7 @@
 
 static thread_t boot_thread;
 static boot_info_t boot_info;
+static kernel_args_t kernel_args;
 
 /**
  * Kernel main entry point.
@@ -46,6 +48,7 @@ void kmain(uintptr_t boot_handoff)
     tty_init();
 
     platform_boot_info_init(boot_handoff, &boot_info);
+    kernel_args_parse(boot_info.cmdline, &kernel_args);
 
     kprintf("MiHOS\n");
 
@@ -87,7 +90,7 @@ void kmain(uintptr_t boot_handoff)
     elf_selftest();
     kprintf("self-tests: ok\n"); // each one panics on failure
 
-    init_start(&boot_info);
+    init_start(kernel_args.init_args);
 
     for (;;)
         cpu_idle();

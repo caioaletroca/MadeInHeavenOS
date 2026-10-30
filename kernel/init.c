@@ -102,7 +102,7 @@ static int program_run(const void *image, size_t size, char *const argv[], int *
     return 0;
 }
 
-void init_start(const boot_info_t *info)
+void init_start(const char *arguments)
 {
     // image is a kmalloc'd copy. It is never freed: program_run only returns
     // once init has exited, and the kernel panics right after
@@ -115,7 +115,7 @@ void init_start(const boot_info_t *info)
     // argv = {"/sbin/init", the words of the kernel command line...}
     char line[BOOT_CMDLINE_MAX];
     char *argv[INIT_ARGS_MAX + 1];
-    strlcpy(line, info->cmdline, sizeof(line));
+    strlcpy(line, arguments, sizeof(line));
     argv[0] = INIT_PATH;
     args_split(line, &argv[1], INIT_ARGS_MAX - 1); // slot 0 is INIT_PATH
 

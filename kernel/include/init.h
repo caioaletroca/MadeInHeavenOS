@@ -1,16 +1,13 @@
 #ifndef _INIT_H_
 #define _INIT_H_
 
-#include <boot_info.h>
-
 /**
- * @brief Start /sbin/init from the boot modules, with its module string as argv.
+ * @brief Start /sbin/init as pid 1, with the command line's words after the
+ * kernel's name=value ones as its arguments. Init never exits: if it does,
+ * the kernel panics.
  *
- * Temporary: init exiting means power off (prints its status and returns);
- * once there is a shell, init never exits and this becomes a panic.
- *
- * @param boot_info Pointer to the boot information structure.
+ * @param arguments Init's part of the command line (kernel_args.init_args).
  */
-void init_start(const boot_info_t *boot_info);
+void init_start(const char *arguments);
 
 #endif
