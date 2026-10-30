@@ -68,6 +68,7 @@ void kmain(uintptr_t boot_handoff)
     scheduler_init(&boot_thread);
     threads_init();
     console_init(&keymap_abnt2);
+    console_open();
 
     block_cache_init();
 

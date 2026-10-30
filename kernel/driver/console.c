@@ -341,16 +341,20 @@ void console_init(const keymap_t *map)
     if (devfs_register("console", 0600, MIHOS_MKDEV(CONSOLE_MAJOR, CONSOLE_MINOR), &console_file_ops) != 0)
         panic("console: failed to register the console device\n");
 
-    file_t *c;
-    if (vfs_open("/dev/console", O_RDWR, 0, &c) != 0)
-        panic("console: failed to open the console file\n");
-
-    console = c;
     keymap = map;
     wait_queue_init(&readers);
 
     if (thread_create(console_thread, NULL) == NULL)
         panic("console: failed to create the console thread\n");
+}
+
+void console_open(void)
+{
+    file_t *c;
+    if (vfs_open("/dev/console", O_RDWR, 0, &c) != 0)
+        panic("console: failed to open the console file\n");
+
+    console = c;
 }
 
 void console_set_keymap(const keymap_t *map)
@@ -399,5 +403,8 @@ size_t console_write(const char *buf, size_t n)
 
 file_t *console_file(void)
 {
+    if (console == NULL)
+        panic("console_file: called before console_open\n");
+
     return file_get(console);
 }

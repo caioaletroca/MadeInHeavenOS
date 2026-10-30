@@ -14,6 +14,11 @@
 void console_init(const keymap_t *map);
 
 /**
+ * Open /dev/console, the file console_file hands out. Once, after /dev is mounted.
+ */
+void console_open(void);
+
+/**
  * Set the keymap for the console.
  *
  * @param map The keymap to set for the console.
