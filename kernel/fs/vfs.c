@@ -233,6 +233,79 @@ int vfs_lookup(const char *path, vfs_node_t **out)
     return 0;
 }
 
+int vfs_getcwd(char *buffer, size_t size)
+{
+    if (size < 2)
+        return -ENAMETOOLONG;
+
+    size_t pos = size - 1;
+    buffer[pos] = '\0';
+
+    vfs_node_t *node = vfs_lookup_start(".");
+    int ret = 0;
+
+    while (node != vfs_root)
+    {
+        vfs_node_t *dir = node;
+        while (dir->mount_point != NULL)
+            dir = dir->mount_point;
+
+        vfs_node_t *parent = dir->parent;
+        if (parent == dir)
+        {
+            ret = -ENOENT;
+            break;
+        }
+
+        // dir's name: the parent's entry with dir's inode number (same file system now)
+        vfs_dirent_t entry;
+        bool found = false;
+        for (uint64_t i = 0; (ret = vfs_readdir(parent, i, &entry)) == 1; i++)
+        {
+            bool dots = entry.name[0] == '.' && (entry.length == 1 || (entry.length == 2 && entry.name[1] == '.'));
+            if (!dots && entry.ino == dir->ino && entry.type == VFS_DIRECTORY)
+            {
+                found = true;
+                break;
+            }
+        }
+        if (ret < 0)
+            break;
+        if (!found)
+        {
+            ret = -ENOENT;
+            break;
+        }
+
+        // "/name" in front of what is already there
+        if (entry.length + 1 > pos)
+        {
+            ret = -ENAMETOOLONG;
+            break;
+        }
+        pos -= entry.length;
+        memcpy(buffer + pos, entry.name, entry.length);
+        buffer[--pos] = '/';
+
+        // One step up: hold the parent before letting go of the child
+        vfs_node_get(parent);
+        vfs_node_put(node);
+        node = parent;
+    }
+
+    vfs_node_put(node);
+    if (ret < 0)
+        return ret;
+
+    // At the root itself nothing was written: the path is "/"
+    if (pos == size - 1)
+        buffer[--pos] = '/';
+
+    size_t length = size - pos;
+    memmove(buffer, buffer + pos, length);
+    return (int)length;
+}
+
 long vfs_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset)
 {
     if (node->type == VFS_DIRECTORY)

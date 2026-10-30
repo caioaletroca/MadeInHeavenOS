@@ -177,6 +177,18 @@ int vfs_mount(const char *path, vfs_node_t *root);
 int vfs_lookup(const char *path, vfs_node_t **node);
 
 /**
+ * @brief The current directory's absolute path, rebuilt by walking up: each
+ * directory's name is the entry in its parent's listing with its inode number.
+ *
+ * @param buffer Receives the path, '\0'-terminated.
+ * @param size The buffer's size.
+ * @return The path's length with its '\0', -ENOENT if the directory (or one
+ *         above it) was removed, -ENAMETOOLONG if size is too small, or the
+ *         listing's error.
+ */
+int vfs_getcwd(char *buffer, size_t size);
+
+/**
  * @brief Read data from a node.
  *
  * @param node The node to read from.
