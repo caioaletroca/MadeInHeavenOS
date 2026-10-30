@@ -7,6 +7,7 @@ write.c \
 unlink.c \
 rmdir.c \
 chdir.c \
+getcwd.c \
 close.c \
 lseek.c \
 reboot.c \

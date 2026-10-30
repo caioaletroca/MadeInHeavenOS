@@ -108,6 +108,16 @@ int rmdir(const char *path);
 int chdir(const char *path);
 
 /**
+ * The current directory's absolute path.
+ *
+ * @param buffer Receives the path, '\0'-terminated.
+ * @param size The buffer's size.
+ * @return buffer, or NULL with errno set (EINVAL for size 0, ERANGE if the path does not
+ *         fit, ENOENT if the directory was removed, EFAULT).
+ */
+char *getcwd(char *buffer, size_t size);
+
+/**
  * Close a file descriptor.
  *
  * @param fd The file descriptor to close.
