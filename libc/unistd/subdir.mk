@@ -6,6 +6,7 @@ read.c \
 write.c \
 unlink.c \
 rmdir.c \
+chdir.c \
 close.c \
 lseek.c \
 reboot.c \

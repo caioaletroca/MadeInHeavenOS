@@ -100,6 +100,14 @@ int unlink(const char *path);
 int rmdir(const char *path);
 
 /**
+ * Change the current directory: relative paths start there from now on.
+ *
+ * @param path The new current directory.
+ * @return 0 on success, or -1 with errno set (ENOENT, ENOTDIR, ENAMETOOLONG, EFAULT).
+ */
+int chdir(const char *path);
+
+/**
  * Close a file descriptor.
  *
  * @param fd The file descriptor to close.
