@@ -18,6 +18,7 @@ static const char *const messages[] = {
     [EFAULT] = "Bad address",
     [EBUSY] = "Device or resource busy",
     [EEXIST] = "File exists",
+    [ENODEV] = "No such device",
     [ENOTDIR] = "Not a directory",
     [EISDIR] = "Is a directory",
     [EINVAL] = "Invalid argument",
