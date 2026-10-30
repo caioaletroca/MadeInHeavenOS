@@ -555,6 +555,27 @@ int vfs_mkdir(const char *path, uint32_t mode)
     return ret;
 }
 
+/**
+ * @brief Whether a file system is mounted on the directory at path.
+ *
+ * Lookup crosses mounts: for a mount point it returns the root mounted there,
+ * whose mount_point is set. A missing path is no mount point (rmdir then
+ * gives the file system's own ENOENT).
+ *
+ * @param path The directory's path.
+ * @return true if something is mounted on it.
+ */
+static bool vfs_is_mount_point(const char *path)
+{
+    vfs_node_t *node;
+    if (vfs_lookup(path, &node) < 0)
+        return false;
+
+    bool mounted = node->mount_point != NULL;
+    vfs_node_put(node);
+    return mounted;
+}
+
 int vfs_rmdir(const char *path)
 {
     char *trimmed = vfs_path_trimmed(path);
@@ -574,8 +595,13 @@ int vfs_rmdir(const char *path)
             ret = -EINVAL;
         else if (length == 2 && name[0] == '.' && name[1] == '.')
             ret = -ENOTEMPTY;
+        else if (dir->ops->rmdir == NULL)
+            ret = -EROFS;
+        else if (vfs_is_mount_point(trimmed))
+            ret = -EBUSY;
         else
-            ret = dir->ops->rmdir != NULL ? dir->ops->rmdir(dir, name, length) : -EROFS;
+            ret = dir->ops->rmdir(dir, name, length);
+
         vfs_node_put(dir);
     }
 
