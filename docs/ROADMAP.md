@@ -100,7 +100,7 @@ badly is a reason to move the switch earlier.
 |---|---|---|---|
 | **A** | Programs that do things | libc stdio + `malloc`/`brk`, more stack pages, spawn/exec + wait, `argv`/`envp` | `init` and a first shell with builtins |
 | **B** | Files | VFS (inodes, path lookup, mounts), **initramfs** (tar from GRUB), `/dev`, block driver (AHCI or virtio-blk), GPT, **ext2 → ext4** | programs by path, persistent storage |
-| **C** | POSIX process model | `fork` (copy-on-write), `execve`, `waitpid`, signals, pipes, `dup2`, `chdir`, TTY/termios (raw mode), process groups | real shells (dash), busybox, editors; **Lua** as the libc test |
+| **C** | POSIX process model | `fork` (copy-on-write), `execve`, `waitpid`, signals, pipes, `dup2`, ~~`chdir`~~ (done early, with `getcwd` and the shell's `cd`), TTY/termios (raw mode), process groups | real shells (dash), busybox, editors; **Lua** as the libc test |
 | **D** | Porting platform | **mlibc + toolchain rebuild (libstdc++)**, `mmap`/`mprotect`, pthreads + futex, TLS, clocks, SMP | **self-hosting** GCC/binutils/make, Python, QuickJS |
 | **E** | Network | NIC driver (virtio-net/e1000), TCP/IP (own or lwIP), sockets, `poll` | networked software; with D, Node.js |
 | **F** | Graphics | framebuffer (Multiboot2 tag), mouse, user-space compositor/window server (C++), FreeType, GUI toolkit | windows, GUI apps, an IDE inside MiHOS |
@@ -192,7 +192,8 @@ docs/                     # handoff, roadmap
    test done: **ext2 writing is complete**; the test suite reviewed after it; IRQ-driven ATA
    and MBR partitions done; the root on the disk done: `root=` on the kernel command line,
    a pre-installed ext2 on a partition, the initrd as the live system, the tests run in both
-   boots; the installer is phase G).
+   boots; the installer is phase G). An intermission after it: a current directory per
+   process, `chdir`/`getcwd` and the shell's `cd`/`pwd` (done).
 8. Next: to be chosen between phase C (the process model) and phase B's hardware path (PCI,
    then AHCI/NVMe; GPT).
 

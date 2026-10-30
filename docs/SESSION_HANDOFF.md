@@ -26,7 +26,8 @@ Working x86-64 PC kernel with:
 - **VFS**: `vfs_node_t` per file or directory, path lookup (`.`, `..`, repeated `/`), the
   initrd (one ustar archive GRUB loads as the `initrd` module) mounted as `/` as a tree of nodes;
   `open`/`lseek` on files, `getdents` on directories, `stat`/`fstat`; mounts, with devfs
-  mounted at `/dev` with `/dev/null`, `/dev/zero` and `/dev/console`; `ioctl` (`TIOCGWINSZ`)
+  mounted at `/dev` with `/dev/null`, `/dev/zero` and `/dev/console`; `ioctl` (`TIOCGWINSZ`);
+  a **current directory** per process (relative paths, `chdir`, `getcwd`, inherited at spawn)
 - **ELF64 loader**: user programs built separately (`user/`), validated and mapped by `elf_load`
 - **The root on a disk or the initrd**: the kernel command line's leading `name=value` words
   are the kernel's (`root=hdb1`), the rest is init's. `root=` mounts the ext2 on that block
@@ -37,17 +38,19 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
-- **A shell** (`/bin/sh`, third GRUB entry): builtins `exit`/`help`/`history`, a ring-buffer
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+- **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`help`/`history`/`pwd`, the
+  directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
-  `/bin/echo` as the first command; `/bin/ls` (`-a`, several paths, `/` after directories)
+  `/bin/echo` as the first command; `/bin/ls` (`-a`, several paths, `/` after directories,
+  `.` without arguments)
 - **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`, `<mihos/fcntl.h>`,
   `<mihos/dirent.h>`, `<mihos/stat.h>`): the only kernel
   headers installed into the sysroot
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
   layer, `errno`, `write`/`read`/`close`/`_exit`/`brk`/`sbrk`, `exit`/`abort`; buffered stdio over
   fds with `printf`, `fgetc`/`fgets`/`ungetc`; `malloc`/`free`/`calloc`/`realloc` on `sbrk`;
-  `atexit`; `open` (with a mode)/`creat`/`lseek`/`unlink`, `mkdir`/`rmdir`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
+  `atexit`; `open` (with a mode)/`creat`/`lseek`/`unlink`, `mkdir`/`rmdir`, `chdir`/`getcwd`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
   runtime (global constructors and destructors, `operator new`)
 - **Disks:** a block layer (`block_read`/`block_write` with range checks, `block_flush`) and an
   ATA PIO driver (IRQ-driven: a command sleeps until the drive's IRQ 14/15, one command per
@@ -82,6 +85,17 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+982ea85 feat(ls): list the current directory without arguments
+2ad715b feat(sh): add cd and pwd, and show the directory in the prompt
+30bab22 test: cover getcwd
+6928dad feat(libc): add getcwd
+f8d1646 feat(sys): add getcwd and ERANGE
+074f662 feat(fs): rebuild the current directory's path
+6817b91 test: cover chdir
+4e70364 feat(libc): add chdir
+5b5ff48 feat(sys): add chdir
+3b21ff5 feat(fs): look up relative paths from the current directory
+3c3bbba docs(architecture): document the root on the disk and the two test boots in handoff
 162efc4 test: run the tests live and from the disk
 7efed25 build(grub): boot the tests and the shell from the disk
 3ec18da test: tell the user tests which file system / is
@@ -569,7 +583,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
-  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20, `SYS_FTRUNCATE` 21, `SYS_TRUNCATE` 22, `SYS_UNLINK` 23, `SYS_MKDIR` 24, `SYS_RMDIR` 25 (3, 4, 7–9 reserved). Read and write
+  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20, `SYS_FTRUNCATE` 21, `SYS_TRUNCATE` 22, `SYS_UNLINK` 23, `SYS_MKDIR` 24, `SYS_RMDIR` 25, `SYS_CHDIR` 26, `SYS_GETCWD` 27 (3, 4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
   or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`. Generic `sys/syscall.c` →
   `syscall_dispatch`; x86 `syscall.c` unpacks the frame. User pointers are `uintptr_t` in every
@@ -596,6 +610,13 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   never removed); `system_halt` runs them newest first, before the cache sync, so what they
   write goes out with it. libc:
   `<sys/reboot.h>`, `reboot(RB_HALT_SYSTEM)`.
+- **`chdir(path)`**: `user_path_copy`, `vfs_lookup` (relative from the current directory),
+  not a directory → `-ENOTDIR`, then `process_cwd_set` keeps the lookup's reference. Every
+  refusal leaves the directory where it was. **`getcwd(buffer, size)`** → the path's length
+  with its `'\0'`, or `-errno`: `vfs_getcwd` into a `kmalloc`'d `VFS_PATH_MAX` buffer (never the
+  user's size: the kernel buffer is what it writes), longer than `size` → `-ERANGE`, then one
+  `address_space_write` (`-EFAULT`). libc returns the buffer or NULL; `size` 0 → `EINVAL` in
+  libc (glibc would allocate one; we do not). `ERANGE` is 34, as Linux.
 - **`getpid()`** → the caller's pid (no lock: it never changes). **`getppid()`** → the parent's pid
   read under `process_tree_lock` (`process_parent_pid`), 0 without one (init, like Linux).
 - **`brk(address)`** always returns the current break, never `-errno` (Linux semantics; libc turns
@@ -632,8 +653,15 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
 ```
 
 - `process_t`: pid, state (`RUNNING`/`EXITED`), `exit_status`, `signal`, `refs`, `space`, `thread`
-  (one per process), `parent`, `children`/`sibling`, `waiters`, `child_exits`, `files[16]`.
-  Allocated with `kzalloc`.
+  (one per process), `parent`, `children`/`sibling`, `waiters`, `child_exits`, `files[16]`,
+  `cwd`. Allocated with `kzalloc`.
+- **Current directory:** `cwd` is a `vfs_node_t` with one reference, NULL meaning the root (so
+  kernel-started processes and init need nothing set). `process_cwd_inherit` (spawn, next to
+  `process_files_inherit`) gets the parent's; `process_cwd_set` installs the new directory
+  *before* putting the old one (the old may be its parent: never a moment without a
+  reference); `process_cwd_put` runs at exit (with the fds) and at the last release (a process
+  that never ran). No lock: only the process itself changes it (one thread per process). A
+  removed directory stays usable as `.` until the last reference goes, as on Linux.
 - **Parent and children:** `parent` is NULL for processes the kernel started (they are not on any
   list; their creator holds the handle). `children` holds spawned, not yet waited-for children, one
   reference each (`process_child_add` at spawn, `process_child_remove` if it cannot start). An
@@ -885,14 +913,21 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
   cache's lookup: at 0 the release is on its way, so a node never comes back from 0 and each
   `release` runs once; Linux's `igrab`). `nlink` (1 unless the file system counts links, as
   ext2 does) goes to `st_nlink`. `vfs_path_next(&p, &length)`: skips any `/`, returns a component
-  as pointer + length, no copy (a non-writing `strtok_r`). `vfs_lookup(path, &node)`: absolute
-  paths only (relative or `""` → `-ENOENT`: no current directory yet); holds exactly one
+  as pointer + length, no copy (a non-writing `strtok_r`). `vfs_lookup(path, &node)`: starts
+  at `vfs_lookup_start(path)`, the root for an absolute path or a kernel thread, else the
+  calling process's `cwd` (`""` → `-ENOENT`, POSIX); `vfs_lookup_parent` gives a bare name
+  the parent `.`, so `open("x", O_CREAT)`, `mkdir`, `unlink` and `rmdir` work relative too.
+  `vfs_getcwd(buffer, size)` rebuilds the path from the end of the buffer: from `cwd` up, it
+  climbs out of a mounted root through `mount_point`, finds its name in the parent's
+  `readdir` by inode number (the dots skipped; the same file system after the climb), and
+  puts `/name` in front; a directory that is no longer in its parent (removed) →
+  `-ENOENT`, too long → `-ENAMETOOLONG`; at the root itself the path is `/`. Holds exactly one
   reference per step (gets the next node, puts the current one, a single `put` on every exit);
   `.` keeps the node, `..` takes `parent`; a component longer than `VFS_NAME_MAX` (255) →
   `-ENAMETOOLONG`, a file before another component → `-ENOTDIR`, a file with a trailing `/` →
   `-ENOTDIR` (POSIX). Returns a new reference. `vfs_read` checks the type (`-EISDIR`),
   `vfs_readdir` too (`-ENOTDIR`).
-  `vfs_read_file(path, &data, &size)`: the whole file in a `kmalloc`'d buffer (loops on `read`;
+  `vfs_read_file(path, &data, &size)`, relative paths included (spawn runs `./hello`): the whole file in a `kmalloc`'d buffer (loops on `read`;
   0 before the end → `-EIO`), the outputs set only on success. Open files: see Files.
   **Mounts:** `vfs_mount(path, root)` looks the directory up (`-ENOENT`/`-ENOTDIR` pass
   through; a file → `-ENOTDIR`; `/` or an already mounted directory → `-EBUSY`: lookup has
@@ -1019,8 +1054,8 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
   - `spawn`: spawns itself with a mode in `argv[1]` (no extra modules): exit 7 / 300 (→ 44) /
     SIGSEGV through the `W*` macros, `argv`/`envp` passed exactly, NULL `envp`, two children waited
     in reverse order, waiting twice → `ECHILD`, 20 rounds, `ENOENT`/`EFAULT`/`E2BIG`/`ENOSYS`/
-    `ECHILD`/`EINVAL`, `EACCES` for a directory, `ENOTDIR` for `hello/`, `ENOENT` for a
-    relative path, an orphaned grandchild (adopted by init, not waitable), a child's read on an
+    `ECHILD`/`EINVAL`, `EACCES` for a directory, `ENOTDIR` for `hello/`, a relative path
+    spawned from the current directory, an orphaned grandchild (adopted by init, not waitable), a child's read on an
     inherited fd moving the parent's offset (10), fd numbers kept across a closed fd
     0. `wait`/`waitpid(-1)`: `ECHILD` with no children, a still-running child (sleep and rescan),
     three children reaped once each with their own status, `waitpid(pid)` then `wait` for the
@@ -1029,8 +1064,8 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     the offset, return 0 at the end (again), pieces of 7 or 300 bytes add up to `lseek(SEEK_END)`;
     `lseek` from each origin, `SEEK_CUR` 0 as "where am I", the same byte from the start and from
     the end, past the end reads 0; `EINVAL` (before 0, `INT64_MIN`, bad whence) leaves the offset;
-    `ESPIPE` on stdin, `EBADF` on a bad fd; two opens have independent offsets; `open` errors
-    `ENOENT` (missing, relative), `ENOTDIR`, `EROFS` (`O_WRONLY`/`O_RDWR`), `EINVAL` (unknown
+    `ESPIPE` on stdin, `EBADF` on a bad fd; two opens have independent offsets; a relative
+    `open` from `/` is the same file; `open` errors `ENOENT` (missing, `""`), `ENOTDIR`, `EROFS` (`O_WRONLY`/`O_RDWR`), `EINVAL` (unknown
     flag), `EFAULT`, `ENAMETOOLONG` (5000 bytes); `write` to a read-only fd → `EBADF`; a directory
     opens but reads `EISDIR`; a closed fd → `EBADF`; 13 opens fill the 16-entry table, then
     `EMFILE`, and after closing `open` gets 3 again.
@@ -1038,7 +1073,7 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     dots and `DT_REG` for the rest, NULL with `errno` 0 at and past the end; `rewinddir` gives
     the same listing; inode numbers agree across directories (`.` of `/usr/tests` = `tests` in
     `/usr`, `..` = `.` of `/usr`, the root's dots equal); `opendir` `ENOTDIR` (a file, `hello/`),
-    `ENOENT` (missing, relative); `open` without `O_DIRECTORY` takes both kinds. Raw `getdents`
+    `ENOENT` (missing, `""`), a relative `usr` opens; `open` without `O_DIRECTORY` takes both kinds. Raw `getdents`
     on `/`: `EINVAL` into 8 bytes, exactly one 16-byte record, the other 64 bytes, 0 twice;
     `EFAULT` after `lseek` 0 loses nothing (80 bytes next); zero padding; 40-byte buffers resume
     and add up to `readdir`'s count; `ENOTDIR` on stdin and a file, `EBADF` on closed and
@@ -1049,7 +1084,7 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     zeroed first: `struct stat` has padding after `st_mode`), two paths one inode. Directories
     (`/usr/tests`, with a trailing `/`, `/`, the never-listed `/usr`) `S_ISDIR` and `0755`;
     `fstat` of an open directory; fds 0–2 `S_ISCHR` with `/dev/console`'s inode, `st_dev` and
-    `st_rdev` (5:1, `0600`). `ENOENT` (missing, relative), `ENOTDIR`,
+    `st_rdev` (5:1, `0600`). A relative `usr` is `/usr`'s inode. `ENOENT` (missing, `""`), `ENOTDIR`,
     `ENAMETOOLONG`, `EFAULT` (path), `EBADF` (99, -1, closed). A bad `struct stat *` is not
     tested: libc copies into it itself (crashes there, like glibc).
   - `devices`: `/dev/null` (`O_WRONLY`) takes writes of 5, 1000 (more than a chunk) and 0
@@ -1085,6 +1120,17 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     replaced by a read-only file: `printf("x\n")` returns 2 with no stream error (fully
     buffered), and `fflush` fails with `EOF`/`EBADF`/`ferror` (line buffering would fail at the
     `printf`). Afterwards stdout is that file, so that part reports on stderr.
+  - `cwd` (on the test disk in `/mnt`, the same in both boots): starts at `/`; `chdir` into
+    `/mnt` reads `hello.txt` by its bare name; relative steps (`docs`, `deep/nested`, `../..`,
+    `..`), `..` out of the mounted root onto `/`, `mnt/` and `.`; refusals that leave the
+    directory alone: `ENOENT` (`nope`, `""`), `ENOTDIR` (a file, `hello.txt/`, `/dev/null`),
+    `EFAULT`. Relative `open(O_CREAT)`, `mkdir`, `chdir` into it, `rmdir(".")` `EINVAL`,
+    `rmdir("..")` `ENOTEMPTY`, `rmdir` and `unlink` by bare names. `getcwd` gives `/`, `/mnt`
+    (a mount point's name), nested and `..` paths, `/usr/tests`, `/dev`, and the clean path
+    for `//mnt/./docs/../docs/`; exactly the path and `'\0'` fits, one byte less `ERANGE`, 0
+    `EINVAL`, a bad pointer `EFAULT`; a removed current directory `ENOENT` while `.` still
+    stats. A spawned child (itself, `child`) starts in `/mnt/docs`, and its `chdir("/")` does
+    not move the parent. `here_is(path)` compares `.`'s and the path's inode and device.
   - `printf`: `vsnprintf` through an `EXPECT(expected, format, ...)` helper that compares output
     and returned length and prints what it got. Every conversion, flag and length (`hh`/`h`
     narrowing, `%ld` above 2^32, `INT64_MIN`, 22-digit octal), `*` width/precision (negative ones),
@@ -1094,7 +1140,8 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
 - **VFS self-test** (`selftest/vfs.c`, before the ELF one): types of `/`, `/usr`, `/usr/tests`
   (also with a trailing `/`), `/sbin/init`, `/bin/sh`; `//usr///tests/hello`,
   `/./usr/./tests/./hello`, `/usr/tests/../tests/hello`, `/bin/../usr/tests/hello` give the same
-  node pointer, `/..` and `/usr/..` the root; `ENOENT` (`/nope`, `/usr/nope/hello`, relative,
+  node pointer, and so does the relative `usr/tests/hello` (a kernel thread starts at the
+  root), `/..` and `/usr/..` the root; `ENOENT` (`/nope`, `/usr/nope/hello`,
   `""`, `hell`, `hello.elf`), `ENOTDIR` (`hello/`, `/sbin/init/x`, `/sbin/init/.`), a 255-char
   component is `ENOENT`, 256 `ENAMETOOLONG`, a failed lookup never sets the node;
   `vfs_read_file` size equals the node's and starts with an ELF header; `vfs_read` at 0 and 100
@@ -2336,21 +2383,27 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     `run-tests.sh` booting twice on fresh copies with e2fsck and the state on the partition
     too, the tests told which boot they run in (`TEST_ROOT`, `root_device`). It found that a
     mount point could be removed on a writable root: `vfs_rmdir` answers `-EBUSY` now.
+- **The current directory and `cd` (done, an intermission before phase C).** Four steps, each
+  built and tested: relative lookups from `process_t.cwd` (inherited at spawn); `chdir`
+  (`SYS_CHDIR` 26, libc, the `cwd` test); `getcwd` (`vfs_getcwd`, `SYS_GETCWD` 27, `ERANGE`,
+  libc, tests); the shell's `cd`/`pwd` builtins, the directory in the prompt, `ls` listing `.`.
+  Kept simple on purpose, each piece with its upgrade named in the debt list (a name cache
+  for `getcwd`, a shared `fs_struct` with threads, the `*at` calls).
 - **Next: to be chosen.** Phase B's remaining pieces and phase C are both open; nothing blocks
   either. Candidates: phase C (the process model: `fork` with copy-on-write, `execve`,
-  signals, pipes, `dup2`, `chdir`), which also unblocks the stdio-order and shell tests that
+  signals, pipes, `dup2`), which also unblocks the stdio-order and shell tests that
   wait for pipes; or the hardware path from `ROADMAP.md` (PCI enumeration, then AHCI/NVMe), or
   GPT. Kernel shape and hardware targets are decided in `ROADMAP.md`.
 
 ### Shell (`user/bin/sh/`)
 
 ```text
-main.c   loop: prompt "mihos>" ─▶ command_read ─▶ history_expand ─▶ history_add ─▶ command_parse
+main.c   loop: prompt "mihos:<cwd>> " ─▶ command_read ─▶ history_expand ─▶ history_add ─▶ command_parse
          ─▶ command_run
 read.c   command_read: fgets, '\n' stripped (READ_EOF on NULL); command_parse: the tokenizer
          (quotes, escapes, $ expansion) → READ_COMMAND / READ_NOTHING
 run.c    command_run: builtin_run, else program_run
-builtins.c  table {name, function, help}; exit [n], help, history
+builtins.c  table {name, function, help}; cd [dir], exit [n], help, history, pwd
 history.c   ring buffer of strdup'd lines
 sh.h / history.h   shared types and declarations ("..." includes)
 ```
@@ -2378,7 +2431,12 @@ sh.h / history.h   shared types and declarations ("..." includes)
   error printed (`event not found`, `line too long`: the line is neither run nor stored).
 - **Builtins:** function pointers `int (*)(shell_t *, int argc, char *argv[])`; `builtin_run`
   returns 1 if it ran one (its return value becomes `status`), 0 if not. `exit` with too many
-  arguments returns 1 and keeps running; `exit n` uses `atoi` (no number check yet).
+  arguments returns 1 and keeps running; `exit n` uses `atoi` (no number check yet). `cd` must
+  be a builtin (a child's `chdir` dies with the child): no argument → `$HOME`, unset or empty
+  → `/`; more than one → `cd: too many arguments`; a failure prints `cd: dir: strerror` (bash's
+  format) and returns 1. `pwd` prints `getcwd` into a `CWD_MAX` (1024) buffer.
+- **Prompt:** `print_prompt` calls `getcwd` every time (`mihos:/usr/tests> `); a removed
+  directory, or one deeper than `CWD_MAX`, shows `mihos:?> ` until the next `cd`.
 - **History:** `lines[HISTORY_MAX]` (32) `strdup`'d copies, oldest at `lines[start]`, `count`
   stored, `total` ever added; full → free the oldest and advance `start`. Blank lines are skipped.
   `history` prints entry `i` as number `total - count + 1 + i` (bash's numbering).
@@ -2489,7 +2547,14 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   passes the buffer, unused). Our request numbers differ from Linux's (`0x5413`), fine since
   only libc sees them. The console's size is the VGA text size, fixed.
 - Mounts are two node pointers, set at boot: no `umount`, no lock (a mount after user space
-  starts would race lookups), no mount over `/`. No current directory (absolute paths only).
+  starts would race lookups), no mount over `/`.
+- The current directory: `getcwd` walks up and reads each parent's directory looking for an
+  inode number (O(depth × directory size) per call; Linux keeps names in its dentry cache),
+  and the shell calls it at every prompt (bash keeps `$PWD` instead). `cwd` has no lock and
+  lives in `process_t` (threads will share it through something like Linux's `fs_struct`).
+  No `fchdir`, no `*at` calls (`openat`, `fstatat`), no `$PWD`/`$OLDPWD`, `cd -` or `cd -P`/`-L`
+  (no symlinks to tell them apart), nothing sets `HOME`. `getcwd(NULL, 0)` is `EINVAL`
+  (glibc allocates). No `chroot`.
 - `read` moves at most 256 bytes per syscall (`SYSCALL_CHUNK_SIZE`): correct (a short read) but
   slow for files; no `fread`/`fopen` in libc yet. `sys_write` copies 256-byte chunks too (one
   backend call each) and stops at the first short one.
@@ -2557,7 +2622,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   not counted by the runner.
 - `stat` has no clock behind it: all three times are the file's `mtime` (ext2's `i_atime`
   and `i_ctime` are not read); no users (`uid`/`gid` 0, ext2's `i_uid`/`i_gid` ignored);
-  `nlink` 1 outside ext2. No `lstat` (no symlinks) or `fstatat` (no current directory).
+  `nlink` 1 outside ext2. No `lstat` (no symlinks) or `fstatat` (no `*at` calls yet).
 - `ls` prints file arguments in argument order, mixed with the directories (real `ls` prints
   files first, then each directory). Its options, several paths and errors are checked by
   hand, like the shell.
