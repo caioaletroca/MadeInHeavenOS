@@ -14,15 +14,13 @@
 #include <platform/platform.h>
 #include <sched/thread.h>
 #include <sched/scheduler.h>
-#include <fs/vfs.h>
-#include <fs/initrd.h>
 #include <fs/devfs.h>
 #include <fs/ext2.h>
+#include <fs/root.h>
 #include <kprintf.h>
 #include <kernel_args.h>
 #include <boot_info.h>
 #include <init.h>
-#include <panic.h>
 
 #include "selftest/block.h"
 #include "selftest/console.h"
@@ -62,21 +60,12 @@ void kmain(uintptr_t boot_handoff)
 
     mm_init(&boot_info);
 
-    vfs_node_t *initrd_root = initrd_init(&boot_info);
-    if (initrd_root == NULL)
-        panic("kmain: no initrd module\n"); // temporary: root_init decides this in commit 3
-
-    vfs_mount_root(initrd_root);
-    vfs_node_put(initrd_root);
-
     devfs_init();
-    devfs_mount();
     mem_devices_init();
 
     scheduler_init(&boot_thread);
     threads_init();
     console_init(&keymap_abnt2);
-    console_open();
 
     block_cache_init();
 
@@ -85,6 +74,10 @@ void kmain(uintptr_t boot_handoff)
     irq_enable();
     partition_init();
     block_devfs_init();
+
+    root_init(&kernel_args, &boot_info);
+    devfs_mount();
+    console_open();
     ext2_init();
 
     guard_selftest();
