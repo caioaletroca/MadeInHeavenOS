@@ -28,6 +28,7 @@
 #define SYS_UNLINK 23
 #define SYS_MKDIR 24
 #define SYS_RMDIR 25
+#define SYS_CHDIR 26
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)

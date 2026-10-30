@@ -677,6 +677,35 @@ static long sys_rmdir(uintptr_t path)
     return ret;
 }
 
+/**
+ * Change the current working directory of the calling process.
+ *
+ * @param path The path to the new current working directory.
+ * @return 0 on success, or a negative error code on failure.
+ */
+static long sys_chdir(uintptr_t path)
+{
+    long error;
+    char *kernel_path = user_path_copy(path, &error);
+    if (kernel_path == NULL)
+        return error;
+
+    vfs_node_t *node;
+    int ret = vfs_lookup(kernel_path, &node);
+    kfree(kernel_path);
+    if (ret < 0)
+        return ret;
+
+    if (node->type != VFS_DIRECTORY)
+    {
+        vfs_node_put(node);
+        return -ENOTDIR;
+    }
+
+    process_cwd_set(scheduler_current()->process, node);
+    return 0;
+}
+
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {
     (void)arg3;
@@ -727,6 +756,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_mkdir((uintptr_t)arg0, (uint32_t)arg1);
     case SYS_RMDIR:
         return sys_rmdir((uintptr_t)arg0);
+    case SYS_CHDIR:
+        return sys_chdir((uintptr_t)arg0);
     default:
         return -ENOSYS;
     }

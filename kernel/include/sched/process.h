@@ -5,6 +5,7 @@
 #include <sched/wait.h>
 #include <sched/spinlock.h>
 #include <fs/file.h>
+#include <fs/vfs.h>
 #include <sys/list.h>
 
 #define PROCESS_MAX_FILES 16
@@ -92,6 +93,15 @@ void process_files_inherit(process_t *child, process_t *parent);
  * @param parent The parent process.
  */
 void process_cwd_inherit(process_t *child, process_t *parent);
+
+/**
+ * Make dir the process's current directory. Takes over the caller's reference
+ * to dir and drops the one to the old directory.
+ *
+ * @param p The process.
+ * @param dir A directory, with one reference for the process.
+ */
+void process_cwd_set(process_t *p, struct vfs_node *dir);
 
 /**
  * Add a child process to its parent's list of children.

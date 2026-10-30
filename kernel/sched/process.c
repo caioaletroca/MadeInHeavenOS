@@ -149,6 +149,14 @@ void process_cwd_inherit(process_t *child, process_t *parent)
         vfs_node_get(child->cwd);
 }
 
+void process_cwd_set(process_t *p, vfs_node_t *dir)
+{
+    vfs_node_t *old = p->cwd;
+    p->cwd = dir;
+    if (old != NULL)
+        vfs_node_put(old);
+}
+
 void process_child_add(process_t *parent, process_t *child)
 {
     scoped_guard(spinlock, &process_tree_lock)
