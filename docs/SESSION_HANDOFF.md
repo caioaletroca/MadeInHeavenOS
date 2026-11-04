@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`help`/`history`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
@@ -85,6 +85,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+9a39c17 test: check stdio's output order through a pipe
+108d6c0 test: run the shell on scripts through pipes
+88e0969 feat(sh): run non-interactively when stdin is not a terminal
+6dbddcd docs(architecture): document pipes in handoff
 c2419df test: cover pipes
 9134062 feat(libc): add pipe and EPIPE
 999fca3 feat(sys): add pipe
@@ -1098,8 +1102,21 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
   `FAIL line N: expr` to stdout and counts; `main` returns `test_status()` = failed checks.
   - `hello`: prints nothing, returns `status + zero` from a `.data` 42 and a `.bss` 0 (expected 42: checks the copy
     and the zeroing).
-  - `stdio`: buffering order checked by eye (`1`, `3`, `2 no newline... 4`, `checks: …`,
-    `5 flushed by exit` last, only via `exit`), return values, `ferror` + `EBADF` after `close(2)`.
+  - `stdio`: the body runs twice. First in a child (itself, `child`) whose stdout and stderr
+    are one pipe, read back and compared exactly: a pipe is not a terminal, so stdout is fully
+    buffered (`3 stderr first`, then the rest at exit's flush, `5 flushed by exit` last). Then
+    on the console, line-buffered, checked by eye (`1`, `3`, `2 no newline... 4`, `checks: …`,
+    `5 flushed by exit` last, only via `exit`). Return values, `ferror` + `EBADF` after `close(2)`.
+  - `shell`: `/bin/sh` on 14 scripts, each written into a pipe that becomes its stdin (written
+    and its write end closed before the spawn, or the shell would inherit it and never see
+    EOF), stdout and stderr in a pipe each, `PATH=/bin` and `GREETING` in its environment; both
+    outputs and the status compared exactly. No banner or prompt; quotes and escapes; `$NAME`,
+    `"$NAME"`, unset, a lone `$`, `$$` (the spawned pid); `$?` after `hello` (42), not found
+    (127, the message on stderr) and `malloc_abort` (134: an exit until signals, so no "killed"
+    line); `pwd`/`cd`/`echo` interleaved in order (the shell's flush); failing builtins and
+    the last status at EOF; `exit 7` stopping the script, `exit` keeping 127; blank lines and
+    a last line without `'\n'`; `!!` left alone; an unmatched quote skipping one line; an
+    empty script. fd 3 free at the end.
   - `brk`: heap on the page after `.bss`, exact unaligned break, zeroed pages after shrink and regrow,
     `ENOMEM` past the limit / on wrap / below `heap_start`, a 32 KiB stack array.
   - `malloc`: 16-alignment and no overlap over 15 sizes, one free block after freeing everything
@@ -2482,8 +2499,10 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **C1, `dup`/`dup2` and pipes.** C1a (done): `dup`/`dup2` (`SYS_DUP` 28, `SYS_DUP2` 29),
     libc, the `dup` test. Then `syscall.c` was split into topic files (done, see "User mode and
     syscalls"). C1b (done): pipes (`VFS_FIFO` nodes, `fs/pipe.c`, `SYS_PIPE` 30, libc,
-    `EPIPE`, the `pipe` test; see "Files"). **Next: C1c**: the runner feeds the shell a script through a pipe and reads its output (the shell's first
-    automatic tests), `stdio`'s output order checked; maybe the shell's `|`.
+    `EPIPE`, the `pipe` test; see "Files"). C1c (done): the shell runs non-interactively when
+    stdin is not a terminal (see "Shell"), the `shell` test feeds it scripts through pipes (its
+    first automatic tests), and `stdio` checks its output order through a pipe. Open: the
+    shell's `|` (spawn with fds moved around `posix_spawn`, as the tests do), before or after C2.
   - **C2, `fork`** as a plain copy of the address space (every user page copied), the fd table
     (shared `file_t`s), `cwd` and `brk`; the child gets a copy of the parent's syscall frame with
     `rax` 0. `SYS_FORK` 3 is reserved.
@@ -2502,7 +2521,7 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 
 ```text
 main.c   loop: prompt "mihos:<cwd>> " ─▶ command_read ─▶ history_expand ─▶ history_add ─▶ command_parse
-         ─▶ command_run
+         ─▶ command_run ─▶ fflush(stdout)   (prompt and history only when interactive)
 read.c   command_read: fgets, '\n' stripped (READ_EOF on NULL); command_parse: the tokenizer
          (quotes, escapes, $ expansion) → READ_COMMAND / READ_NOTHING
 run.c    command_run: builtin_run, else program_run
@@ -2512,7 +2531,15 @@ sh.h / history.h   shared types and declarations ("..." includes)
 ```
 
 - **State:** `shell_t` (owned by `main`, passed down) holds `status` (last command's: `exit`'s
-  default), `running` (cleared by `exit`) and the `history_t`. Modules take only the part they own
+  default and the shell's own status at EOF), `running` (cleared by `exit`), `interactive` and
+  the `history_t`.
+- **Interactive or not** (POSIX, as bash and dash): `interactive = isatty(0) && isatty(2)`.
+  Interactive: the banner, the prompt (on **stderr**, as POSIX says), history expansion and
+  `history_add`, a `'\n'` on stderr at EOF. Otherwise (a script piped in) none of these, so only
+  the commands' output comes out, and `!!` stays literal. Either way every shell message goes to
+  stderr (parse and history errors too), and stdout is `fflush`ed after every command: into a
+  pipe or a file it is fully buffered, and a builtin's output must be out before the next
+  program writes its own. Modules take only the part they own
   (`history_add(history_t *, line)`); `main` wires them. The tokenizer never modifies the line.
 - **Tokenizer** (`command_parse(sh, cmd)`): a state machine (`STATE_UNQUOTED`, `STATE_SINGLE`,
   `STATE_DOUBLE`) over `cmd->command` writes the words, each `'\0'`-terminated, into
@@ -2545,7 +2572,7 @@ sh.h / history.h   shared types and declarations ("..." includes)
   `history` prints entry `i` as number `total - count + 1 + i` (bash's numbering).
 - **Programs:** a name with `'/'` is spawned as given; otherwise each `PATH` entry is tried as
   `dir/name` (`snprintf` with `%.*s`, so `PATH` is never cut up; empty entries skipped). `ENOENT`
-  moves to the next entry. Not found → `sh: name: not found`, 127; other spawn errors → 126; killed
+  moves to the next entry. Not found → `sh: name: command not found`, 127; other spawn errors → 126; killed
   → message and 128 + signal. Children inherit fds and `environ`.
 - **Decisions** (details in `ROADMAP.md`): own syscall ABI and numbering (porting is at the
   POSIX/libc API, not Linux binaries); own libc through phase C, mlibc via sysdeps at phase D
@@ -2668,7 +2695,6 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - Fixed 64 KiB user stack (`exec_load`); no stack growth. The guard page below it is only "never
   mapped" (`brk` stops short of it), not a reserved region.
 - `NX` still off, so `PF_X`/`MMU_EXEC` from the loader are informational.
-- The `stdio` test's output order is only checked by eye (no pipes to capture it).
 - Stale programs stay in the sysroot after their directory is removed (`make clean` to drop them).
 - `tty_write` holds IRQs off for the whole write plus a full 4000-byte VGA copy; long user writes
   will need a mutex and a separate panic path.
@@ -2688,8 +2714,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   runner's `test /usr/tests/stdio: ok` follows on the same line.
 - The shell has no arrow-key history (needs raw mode / termios), no `;`, `&&`, pipes or
   redirections, no field splitting, no continuation lines for an open quote; a `'` inside `"..."`
-  flips history expansion's quote tracking. Its features are checked by hand until pipes let a
-  test feed it a script.
+  flips history expansion's quote tracking. The `shell` test covers scripts; the interactive
+  parts (prompt, history, the banner) are still checked by hand (no pseudo-terminal). It reads
+  stdin through `fgets`' 512-byte buffer, so on a pipe it reads ahead of the current line: a
+  command that reads stdin (a `cat` in a script) would miss those bytes (dash reads a pipe one
+  byte at a time, bash seeks back on files). No `sh file`, `sh -c`, `-i`/`-s` or `$0`/`$1`.
 - stdio: no `fread`, `fopen`/`fclose`/`setvbuf`,
   `__stdio_head` is `const` (must change when `fopen` adds streams), no stream locking (needed with
   user threads); `stdio.h` is still partly a stub (`fopen`, `fread`, `fseek` declared but missing).
@@ -2751,9 +2780,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   overflow corrupts the memory below it silently (it happened: `ext2_test_unlink` once had a
   15 KB frame). Kernel thread stacks are 16 KiB too. A guard page (unmapped page below each
   stack) would turn it into a page fault.
-- `user/tests/stdio` checks its return values, but the output order (stdout line-buffered,
-  stderr unbuffered, the flush at exit) only by eye: it passes whatever the order. Checkable
-  once pipes exist (phase C): a child's stdout and stderr read back in order.
+- `user/tests/stdio` checks the fully buffered order through a pipe, but the line-buffered one
+  (a terminal's) only by eye: no pseudo-terminal to capture it.
 - ext2 (each item becomes work when something needs it):
   - no `rename`; no `link`, so a file has one name (but the
     link count is kept right for when it has more); symlinks (and other kinds the VFS cannot
