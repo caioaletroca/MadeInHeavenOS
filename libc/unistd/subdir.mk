@@ -9,6 +9,7 @@ rmdir.c \
 chdir.c \
 getcwd.c \
 close.c \
+pipe.c \
 dup.c \
 dup2.c \
 lseek.c \

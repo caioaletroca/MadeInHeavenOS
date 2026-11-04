@@ -165,6 +165,14 @@ pid_t getppid(void);
 int isatty(int fd);
 
 /**
+ * Create a pipe and return file descriptors for the read and write ends.
+ *
+ * @param fds An array of two integers where the file descriptors will be stored.
+ * @return 0 on success, or -1 on error.
+ */
+int pipe(int fds[2]);
+
+/**
  * Terminate the calling process immediately.
  *
  * @param status The exit status of the process.

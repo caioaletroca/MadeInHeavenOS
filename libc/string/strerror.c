@@ -29,6 +29,7 @@ static const char *const messages[] = {
     [ESPIPE] = "Illegal seek",
     [EROFS] = "Read-only file system",
     [EMLINK] = "Too many links",
+    [EPIPE] = "Broken pipe",
     [ERANGE] = "Numerical result out of range",
     [ENAMETOOLONG] = "File name too long",
     [ENOSYS] = "Function not implemented",
