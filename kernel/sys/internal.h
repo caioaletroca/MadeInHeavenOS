@@ -60,4 +60,7 @@ long sys_getppid(void);
 // memory.c
 long sys_brk(uintptr_t address);
 
+// power.c
+long sys_reboot(long command);
+
 #endif // _SYS_INTERNAL_H_

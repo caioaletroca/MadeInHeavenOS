@@ -1,41 +1,6 @@
 #include "internal.h"
-#include <syscall.h>
-#include <addresses.h>
-#include <asm/memory.h>
-#include <mm/address_space.h>
-#include <mm/kmalloc.h>
-#include <sched/scheduler.h>
-#include <sched/thread.h>
-#include <sched/process.h>
-#include <exec/exec.h>
-#include <fs/vfs.h>
-#include <mihos/stat.h>
-#include <mihos/ioctl.h>
-#include <power.h>
-#include <util.h>
 
-/**
- * Reboots the system with the specified command.
- *
- * @param command The reboot command (e.g., REBOOT_HALT).
- * @return 0 on success, or a negative error code on failure.
- */
-static long sys_reboot(long command)
-{
-    process_t *current = scheduler_current()->process;
-
-    if (current->pid != PROCESS_INIT_PID)
-        return -EPERM;
-
-    switch (command)
-    {
-    case REBOOT_HALT:
-        system_halt();
-        return 0;
-    default:
-        return -EINVAL;
-    }
-}
+// ---- The dispatch: a syscall number to its sys_* function ----
 
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {

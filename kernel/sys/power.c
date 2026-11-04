@@ -1,3 +1,4 @@
+#include "internal.h"
 #include <power.h>
 #include <asm/irq_flags.h>
 #include <asm/cpu.h>
@@ -33,4 +34,27 @@ __attribute__((noreturn)) void system_halt(void)
     kprintf("system halted\n");
     platform_power_off();
     cpu_halt();
+}
+
+/**
+ * Reboots the system with the specified command.
+ *
+ * @param command The reboot command (e.g., REBOOT_HALT).
+ * @return 0 on success, or a negative error code on failure.
+ */
+long sys_reboot(long command)
+{
+    process_t *current = scheduler_current()->process;
+
+    if (current->pid != PROCESS_INIT_PID)
+        return -EPERM;
+
+    switch (command)
+    {
+    case REBOOT_HALT:
+        system_halt();
+        return 0;
+    default:
+        return -EINVAL;
+    }
 }
