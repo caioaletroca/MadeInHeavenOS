@@ -126,6 +126,23 @@ char *getcwd(char *buffer, size_t size);
 int close(int fd);
 
 /**
+ * Duplicate a file descriptor.
+ *
+ * @param fd The file descriptor to duplicate.
+ * @return The new file descriptor, or -1 on error.
+ */
+int dup(int fd);
+
+/**
+ * Duplicate a file descriptor to a specified new descriptor.
+ *
+ * @param oldfd The file descriptor to duplicate.
+ * @param newfd The new file descriptor.
+ * @return The new file descriptor, or -1 on error.
+ */
+int dup2(int oldfd, int newfd);
+
+/**
  * Get the process ID of the calling process.
  *
  * @return The process ID of the calling process.

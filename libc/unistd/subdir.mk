@@ -9,6 +9,8 @@ rmdir.c \
 chdir.c \
 getcwd.c \
 close.c \
+dup.c \
+dup2.c \
 lseek.c \
 reboot.c \
 getpid.c \
