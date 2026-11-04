@@ -38,4 +38,12 @@ long sys_ioctl(unsigned long fd, unsigned long request, uintptr_t arg);
 long sys_ftruncate(unsigned long fd, long length);
 long sys_truncate(uintptr_t path, long length);
 
+// directories.c
+long sys_getdents(unsigned long fd, uintptr_t buffer, size_t size);
+long sys_unlink(uintptr_t path);
+long sys_mkdir(uintptr_t path, uint32_t mode);
+long sys_rmdir(uintptr_t path);
+long sys_chdir(uintptr_t path);
+long sys_getcwd(uintptr_t buffer, size_t size);
+
 #endif // _SYS_INTERNAL_H_
