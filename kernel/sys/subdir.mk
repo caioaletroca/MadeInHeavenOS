@@ -1,4 +1,5 @@
 local_sources := \
 panic.c \
 syscall.c \
-power.c
+power.c \
+user_copy.c
