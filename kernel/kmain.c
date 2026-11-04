@@ -17,6 +17,7 @@
 #include <fs/devfs.h>
 #include <fs/ext2.h>
 #include <fs/root.h>
+#include <fs/pipe.h>
 #include <kprintf.h>
 #include <kernel_args.h>
 #include <boot_info.h>
@@ -62,6 +63,7 @@ void kmain(uintptr_t boot_handoff)
 
     devfs_init();
     mem_devices_init();
+    pipe_init();
 
     scheduler_init(&boot_thread);
     threads_init();
