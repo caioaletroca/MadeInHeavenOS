@@ -9,6 +9,7 @@
 #define MIHOS_S_IFCHR 0020000 // character device (the console)
 #define MIHOS_S_IFREG 0100000 // regular file
 #define MIHOS_S_IFBLK 0060000 // block device (a disk)
+#define MIHOS_S_IFIFO 0010000 // FIFO (a pipe)
 
 // st_rdev: which device a device file is (major: the driver, minor: the instance)
 #define MIHOS_MKDEV(major, minor) (((uint64_t)(major) << 32) | (uint32_t)(minor))

@@ -22,6 +22,7 @@ typedef enum
     VFS_DIRECTORY,
     VFS_CHARDEV,
     VFS_BLOCKDEV, // a disk: read at byte offsets through the node's ops, seekable
+    VFS_FIFO,     // a pipe: no name, read and written through its file's ops, not seekable
 } vfs_node_type_t;
 
 struct file_ops;

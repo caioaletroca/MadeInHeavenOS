@@ -27,6 +27,8 @@ static uint32_t vfs_mode_type(vfs_node_type_t type)
         return MIHOS_S_IFCHR;
     case VFS_BLOCKDEV:
         return MIHOS_S_IFBLK;
+    case VFS_FIFO:
+        return MIHOS_S_IFIFO;
     default:
         return MIHOS_S_IFREG;
     }
@@ -330,7 +332,7 @@ int vfs_truncate(vfs_node_t *file, uint64_t size)
 {
     if (file->type == VFS_DIRECTORY)
         return -EISDIR;
-    if (file->type == VFS_CHARDEV || file->type == VFS_BLOCKDEV)
+    if (file->type == VFS_CHARDEV || file->type == VFS_BLOCKDEV || file->type == VFS_FIFO)
         return -EINVAL; // a device's size is the device's
     if (file->ops->truncate == NULL)
         return -EROFS; // read-only file system
