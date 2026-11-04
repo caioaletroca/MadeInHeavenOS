@@ -1,5 +1,6 @@
 #include "internal.h"
 #include <mihos/ioctl.h>
+#include <fs/pipe.h>
 
 // ---- Calls on open files: open, read, write, seek, close, dup, ioctl, truncate ----
 
@@ -294,4 +295,45 @@ long sys_truncate(uintptr_t path, long length)
     vfs_node_put(node);
 
     return ret;
+}
+
+/**
+ * Create a pipe and return file descriptors for the read and write ends.
+ *
+ * @param fds Pointer to an array of two integers where the file descriptors will be stored.
+ * @return 0 on success, or a negative error code on failure.
+ */
+long sys_pipe(uintptr_t fds)
+{
+    process_t *p = scheduler_current()->process;
+
+    file_t *read_end, *write_end;
+    int ret = pipe_create(&read_end, &write_end);
+    if (ret < 0)
+        return ret;
+
+    int pair[2];
+    pair[0] = process_fd_install(p, read_end);
+    if (pair[0] < 0)
+    {
+        file_put(read_end);
+        file_put(write_end);
+        return pair[0]; // return the error code from process_fd_install for the read end
+    }
+    pair[1] = process_fd_install(p, write_end);
+    if (pair[1] < 0)
+    {
+        sys_close(pair[0]);
+        file_put(write_end);
+        return pair[1]; // return the error code from process_fd_install for the write end
+    }
+
+    if (address_space_write(syscall_space(), fds, pair, sizeof(pair)) != 0)
+    {
+        sys_close(pair[0]);
+        sys_close(pair[1]);
+        return -EFAULT;
+    }
+
+    return 0;
 }

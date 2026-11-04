@@ -60,6 +60,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_dup((unsigned long)arg0);
     case SYS_DUP2:
         return sys_dup2((unsigned long)arg0, (unsigned long)arg1);
+    case SYS_PIPE:
+        return sys_pipe((uintptr_t)arg0);
     default:
         return -ENOSYS;
     }

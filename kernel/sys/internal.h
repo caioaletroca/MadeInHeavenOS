@@ -37,6 +37,7 @@ long sys_lseek(unsigned long fd, long offset, int whence);
 long sys_ioctl(unsigned long fd, unsigned long request, uintptr_t arg);
 long sys_ftruncate(unsigned long fd, long length);
 long sys_truncate(uintptr_t path, long length);
+long sys_pipe(uintptr_t fds);
 
 // directories.c
 long sys_getdents(unsigned long fd, uintptr_t buffer, size_t size);
