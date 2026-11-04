@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`help`/`history`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
@@ -50,7 +50,7 @@ Working x86-64 PC kernel with:
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
   layer, `errno`, `write`/`read`/`close`/`_exit`/`brk`/`sbrk`, `exit`/`abort`; buffered stdio over
   fds with `printf`, `fgetc`/`fgets`/`ungetc`; `malloc`/`free`/`calloc`/`realloc` on `sbrk`;
-  `atexit`; `open` (with a mode)/`creat`/`lseek`/`unlink`, `mkdir`/`rmdir`, `chdir`/`getcwd`, `dup`/`dup2`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
+  `atexit`; `open` (with a mode)/`creat`/`lseek`/`unlink`, `mkdir`/`rmdir`, `chdir`/`getcwd`, `dup`/`dup2`, `pipe`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
   runtime (global constructors and destructors, `operator new`)
 - **Disks:** a block layer (`block_read`/`block_write` with range checks, `block_flush`) and an
   ATA PIO driver (IRQ-driven: a command sleeps until the drive's IRQ 14/15, one command per
@@ -85,6 +85,12 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+c2419df test: cover pipes
+9134062 feat(libc): add pipe and EPIPE
+999fca3 feat(sys): add pipe
+eee6bc0 feat(fs): add pipes
+838474a feat(fs): add FIFO nodes
+e290439 docs(architecture): document dup, the sys/ split and the phase C plan in handoff
 30961f0 refactor(sys): move reboot into power.c, leaving the dispatch in syscall.c
 c99bbec refactor(sys): split brk into memory.c
 ab1acf7 refactor(sys): split the process calls into processes.c
@@ -605,7 +611,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   internal.h     what sys/ shares (ext2's pattern): the common includes, the helpers and every
                  sys_* the dispatch calls, grouped by file; nothing outside sys/ includes it
   user_copy.c    syscall_space, user_string_copy, user_path_copy
-  files.c        sys_file (fd → file_t); open read write lseek close dup dup2 ioctl truncate ftruncate
+  files.c        sys_file (fd → file_t); open read write lseek close dup dup2 ioctl truncate ftruncate pipe
   directories.c  getdents unlink mkdir rmdir chdir getcwd
   stat.c         stat fstat
   processes.c    exit spawn wait getpid getppid (spawn_args_t, user_vector_copy and
@@ -622,6 +628,12 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   refused `dup2` leaves `newfd` alone, and `dup2(5, 5)` on a closed 5 is `-EBADF`); equal fds →
   `newfd`, untouched; else the file goes into the slot before the old one is put (its release
   may run). No `FD_CLOEXEC` yet (it comes with exec).
+- **`pipe(fds)`** (`SYS_PIPE` 30, `sys_pipe` in `files.c`): `pipe_create` (`-ENOMEM`), the
+  read end installed at the lowest free fd, then the write end (so fds 3 and 4 in a fresh
+  process), then the pair `address_space_write`n out. Nothing is left behind on a failure:
+  `-EMFILE` on the read end puts both files; on the write end the read end's fd is
+  `sys_close`d (it owns its reference by then) and the write file put; a bad pointer
+  `sys_close`s both fds and gives `-EFAULT` (Linux). libc `pipe(int fds[2])` in `<unistd.h>`.
 - **`spawn(path, argv, envp)`** → child pid or `-ENOENT`/`-ENOEXEC`/`-E2BIG`/`-EFAULT`/`-ENOMEM`.
   Copies into a `kmalloc`'d `spawn_args_t`: the path (≤ 64 bytes, `-E2BIG` beyond), then each
   vector (≤ 64 entries, all strings together ≤ 4 KiB; a NULL `envp` is an empty environment),
@@ -777,7 +789,7 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   **`O_TRUNC`** (`0x200`): accepted by `vfs_open`; after the file is made (and holds the node),
   a regular file opened with write access is `vfs_truncate`d to 0 (a failure `file_put`s it);
   ignored without write access and on devices. **`vfs_truncate(node, size)`**: a directory →
-  `-EISDIR`, a character or block device → `-EINVAL` (its size is the device's), no `truncate`
+  `-EISDIR`, a character or block device or a FIFO → `-EINVAL` (its size is the device's), no `truncate`
   op → `-EROFS`, else the op. **`ftruncate(fd, length)`** (`sys_ftruncate`): `-EBADF`; not open
   for writing, no node or a negative length → `-EINVAL` (Linux); the offset never moves.
   **`truncate(path, length)`**: a negative length `-EINVAL`, `user_path_copy`, `vfs_lookup`,
@@ -819,8 +831,8 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   buffer (`-E2BIG` → `-ENAMETOOLONG`, `-EFAULT`), freed on every path; `vfs_open` (`O_DIRECTORY`:
   a file gives `-ENOTDIR`, for `opendir`; without it directories and files both open);
   `process_fd_install` (lowest free fd, `-EMFILE` → `file_put`, which frees the file and puts the
-  node). **`lseek(fd, offset, whence)`** (`sys_lseek`): `-EBADF`, `-ESPIPE` without a node or on
-  a character device (Linux lets `/dev/null` "seek"; one rule is simpler); under
+  node). **`lseek(fd, offset, whence)`** (`sys_lseek`): `-EBADF`, `-ESPIPE` without a node, on
+  a character device or a pipe (Linux lets `/dev/null` "seek"; one rule is simpler); under
   `position_lock`, base 0 / `offset` / `node->size` (bad whence → `-EINVAL`); a result below 0 is
   `-EINVAL`, checked before adding (`offset < 0 && -(offset + 1) >= base`); past the end is allowed
   (reads give 0). `read` and `close` are unchanged: `sys_read` reads one 256-byte chunk per call (a
@@ -840,9 +852,9 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   `user_path_copy` (shared with `sys_open`: a `kmalloc`'d `VFS_PATH_MAX` buffer, `-E2BIG` →
   `-ENAMETOOLONG`), `vfs_lookup`s it, `vfs_stat`s into a kernel `struct mihos_stat`, puts the
   node, then `address_space_write`s it (`-EFAULT`). `fstat`: `-EBADF`, then `vfs_stat` of
-  `file->node` (every open file has one; node-less files such as pipes will need a decision).
+  `file->node` (every open file has one; a pipe's is its anonymous `VFS_FIFO` node).
   The ABI (uapi `<mihos/stat.h>`): fixed-width fields with an explicit `__pad0`, Linux's x86-64
-  `struct stat` layout; `MIHOS_S_IFMT`/`IFDIR`/`IFCHR`/`IFBLK`/`IFREG` (octal, Linux values) in the high
+  `struct stat` layout; `MIHOS_S_IFMT`/`IFDIR`/`IFCHR`/`IFBLK`/`IFREG`/`IFIFO` (octal, Linux values) in the high
   bits of `st_mode`, permissions in the low 12. **`vfs_stat(node, st)`** zeroes everything, then
   `st_ino`, `st_mode` = type bits | `node->mode`, `st_nlink` = `node->nlink` (1 for the initrd and devfs; also what tools
   read as "not counted" for directories), `st_size` (0 for character and block devices, as on
@@ -857,6 +869,30 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   open file shared, as if `dup`ed: Linux opens `/dev/console` once for init and dups it).
   Its `ioctl` answers `TIOCGWINSZ` (`SCREEN_HEIGHT` × `SCREEN_WIDTH`, no pixels) and gives
   `-ENOTTY` for anything else, like Linux's tty layer.
+- **Pipes** (`fs/pipe.c`, `include/fs/pipe.h`):
+  ```text
+  fds[0] ──▶ file_t (FILE_READ)  ─┐  private, node  ┌──▶ pipe_t { base: vfs_node_t VFS_FIFO,
+  fds[1] ──▶ file_t (FILE_WRITE) ─┘ ───────────────┘     lock, buffer[4096] ring, read_count,
+                                                         write_count, readers, writers,
+                                                         readable, writable (wait queues) }
+  ```
+  A `pipe_t` embeds its node (`base`, `PIPE(node)` back): `VFS_FIFO`, mode `0600`, `st_dev` from
+  one `vfs_dev_alloc` at boot (`pipe_init`, after `mem_devices_init`: Linux's hidden `pipefs`),
+  `ino` from a counter under `pipe_ino_lock`; no name, never in a directory. Both ends use
+  `pipe_file_ops` with `private` = the pipe; each holds one node reference (`vfs_node_init`'s
+  for the reader, `vfs_node_get` for the writer). The ring: `read_count`/`write_count` only
+  grow (empty: equal; full: 4096 apart; index `% PIPE_SIZE`), all under the pipe's spinlock,
+  sleeping through `wait_queue_sleep_locked` (the console's pattern). **Read:** `count` 0 → 0;
+  waits while empty and `writers > 0`; takes what is there (a short read), wakes `writable`;
+  empty with no writer → 0, EOF. **Write:** a write of up to `PIPE_ATOMIC` (4096, POSIX's
+  `PIPE_BUF`) waits until all of it fits, so it never interleaves with another; a bigger one
+  goes in as room appears (one byte is enough); no reader → `-EPIPE`, or the bytes written so
+  far; wakes `readable`. `readers`/`writers` count open **`file_t`** ends, not fds (`dup` and
+  spawn share one): `pipe_file_release` (the file's last put) lowers its count and wakes the
+  other side, so a blocked reader sees EOF and a blocked writer `EPIPE`. `file_put` then puts
+  the node; the last one runs `pipe_node_release`, freeing the buffer and the pipe. A pipe
+  refuses `lseek` (`-ESPIPE`), `truncate` (`-EINVAL`), `getdents` (`-ENOTDIR`), `ioctl`
+  (`-ENOTTY`, so `isatty` 0). `EPIPE` 32 added (`"Broken pipe"`).
 - **`ioctl(fd, request, arg)`** (`sys_ioctl`): `-EBADF`; no `ioctl` op in the file's ops →
   `-ENOTTY` (initrd files, directories, `/dev/null`, `/dev/zero`). A request encodes its
   argument (uapi `<mihos/ioctl.h>`, Linux's asm-generic `_IOC` layout: bits 31–30 direction,
@@ -1162,6 +1198,17 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     `EMFILE`, while `dup2` onto a used slot still works. stdout sent to `/dev/null` and back
     (`dup`, `dup2`, raw `write`, results checked after the restore since `CHECK` prints to
     stdout): 1:3 while redirected, the console (5:1) and `isatty` after. fd 3 free at the end.
+  - `pipe`: the ends are fds 3 and 4, `S_ISFIFO`, `0600`, one inode on an `st_dev` not the
+    root's, size 0, a second pipe another inode; `EBADF` reading the write end or writing the
+    read end. Data: a short read, order across writes, 3×3000 bytes across the ring's wrap,
+    exactly 4096 bytes with no one reading. Buffered bytes still read after the writer's
+    close, then EOF twice; `EPIPE` with no reader; a `dup`'d read end keeps the pipe open. It
+    spawns itself (`reader`/`writer`/`drop`, the end to close in `argv[2]`, since spawn passes
+    every fd): 20000 bytes into a child's stdin, checked byte by byte, then EOF; a child's
+    stdout read to EOF; a full pipe's writer woken with `EPIPE` when the child holding the
+    last read end exits. Refused: `lseek` `ESPIPE`, `ftruncate` `EINVAL`, `getdents`
+    `ENOTDIR`, `ioctl` and `isatty` `ENOTTY`; `pipe((int *)1)` `EFAULT` and `EMFILE` with one
+    free slot, each leaving no fd behind. fd 3 free at the end.
   - `cwd` (on the test disk in `/mnt`, the same in both boots): starts at `/`; `chdir` into
     `/mnt` reads `hello.txt` by its bare name; relative steps (`docs`, `deep/nested`, `../..`,
     `..`), `..` out of the mounted root onto `/`, `mnt/` and `.`; refusals that leave the
@@ -2434,9 +2481,8 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **Phase C (in progress).** Agreed order, each piece simple first with its upgrade later:
   - **C1, `dup`/`dup2` and pipes.** C1a (done): `dup`/`dup2` (`SYS_DUP` 28, `SYS_DUP2` 29),
     libc, the `dup` test. Then `syscall.c` was split into topic files (done, see "User mode and
-    syscalls"). **Next: C1b, pipes**: a pipe object (a ring buffer, wait queues for readers and
-    writers, reader/writer counts for EOF and `EPIPE`), `pipe()`, libc, tests. Then C1c: the
-    runner feeds the shell a script through a pipe and reads its output (the shell's first
+    syscalls"). C1b (done): pipes (`VFS_FIFO` nodes, `fs/pipe.c`, `SYS_PIPE` 30, libc,
+    `EPIPE`, the `pipe` test; see "Files"). **Next: C1c**: the runner feeds the shell a script through a pipe and reads its output (the shell's first
     automatic tests), `stdio`'s output order checked; maybe the shell's `|`.
   - **C2, `fork`** as a plain copy of the address space (every user page copied), the fd table
     (shared `file_t`s), `cwd` and `brk`; the child gets a copy of the parent's syscall frame with
@@ -2663,6 +2709,15 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The malloc test hard-codes the 32-byte header (`sizeof(block_t)`).
 - Syscalls run with IRQs off for their whole duration (interrupt gate); long writes delay IRQs.
 - The fd table has no lock (safe only with one thread per process and no `fork`).
+- Pipes: no `SIGPIPE` (a write with no reader only returns `EPIPE`; signals are C5), no
+  `O_NONBLOCK`/`pipe2`/`fcntl`, no `poll`/`select`, no named FIFOs (`mkfifo`, ext2's FIFO
+  inodes). The buffer is a fixed 4096 bytes (Linux: 16 pages, resizable with `F_SETPIPE_SZ`).
+  `sys_write` hands the backend 256-byte chunks, so POSIX's `PIPE_BUF` promise holds per chunk
+  only: a 1000-byte write can interleave with another writer's at a chunk boundary; and libc
+  has no `<limits.h>` with `PIPE_BUF`. Wake-ups are `wake_all` per chunk (every waiter
+  retries). A spawned child inherits every fd, including the pipe ends it does not use (it
+  must close them itself, or a reader never sees EOF) until `FD_CLOEXEC` comes with exec.
+  `fstat`'s times on a pipe are 0.
 - `syscall_dispatch` is a switch, two lines per call. A table indexed by number would be
   neater, but the `sys_*` functions take different argument types, and calling them through
   one pointer type is undefined behaviour in C; Linux generates a wrapper per call
