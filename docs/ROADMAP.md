@@ -194,8 +194,10 @@ docs/                     # handoff, roadmap
    a pre-installed ext2 on a partition, the initrd as the live system, the tests run in both
    boots; the installer is phase G). An intermission after it: a current directory per
    process, `chdir`/`getcwd` and the shell's `cd`/`pwd` (done).
-8. Next: to be chosen between phase C (the process model) and phase B's hardware path (PCI,
-   then AHCI/NVMe; GPT).
+8. Phase C (the process model) in progress, before phase B's hardware path (PCI, then
+   AHCI/NVMe; GPT). Order: C1 `dup`/`dup2` (done) and pipes, C2 `fork` as a plain copy, C3
+   `execve`, C4 copy-on-write and stack growth, C5 signals, C6 terminal control (process
+   groups, termios), C7 Lua. Steps in `SESSION_HANDOFF.md`.
 
 ## Reference projects
 

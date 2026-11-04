@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`help`/`history`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
@@ -50,7 +50,7 @@ Working x86-64 PC kernel with:
 - **Own libc**: `libk.a` (kernel) and `libc.a` + `crt0.o` (user) from one tree; inline-asm syscall
   layer, `errno`, `write`/`read`/`close`/`_exit`/`brk`/`sbrk`, `exit`/`abort`; buffered stdio over
   fds with `printf`, `fgetc`/`fgets`/`ungetc`; `malloc`/`free`/`calloc`/`realloc` on `sbrk`;
-  `atexit`; `open` (with a mode)/`creat`/`lseek`/`unlink`, `mkdir`/`rmdir`, `chdir`/`getcwd`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
+  `atexit`; `open` (with a mode)/`creat`/`lseek`/`unlink`, `mkdir`/`rmdir`, `chdir`/`getcwd`, `dup`/`dup2`, `opendir`/`readdir`/`rewinddir`/`closedir`; a freestanding C++
   runtime (global constructors and destructors, `operator new`)
 - **Disks:** a block layer (`block_read`/`block_write` with range checks, `block_flush`) and an
   ATA PIO driver (IRQ-driven: a command sleeps until the drive's IRQ 14/15, one command per
@@ -85,6 +85,17 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+30961f0 refactor(sys): move reboot into power.c, leaving the dispatch in syscall.c
+c99bbec refactor(sys): split brk into memory.c
+ab1acf7 refactor(sys): split the process calls into processes.c
+4bd311f refactor(sys): split stat and fstat into stat.c
+032be4d refactor(sys): split the directory calls into directories.c
+3d795b2 refactor(sys): split the calls on open files into files.c
+a375e80 refactor(sys): move the user-memory helpers into user_copy.c
+3d3563e test: cover dup and dup2
+932bdbf feat(libc): add dup and dup2
+d07c7bf feat(sys): add dup and dup2
+029e74f docs(architecture): document the current directory and cd in handoff
 982ea85 feat(ls): list the current directory without arguments
 2ad715b feat(sh): add cd and pwd, and show the directory in the prompt
 30bab22 test: cover getcwd
@@ -583,11 +594,34 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
-  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20, `SYS_FTRUNCATE` 21, `SYS_TRUNCATE` 22, `SYS_UNLINK` 23, `SYS_MKDIR` 24, `SYS_RMDIR` 25, `SYS_CHDIR` 26, `SYS_GETCWD` 27 (3, 4, 7–9 reserved). Read and write
+  `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20, `SYS_FTRUNCATE` 21, `SYS_TRUNCATE` 22, `SYS_UNLINK` 23, `SYS_MKDIR` 24, `SYS_RMDIR` 25, `SYS_CHDIR` 26, `SYS_GETCWD` 27, `SYS_DUP` 28, `SYS_DUP2` 29 (3, 4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
-  or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`. Generic `sys/syscall.c` →
-  `syscall_dispatch`; x86 `syscall.c` unpacks the frame. User pointers are `uintptr_t` in every
+  or a missing `FILE_READ`/`FILE_WRITE` flag gives `-EBADF`. x86 `syscall.c` unpacks the frame
+  and calls the generic `syscall_dispatch`. User pointers are `uintptr_t` in every
   `sys_*` function, never C pointers: only `address_space_read/write` touch them.
+- **`kernel/sys/`, one file per topic** (split like ext2, bodies moved unchanged):
+  ```text
+  syscall.c      syscall_dispatch only: a switch, number → sys_*
+  internal.h     what sys/ shares (ext2's pattern): the common includes, the helpers and every
+                 sys_* the dispatch calls, grouped by file; nothing outside sys/ includes it
+  user_copy.c    syscall_space, user_string_copy, user_path_copy
+  files.c        sys_file (fd → file_t); open read write lseek close dup dup2 ioctl truncate ftruncate
+  directories.c  getdents unlink mkdir rmdir chdir getcwd
+  stat.c         stat fstat
+  processes.c    exit spawn wait getpid getppid (spawn_args_t, user_vector_copy and
+                 wait_status_encode static there)
+  memory.c       brk
+  power.c        reboot, next to system_halt and the halt hooks
+  ```
+  A new syscall: its `SYS_*` in uapi `<mihos/syscall.h>`, the `sys_*` in its topic's file (a
+  new file for a new topic: `signals.c` in C5), the declaration in `internal.h`, a `case` in
+  the dispatch. What only one file uses stays `static` in it.
+- **`dup(fd)`** → the lowest free fd for the same `file_t` (`file_get`, `process_fd_install`;
+  the reference put back on `-EMFILE`): one open file, one offset, as POSIX. **`dup2(oldfd,
+  newfd)`**: `oldfd` not open or `newfd` outside the table → `-EBADF` (checked first, so a
+  refused `dup2` leaves `newfd` alone, and `dup2(5, 5)` on a closed 5 is `-EBADF`); equal fds →
+  `newfd`, untouched; else the file goes into the slot before the old one is put (its release
+  may run). No `FD_CLOEXEC` yet (it comes with exec).
 - **`spawn(path, argv, envp)`** → child pid or `-ENOENT`/`-ENOEXEC`/`-E2BIG`/`-EFAULT`/`-ENOMEM`.
   Copies into a `kmalloc`'d `spawn_args_t`: the path (≤ 64 bytes, `-E2BIG` beyond), then each
   vector (≤ 64 entries, all strings together ≤ 4 KiB; a NULL `envp` is an empty environment),
@@ -1120,6 +1154,14 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     replaced by a read-only file: `printf("x\n")` returns 2 with no stream error (fully
     buffered), and `fflush` fails with `EOF`/`EBADF`/`ferror` (line buffering would fail at the
     `printf`). Afterwards stdout is that file, so that part reports on stderr.
+  - `dup`: a `dup`'d fd shares the offset (an `lseek` or `read` on one moves the other) and
+    survives the original's `close`; the lowest free fd (3, not 5); `dup2` onto an open fd
+    closes it and reads the file at the shared offset, `dup2(fd, fd)` keeps it, onto a free
+    fd 10 works; `EBADF` (99, -1, an unopened slot, `newfd` 16 or -1, `dup2(5, 5)` closed, a
+    refused `dup2` leaving `newfd` open, a closed fd); 13 copies fill the table, then
+    `EMFILE`, while `dup2` onto a used slot still works. stdout sent to `/dev/null` and back
+    (`dup`, `dup2`, raw `write`, results checked after the restore since `CHECK` prints to
+    stdout): 1:3 while redirected, the console (5:1) and `isatty` after. fd 3 free at the end.
   - `cwd` (on the test disk in `/mnt`, the same in both boots): starts at `/`; `chdir` into
     `/mnt` reads `hello.txt` by its bare name; relative steps (`docs`, `deep/nested`, `../..`,
     `..`), `..` out of the mounted root onto `/`, `mnt/` and `.`; refusals that leave the
@@ -2389,11 +2431,26 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   libc, tests); the shell's `cd`/`pwd` builtins, the directory in the prompt, `ls` listing `.`.
   Kept simple on purpose, each piece with its upgrade named in the debt list (a name cache
   for `getcwd`, a shared `fs_struct` with threads, the `*at` calls).
-- **Next: to be chosen.** Phase B's remaining pieces and phase C are both open; nothing blocks
-  either. Candidates: phase C (the process model: `fork` with copy-on-write, `execve`,
-  signals, pipes, `dup2`), which also unblocks the stdio-order and shell tests that
-  wait for pipes; or the hardware path from `ROADMAP.md` (PCI enumeration, then AHCI/NVMe), or
-  GPT. Kernel shape and hardware targets are decided in `ROADMAP.md`.
+- **Phase C (in progress).** Agreed order, each piece simple first with its upgrade later:
+  - **C1, `dup`/`dup2` and pipes.** C1a (done): `dup`/`dup2` (`SYS_DUP` 28, `SYS_DUP2` 29),
+    libc, the `dup` test. Then `syscall.c` was split into topic files (done, see "User mode and
+    syscalls"). **Next: C1b, pipes**: a pipe object (a ring buffer, wait queues for readers and
+    writers, reader/writer counts for EOF and `EPIPE`), `pipe()`, libc, tests. Then C1c: the
+    runner feeds the shell a script through a pipe and reads its output (the shell's first
+    automatic tests), `stdio`'s output order checked; maybe the shell's `|`.
+  - **C2, `fork`** as a plain copy of the address space (every user page copied), the fd table
+    (shared `file_t`s), `cwd` and `brk`; the child gets a copy of the parent's syscall frame with
+    `rax` 0. `SYS_FORK` 3 is reserved.
+  - **C3, `execve`**: build the new space, copy `argv`/`envp` out of the old one, swap, destroy
+    the old one, rewrite the saved frame; `FD_CLOEXEC`/`fcntl` with it. `SYS_EXEC` 4 reserved.
+  - **C4, copy-on-write** (`frame_t.refs` exists; read-only pages, the write fault copies or,
+    for the last user, makes it writable) **and stack growth** (also page-fault work).
+  - **C5, signals**: `kill` (`SYS_KILL` 7), `sigaction`, `sigprocmask`, `sigreturn`, delivery on
+    the way back to ring 3, default actions, `SIGCHLD`, `SIGPIPE`, `EINTR`.
+  - **C6, terminal control**: process groups and sessions, Ctrl+C → `SIGINT` to the foreground
+    group, `termios` with raw mode (then the shell's arrow-key history).
+  - **C7, graduation**: port Lua (needs `fopen`/`fread`, `setjmp`, math); maybe dash.
+- Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
 
 ### Shell (`user/bin/sh/`)
 
@@ -2606,6 +2663,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The malloc test hard-codes the 32-byte header (`sizeof(block_t)`).
 - Syscalls run with IRQs off for their whole duration (interrupt gate); long writes delay IRQs.
 - The fd table has no lock (safe only with one thread per process and no `fork`).
+- `syscall_dispatch` is a switch, two lines per call. A table indexed by number would be
+  neater, but the `sys_*` functions take different argument types, and calling them through
+  one pointer type is undefined behaviour in C; Linux generates a wrapper per call
+  (`SYSCALL_DEFINE`). Worth it if the switch grows unwieldy. `internal.h` carries the shared
+  includes for every file of `sys/`, not each file's minimal set.
 - No self-test proves memory comes back: compare free frames (and the console file's refs) before
   and after `user_selftest` to catch a missing `process_release` / `file_put`.
 - Fault messages print the thread id, not the pid.
