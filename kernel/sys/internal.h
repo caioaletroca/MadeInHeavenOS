@@ -46,4 +46,8 @@ long sys_rmdir(uintptr_t path);
 long sys_chdir(uintptr_t path);
 long sys_getcwd(uintptr_t buffer, size_t size);
 
+// stat.c
+long sys_stat(uintptr_t path, uintptr_t statbuf);
+long sys_fstat(unsigned long fd, uintptr_t statbuf);
+
 #endif // _SYS_INTERNAL_H_

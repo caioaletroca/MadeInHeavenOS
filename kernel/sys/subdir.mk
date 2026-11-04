@@ -4,4 +4,5 @@ syscall.c \
 power.c \
 user_copy.c \
 files.c \
-directories.c
+directories.c \
+stat.c
