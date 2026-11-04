@@ -5,4 +5,5 @@ power.c \
 user_copy.c \
 files.c \
 directories.c \
-stat.c
+stat.c \
+processes.c
