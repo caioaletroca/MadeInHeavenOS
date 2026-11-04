@@ -169,10 +169,7 @@ static int expand(parser_t *p, shell_t *sh, const char **s)
 read_result_t command_read(command_t *cmd)
 {
     if (fgets(cmd->command, COMMAND_MAX, stdin) == NULL)
-    {
-        printf("\n");
         return READ_EOF;
-    }
 
     // Ends the string at the first '\n' (or leaves it if the line had none)
     cmd->command[strcspn(cmd->command, "\n")] = '\0';
@@ -236,20 +233,20 @@ read_result_t command_parse(shell_t *sh, command_t *cmd)
 
         if (ret < 0)
         {
-            printf("sh: %s\n", parser.error);
+            fprintf(stderr, "sh: %s\n", parser.error);
             return READ_NOTHING;
         }
     }
 
     if (state != STATE_UNQUOTED)
     {
-        printf("sh: unmatched quote\n");
+        fprintf(stderr, "sh: unmatched quote\n");
         return READ_NOTHING;
     }
 
     if (word_close(&parser) < 0)
     {
-        printf("sh: %s\n", parser.error);
+        fprintf(stderr, "sh: %s\n", parser.error);
         return READ_NOTHING;
     }
 

@@ -119,7 +119,7 @@ int history_expand(history_t *history, const char *line, char *out, size_t n)
             text = reference_event(history, s);
             if (text == NULL)
             {
-                printf("sh: %.*s: event not found\n", (int)length, s);
+                fprintf(stderr, "sh: %.*s: event not found\n", (int)length, s);
                 return -1;
             }
 
@@ -130,7 +130,7 @@ int history_expand(history_t *history, const char *line, char *out, size_t n)
 
         if (pos + text_length >= n)
         {
-            printf("sh: line too long\n");
+            fprintf(stderr, "sh: line too long\n");
             return -1;
         }
 

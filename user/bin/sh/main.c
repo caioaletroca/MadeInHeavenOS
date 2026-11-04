@@ -15,40 +15,54 @@ static void print_prompt(void)
     if (getcwd(cwd, sizeof(cwd)) == NULL)
         strlcpy(cwd, "?", sizeof(cwd));
 
-    printf("mihos:%s> ", cwd);
+    fprintf(stderr, "mihos:%s> ", cwd);
 }
 
 int main(void)
 {
-    shell_t sh = {.running = 1};
+    shell_t sh = {.running = 1, .interactive = isatty(0) && isatty(2)};
     command_t cmd;
 
-    print_header();
+    if (sh.interactive)
+        print_header();
 
     while (sh.running)
     {
-        print_prompt();
+        if (sh.interactive)
+            print_prompt();
 
         if (command_read(&cmd) == READ_EOF)
-            break;
-
-        char expanded[COMMAND_MAX];
-        int ret = history_expand(&sh.history, cmd.command, expanded, sizeof(expanded));
-        if (ret < 0)
-            continue;
-
-        if (ret == 1)
         {
-            strlcpy(cmd.command, expanded, sizeof(cmd.command));
-            printf("%s\n", cmd.command);
+            if (sh.interactive)
+                fputc('\n', stderr);
+            break;
         }
 
-        history_add(&sh.history, expanded);
+        // History only for someone typing (bash: off in scripts)
+        if (sh.interactive)
+        {
+            char expanded[COMMAND_MAX];
+            int ret = history_expand(&sh.history, cmd.command, expanded, sizeof(expanded));
+            if (ret < 0)
+                continue;
+
+            if (ret == 1)
+            {
+                strlcpy(cmd.command, expanded, sizeof(cmd.command));
+                printf("%s\n", cmd.command);
+            }
+
+            history_add(&sh.history, expanded);
+        }
 
         if (command_parse(&sh, &cmd) == READ_NOTHING)
             continue;
 
         command_run(&sh, &cmd);
+
+        // Into a pipe or a file stdout is fully buffered: what this command printed must be
+        // out before the next program writes its own
+        fflush(stdout);
     }
 
     return sh.status;

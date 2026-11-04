@@ -12,9 +12,9 @@
  */
 typedef struct shell
 {
-    int status;  // exit status of the last command
-    int running; // flag indicating if the shell is running
-
+    int status;        // exit status of the last command
+    int running;       // flag indicating if the shell is running
+    int interactive;   // stdin and stderr are terminals (POSIX): banner, prompt, history
     history_t history; // command history
 } shell_t;
 
