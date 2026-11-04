@@ -227,6 +227,46 @@ static long sys_close(unsigned long fd)
 }
 
 /**
+ * dup(fd): duplicates the given file descriptor, returning a new descriptor.
+ */
+static long sys_dup(unsigned long fd)
+{
+    file_t *file = sys_file(fd);
+    if (file == NULL)
+        return -EBADF;
+
+    file_get(file);
+    int ret = process_fd_install(scheduler_current()->process, file);
+    if (ret < 0)
+        file_put(file);
+
+    return ret;
+}
+
+/**
+ * dup2(oldfd, newfd): duplicates the given file descriptor to the specified new descriptor.
+ */
+static long sys_dup2(unsigned long oldfd, unsigned long newfd)
+{
+    process_t *p = scheduler_current()->process;
+
+    file_t *file = sys_file(oldfd);
+    if (file == NULL || newfd >= PROCESS_MAX_FILES)
+        return -EBADF;
+
+    // POSIX: the same fd is left alone (closing it first would drop the only reference)
+    if (oldfd == newfd)
+        return (long)newfd;
+
+    file_t *old = p->files[newfd];
+    p->files[newfd] = file_get(file);
+    if (old != NULL)
+        file_put(old);
+
+    return (long)newfd;
+}
+
+/**
  * exit(status): terminates the current thread with the given status.
  */
 static long sys_exit(long status)
@@ -784,6 +824,10 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_chdir((uintptr_t)arg0);
     case SYS_GETCWD:
         return sys_getcwd((uintptr_t)arg0, (size_t)arg1);
+    case SYS_DUP:
+        return sys_dup((unsigned long)arg0);
+    case SYS_DUP2:
+        return sys_dup2((unsigned long)arg0, (unsigned long)arg1);
     default:
         return -ENOSYS;
     }
