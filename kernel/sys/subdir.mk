@@ -6,4 +6,5 @@ user_copy.c \
 files.c \
 directories.c \
 stat.c \
-processes.c
+processes.c \
+memory.c

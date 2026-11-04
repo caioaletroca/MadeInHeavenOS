@@ -57,4 +57,7 @@ long sys_wait(long pid, uintptr_t status);
 long sys_getpid(void);
 long sys_getppid(void);
 
+// memory.c
+long sys_brk(uintptr_t address);
+
 #endif // _SYS_INTERNAL_H_
