@@ -19,7 +19,7 @@ Working x86-64 PC kernel with:
 - Programs start with `argc`/`argv`/`envp` on a System V initial stack; parents spawn children
   (programs found by path in the initramfs) and wait for one or any of them with a POSIX
   wait status
-- User heap after the ELF image (`brk`), 64 KiB user stack with a guard page below it
+- User heap after the ELF image (`brk`), a user stack that grows on demand up to 8 MiB
 - Processes (`process_t`) owning their address space and fd table, waitable, refcounted; faults in
   ring 3 kill the process with 128 + signal instead of panicking
 - Open files (`file_t` + `file_ops_t`), `/dev/console` behind fds 0–2
@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`help`/`history`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -86,6 +86,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+3665006 test: cover stack growth
+27c8fbb feat(mm): grow the user stack on demand
+4bff018 docs(architecture): document copy-on-write in handoff
 21554b6 test: cover copy-on-write
 289f271 feat(mm): share pages at fork and copy them on write
 9d2a99f docs(architecture): record a zombie's memory as debt
@@ -582,10 +585,10 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   virtual address (`gdt64_pointer_high`). Low physical memory is reachable only through the direct map.
 - **User layout** (`<asm/memory.h>`): `USER_BASE` 4 MiB (page 0 stays unmapped for NULL),
   `USER_STACK_TOP` `0x00007FFFFFFFF000`, `USER_TOP` `0x0000800000000000` (canonical limit),
-  `USER_STACK_SIZE` 64 KiB.
+  `USER_STACK_MAX` 8 MiB.
   ```text
   USER_BASE  text | rodata | data+bss | heap (heap_start .. brk, grows up) ...
-             ... guard page | stack (USER_STACK_SIZE, grows down) | USER_STACK_TOP
+             ... gap | stack (up to USER_STACK_MAX, mapped as touched) | USER_STACK_TOP
   ```
 - `address_space_t` (`mm/address_space.c`): `root`, `heap_start`, `brk`; `create` (zeroed: no heap
   until `exec_load`), `map` (fresh zeroed frames, `MMU_USER` added; on failure unmaps what it mapped,
@@ -597,6 +600,13 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   **Ownership rule:** every frame in a user half is counted in `frame_t.refs` and freed with the last
   space mapping it, so kernel frames must never be mapped there. `heap_start`/`brk` have no lock (one
   thread per process, like the fd table).
+- **Faults that are not errors:** `address_space_fault(space, address, write)` makes a page ready as
+  the access needs: mapped → `arch_mmu_prepare_write` for a write, else nothing; not mapped inside
+  the stack's reservation → `address_space_map` of that one zeroed page (the stack grows, gaps
+  stay until touched); anywhere else → -1. `page_fault_handler` calls it for a not-present fault or a
+  write, below `USER_TOP`, and returns so the instruction runs again. `address_space_copy` calls
+  it for `write` and `read`: the kernel goes through the direct map, so no fault would do this for
+  it, and a system call may be first to touch a stack page. `fill` does not.
 - **Copy-on-write:** `page_table_copy` copies tables but shares pages (`frame_share`, `refs`
   +1). Writable pages lose `WRITE` and gain `PAGE_TABLE_ENTRY_COPY_ON_WRITE` (bit 9, ignored by the
   CPU) in both spaces; that bit is what tells them from pages read-only for good. Read-only pages
@@ -604,8 +614,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   would keep allowing writes into shared frames. `arch_mmu_prepare_write` (the walk is
   `page_entry_find`): writable → 0; no bit → -1; `refs` > 1 → copy into a new frame and
   `frame_free` the old one; the last user keeps its frame; then `WRITE` back, the bit off, `invlpg`.
-  `page_fault_handler` calls it for a user write to a present page (`0x3`) below `USER_TOP`, and
-  returns so the instruction runs again; a failure ends in `SIGSEGV` like any bad access.
+  A failure ends in `SIGSEGV` like any bad access.
 - `arch_mmu_root_destroy` walks `L4[0..255]` and frees pages and tables; it panics on the active root.
   `arch_mmu_activate` skips the CR3 reload when the root is already active.
 - Intermediate tables get the USER bit when the mapping has `MMU_USER` (`page_table_next`); the kernel
@@ -738,7 +747,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   read under `process_tree_lock` (`process_parent_pid`), 0 without one (init, like Linux).
 - **`brk(address)`** always returns the current break, never `-errno` (Linux semantics; libc turns
   "did not move" into `ENOMEM`). It moves only for `heap_start <= address <= limit`, `limit` =
-  `USER_STACK_TOP - USER_STACK_SIZE - PAGE_SIZE` (a guard page above the stack); `brk(0)` is the
+  `USER_STACK_TOP - USER_STACK_MAX - PAGE_SIZE` (one page below the stack's reservation); `brk(0)` is the
   query. Growing maps `[ALIGN_UP(brk), ALIGN_UP(address))` writable and keeps the old break on
   failure; shrinking unmaps and frees the pages above `ALIGN_UP(address)`. The break itself is exact
   to the byte. Processes not built by `exec_load` (self-tests) have `heap_start = 0`: growing fails
@@ -1121,7 +1130,8 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
   space. Every bound is a subtraction after a `<=` check; `p_vaddr > USER_TOP` is rejected **before**
   `USER_TOP - p_vaddr`, which would wrap and let a segment map into the kernel half.
 - **`exec_load(image, size, argv, envp, &space, &entry, &stack)`** (`exec/exec.c`): new space +
-  `elf_load` + the stack (`USER_STACK_SIZE` below `USER_STACK_TOP`) + `stack_build`; on success
+  `elf_load` + `stack_build` (its `address_space_write`s create the stack's first pages, so a
+  failure there is `-ENOMEM`; strings and vectors together ≤ `ARGS_MAX`, 16 KiB); on success
   `heap_start = brk = end`, so the heap starts empty on the page after `.bss`. `argv`/`envp` are
   kernel vectors of kernel strings (constants from the runner, copies from `spawn`). Frees
   everything on error.
@@ -1243,6 +1253,14 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     forever). The break shrunk on shared pages; 200 rounds with `_exit` and `exec`. fd 3 free.
     The boot's `mm_selftest` reads the counts directly: three clones (`refs` 3), a write gets a
     new frame, the last user keeps its own, read-only pages stay shared and refuse, 0 at the end.
+  - `stack`: reset `test_failures` in children, as `cow`. A read as the first touch (zeros) and the
+    kernel as the first touch (`read` across two pages, `stat`, `getcwd`, `write` from an untouched
+    page) run first, while the pages are new. 6,000 nested calls of 1 KiB, checked on the way
+    back, twice; a 6 MiB local touched at three points; the lowest page works, the one below is
+    `SIGSEGV` and `EFAULT`; endless recursion `SIGSEGV`. Grown pages shared at a fork, each side
+    growing its own; `exec` starts on a clean stack; 256 children of 4 MiB (1 GiB in all: a leak
+    runs the machine out). `mm_selftest` adds: `fill` creates nothing, a write and a read do, a
+    new page is zero, one page past either end refused.
   - `spawn`: spawns itself with a mode in `argv[1]` (no extra modules): exit 7 / 300 (→ 44) /
     SIGSEGV through the `W*` macros, `argv`/`envp` passed exactly, NULL `envp`, two children waited
     in reverse order, waiting twice → `ECHILD`, 20 rounds, `ENOENT`/`EFAULT`/`E2BIG`/`ENOSYS`/
@@ -2614,11 +2632,8 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **C3 (done), `execve`**. C3a: `exec` (`SYS_EXEC` 4), `FD_CLOEXEC`/`fcntl` (`SYS_FCNTL` 31),
     `execve`/`execv`/`execvp`, the `exec` test (see "User mode and syscalls"). C3b: the shell
     runs everything with `fork` + `execvp`, builtins in pipelines included (see "Shell"). Next: C4.
-  - **C4.** C4a (done): copy-on-write (see "Virtual memory", the `cow` test). Next, C4b: **stack
-    growth**: reserve up to 8 MiB below `USER_STACK_TOP` (Linux's default limit) and map a page on
-    its first touch instead of 64 KiB up front. A not-present fault in that range maps a zeroed
-    page; the kernel's copies need the same path, or `read` into an untouched stack buffer
-    is `EFAULT`. `sys_brk`'s limit and `ARGS_MAX` use `USER_STACK_SIZE` and follow it.
+  - **C4 (done).** C4a: copy-on-write (the `cow` test). C4b: stack growth (the `stack` test).
+    See "Virtual memory". Next: C5.
   - **C5, signals**: `kill` (`SYS_KILL` 7), `sigaction`, `sigprocmask`, `sigreturn`, delivery on
     the way back to ring 3, default actions, `SIGCHLD`, `SIGPIPE`, `EINTR`.
   - **C6, terminal control**: process groups and sessions, Ctrl+C → `SIGINT` to the foreground
@@ -2819,8 +2834,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   `stdio.h`); split `SEEK_*` into their own uapi header if it matters.
 - A program removed from `user/` stays in the sysroot, and so in the initrd, until `make clean`;
   the initrd is only rebuilt when an existing program changes.
-- Fixed 64 KiB user stack (`exec_load`); no stack growth. The guard page below it is only "never
-  mapped" (`brk` stops short of it), not a reserved region.
+- The stack's limit is a constant, 8 MiB (no `ulimit -s`, `setrlimit` or `RLIMIT_STACK`). Any address
+  in the reservation grows it, not only ones near `rsp` (Linux dropped that check too), and a
+  page is never unmapped once touched. There is no guard gap beyond the limit itself: the heap stops
+  a page below it, but that is terabytes away in practice.
 - `NX` still off, so `PF_X`/`MMU_EXEC` from the loader are informational.
 - Stale programs stay in the sysroot after their directory is removed (`make clean` to drop them).
 - `tty_write` holds IRQs off for the whole write plus a full 4000-byte VGA copy; long user writes
