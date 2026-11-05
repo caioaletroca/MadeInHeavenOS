@@ -10,6 +10,7 @@ chdir.c \
 getcwd.c \
 close.c \
 pipe.c \
+fork.c \
 dup.c \
 dup2.c \
 lseek.c \

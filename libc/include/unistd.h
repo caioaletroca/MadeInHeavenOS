@@ -17,7 +17,6 @@ extern char **environ;
 int execv(const char *, char *const[]);
 int execve(const char *, char *const[], char *const[]);
 int execvp(const char *, char *const[]);
-pid_t fork(void);
 
 /**
  * Set the end of the data segment (heap) for the calling process.
@@ -34,6 +33,13 @@ int brk(void *addr);
  * @return The previous end of the data segment on success, or (void *)-1 on error.
  */
 void *sbrk(intptr_t increment);
+
+/**
+ * Create a new process by duplicating the calling process.
+ *
+ * @return The process ID of the newly created child process, or -1 on error.
+ */
+pid_t fork(void);
 
 /**
  * Reposition the read/write file offset of the open file associated with the file descriptor.
