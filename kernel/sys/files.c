@@ -125,6 +125,7 @@ long sys_dup2(unsigned long oldfd, unsigned long newfd)
 
     file_t *old = p->files[newfd];
     p->files[newfd] = file_get(file);
+    p->close_on_exec &= ~(1u << newfd);
     if (old != NULL)
         file_put(old);
 
@@ -336,4 +337,36 @@ long sys_pipe(uintptr_t fds)
     }
 
     return 0;
+}
+
+/**
+ * Perform operations on a file descriptor.
+ *
+ * @param fd The file descriptor.
+ * @param command The command to perform (e.g., F_GETFD, F_SETFD).
+ * @param arg The argument for the command.
+ * @return The flags for F_GETFD, 0 for F_SETFD, or a negative error code on failure.
+ */
+long sys_fcntl(unsigned long fd, int command, long arg)
+{
+    process_t *p = scheduler_current()->process;
+
+    if (sys_file(fd) == NULL)
+        return -EBADF;
+
+    uint32_t bit = 1u << fd;
+
+    switch (command)
+    {
+    case F_GETFD:
+        return (p->close_on_exec & bit) != 0 ? FD_CLOEXEC : 0;
+    case F_SETFD:
+        if (arg & FD_CLOEXEC)
+            p->close_on_exec |= bit;
+        else
+            p->close_on_exec &= ~bit;
+        return 0;
+    default:
+        return -EINVAL;
+    }
 }

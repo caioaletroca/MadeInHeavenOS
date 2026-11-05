@@ -38,6 +38,7 @@ long sys_ioctl(unsigned long fd, unsigned long request, uintptr_t arg);
 long sys_ftruncate(unsigned long fd, long length);
 long sys_truncate(uintptr_t path, long length);
 long sys_pipe(uintptr_t fds);
+long sys_fcntl(unsigned long fd, int command, long arg);
 
 // directories.c
 long sys_getdents(unsigned long fd, uintptr_t buffer, size_t size);
@@ -55,6 +56,7 @@ long sys_fstat(unsigned long fd, uintptr_t statbuf);
 long sys_exit(long status);
 long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp);
 long sys_fork(void);
+long sys_exec(uintptr_t path, uintptr_t argv, uintptr_t envp);
 long sys_wait(long pid, uintptr_t status);
 long sys_getpid(void);
 long sys_getppid(void);

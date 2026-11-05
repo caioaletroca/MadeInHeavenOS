@@ -80,12 +80,18 @@ static process_t *child_create(process_t *parent, address_space_t *space)
 }
 
 /**
- * spawn(path, argv, envp): creates a new process with the specified executable, arguments, and environment.
+ * Load a program into a new address space.
+ *
+ * @param path The path to the executable.
+ * @param argv The argument vector.
+ * @param envp The environment vector.
+ * @param space Pointer to store the new address space.
+ * @param entry Pointer to store the entry point of the program.
+ * @param stack Pointer to store the initial stack pointer.
+ * @return 0 on success, or a negative error code on failure.
  */
-long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
+static long program_load(uintptr_t path, uintptr_t argv, uintptr_t envp, address_space_t **space, uintptr_t *entry, uintptr_t *stack)
 {
-    process_t *parent = scheduler_current()->process;
-
     spawn_args_t *args = kmalloc(sizeof(spawn_args_t));
     if (args == NULL)
         return -ENOMEM;
@@ -111,19 +117,33 @@ long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
             ret = -EACCES;
     }
 
-    address_space_t *space = NULL;
-    uintptr_t entry, stack;
     if (ret >= 0)
-        ret = exec_load(image, size, args->argv, args->envp, &space, &entry, &stack);
+        ret = exec_load(image, size, args->argv, args->envp, space, entry, stack);
 
     kfree(args);
     kfree(image);
+    return ret < 0 ? ret : 0;
+}
+
+/**
+ * spawn(path, argv, envp): creates a new process with the specified executable, arguments, and environment.
+ */
+long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
+{
+    process_t *parent = scheduler_current()->process;
+
+    address_space_t *space = NULL;
+    uintptr_t entry, stack;
+    long ret = program_load(path, argv, envp, &space, &entry, &stack);
     if (ret < 0)
         return ret;
 
     process_t *child = child_create(parent, space);
     if (child == NULL)
         return -ENOMEM;
+
+    // spawn is a fork and an exec in one
+    process_files_close_on_exec(child);
 
     if (process_start(child, entry, stack) < 0)
     {
@@ -161,6 +181,27 @@ long sys_fork(void)
     }
 
     return child->pid;
+}
+
+/**
+ * exec(path, argv, envp): replaces the current process image with a new executable.
+ *
+ * @param path The path to the executable.
+ * @param argv The argument vector.
+ * @param envp The environment vector.
+ * @return 0 on success, or a negative error code on failure.
+ */
+long sys_exec(uintptr_t path, uintptr_t argv, uintptr_t envp)
+{
+    address_space_t *space = NULL;
+    uintptr_t entry, stack;
+    long ret = program_load(path, argv, envp, &space, &entry, &stack);
+    if (ret < 0)
+        return ret;
+
+    process_exec(space, entry, stack);
+
+    return 0;
 }
 
 /**

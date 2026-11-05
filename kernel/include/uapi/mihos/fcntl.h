@@ -17,4 +17,11 @@
 #define SEEK_CUR 1 // offset from the current position
 #define SEEK_END 2 // offset from the end of the file
 
+// fcntl() commands
+#define F_GETFD 1 // read the fd's flags
+#define F_SETFD 2 // set the fd's flags
+
+// fd flags
+#define FD_CLOEXEC 1 // close this fd in a successful exec
+
 #endif // _UAPI_MIHOS_FCNTL_H_

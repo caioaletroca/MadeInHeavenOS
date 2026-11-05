@@ -33,6 +33,7 @@
 #define SYS_DUP 28
 #define SYS_DUP2 29
 #define SYS_PIPE 30
+#define SYS_FCNTL 31
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)
