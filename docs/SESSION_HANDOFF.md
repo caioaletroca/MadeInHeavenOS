@@ -41,7 +41,8 @@ Working x86-64 PC kernel with:
   `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`help`/`history`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
-  history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search;
+  history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
+  pipelines of programs (`a | b | c`); `/bin/cat` (files, stdin, `-`);
   `/bin/echo` as the first command; `/bin/ls` (`-a`, several paths, `/` after directories,
   `.` without arguments)
 - **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`, `<mihos/fcntl.h>`,
@@ -85,6 +86,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+1666a7e test: run pipelines in the shell test
+ba99a09 feat(sh): run pipelines
+4b73a53 feat(cat): add cat
+998c7e6 docs(architecture): document the non-interactive shell and its tests in handoff
 9a39c17 test: check stdio's output order through a pipe
 108d6c0 test: run the shell on scripts through pipes
 88e0969 feat(sh): run non-interactively when stdin is not a terminal
@@ -1107,7 +1112,7 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     buffered (`3 stderr first`, then the rest at exit's flush, `5 flushed by exit` last). Then
     on the console, line-buffered, checked by eye (`1`, `3`, `2 no newline... 4`, `checks: …`,
     `5 flushed by exit` last, only via `exit`). Return values, `ferror` + `EBADF` after `close(2)`.
-  - `shell`: `/bin/sh` on 14 scripts, each written into a pipe that becomes its stdin (written
+  - `shell`: `/bin/sh` on 29 scripts, each written into a pipe that becomes its stdin (written
     and its write end closed before the spawn, or the shell would inherit it and never see
     EOF), stdout and stderr in a pipe each, `PATH=/bin` and `GREETING` in its environment; both
     outputs and the status compared exactly. No banner or prompt; quotes and escapes; `$NAME`,
@@ -1116,7 +1121,13 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     line); `pwd`/`cd`/`echo` interleaved in order (the shell's flush); failing builtins and
     the last status at EOF; `exit 7` stopping the script, `exit` keeping 127; blank lines and
     a last line without `'\n'`; `!!` left alone; an unmatched quote skipping one line; an
-    empty script. fd 3 free at the end.
+    empty script. Pipelines: into `cat`, with and without spaces, chains up to the longest (8),
+    a quoted or escaped `|` as a word, a script piped into `sh`, `cat /dev/null - /dev/null`,
+    the order with the commands around it, the last command's status (`echo x | hello` 42,
+    `hello | cat` 0), not found first (0) and last (127), `cat`'s error and status 1, the three
+    syntax errors with the script going on, 9 commands refused, builtins refused (`cd` in a
+    pipeline leaves the directory alone). `/usr/tests/hello` (28 KB, over a pipe's buffer, full
+    of `'\0'`) through three `cat`s, byte for byte. fd 3 free at the end.
   - `brk`: heap on the page after `.bss`, exact unaligned break, zeroed pages after shrink and regrow,
     `ENOMEM` past the limit / on wrap / below `heap_start`, a 32 KiB stack array.
   - `malloc`: 16-alignment and no overlap over 15 sizes, one free block after freeing everything
@@ -2501,8 +2512,8 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     syscalls"). C1b (done): pipes (`VFS_FIFO` nodes, `fs/pipe.c`, `SYS_PIPE` 30, libc,
     `EPIPE`, the `pipe` test; see "Files"). C1c (done): the shell runs non-interactively when
     stdin is not a terminal (see "Shell"), the `shell` test feeds it scripts through pipes (its
-    first automatic tests), and `stdio` checks its output order through a pipe. Open: the
-    shell's `|` (spawn with fds moved around `posix_spawn`, as the tests do), before or after C2.
+    first automatic tests), and `stdio` checks its output order through a pipe. C1d (done): the
+    shell's `|` and `/bin/cat` (see "Shell"). Next: C2.
   - **C2, `fork`** as a plain copy of the address space (every user page copied), the fd table
     (shared `file_t`s), `cwd` and `brk`; the child gets a copy of the parent's syscall frame with
     `rax` 0. `SYS_FORK` 3 is reserved.
@@ -2524,7 +2535,7 @@ main.c   loop: prompt "mihos:<cwd>> " ─▶ command_read ─▶ history_expand 
          ─▶ command_run ─▶ fflush(stdout)   (prompt and history only when interactive)
 read.c   command_read: fgets, '\n' stripped (READ_EOF on NULL); command_parse: the tokenizer
          (quotes, escapes, $ expansion) → READ_COMMAND / READ_NOTHING
-run.c    command_run: builtin_run, else program_run
+run.c    command_run: more than one stage → pipeline_run; else builtin_run, else program_run
 builtins.c  table {name, function, help}; cd [dir], exit [n], help, history, pwd
 history.c   ring buffer of strdup'd lines
 sh.h / history.h   shared types and declarations ("..." includes)
@@ -2543,12 +2554,15 @@ sh.h / history.h   shared types and declarations ("..." includes)
   (`history_add(history_t *, line)`); `main` wires them. The tokenizer never modifies the line.
 - **Tokenizer** (`command_parse(sh, cmd)`): a state machine (`STATE_UNQUOTED`, `STATE_SINGLE`,
   `STATE_DOUBLE`) over `cmd->command` writes the words, each `'\0'`-terminated, into
-  `cmd->words`; `argv` points there. `parser_t` holds `pos`, `start` and `in_word` (a word is open
+  `cmd->words`; each `stage_t`'s `argv` points there. `parser_t` holds `pos`, `start` and `in_word` (a word is open
   even when empty, so `''` and `""` make empty arguments) and `error`. Helpers: `word_open`,
   `word_append` (bounds check, keeps a byte for the `'\0'`), `word_append_string`, `word_close`
   (`MAX_ARGS`, stores the word). Unquoted: space/tab closes a word, quotes switch state without
   closing it (`"a b"x` is one word), `\` makes the next character literal. Single quotes: all
-  literal. Double quotes: `\` escapes only `"` `\` `$`. An open quote at the end is
+  literal. Double quotes: `\` escapes only `"` `\` `$`. An unquoted `|` ends a stage
+  (`stage_close`: `cmd->stages[cmd->count]`, `PIPELINE_MAX` 8, `count` 1 for a plain command);
+  an empty stage is `sh: syntax error near '|'`, so `a || b` is refused until `||` exists, and
+  a ninth is `sh: too many commands in a pipeline`. An open quote at the end is
   `sh: unmatched quote` (no continuation lines).
 - **`$` expansion** (`expand`, unquoted and in double quotes): `$?` (`status`), `$$` (`getpid`),
   `$NAME` (`NAME_START` then `strspn` over `NAME_CHARS`, `getenv`, nothing if unset, so a bare
@@ -2573,7 +2587,21 @@ sh.h / history.h   shared types and declarations ("..." includes)
 - **Programs:** a name with `'/'` is spawned as given; otherwise each `PATH` entry is tried as
   `dir/name` (`snprintf` with `%.*s`, so `PATH` is never cut up; empty entries skipped). `ENOENT`
   moves to the next entry. Not found → `sh: name: command not found`, 127; other spawn errors → 126; killed
-  → message and 128 + signal. Children inherit fds and `environ`.
+  → message and 128 + signal. Children inherit fds and `environ`. Three steps, so a pipeline can
+  start everything before waiting: `program_start` (the search and the spawn, 0 or an errno),
+  `program_failed` (the message, 127 or 126), `program_wait` (the status as `$?` shows it).
+- **Pipelines** (`pipeline_run`, `a | b | c`): every command is started, then all are waited for
+  (waiting first would deadlock once a pipe fills). For each stage: a pipe unless it is the
+  last; `dup` of fds 0 and 1; `dup2` of the previous read end onto 0 and the new write end onto
+  1; `program_start`, which the child inherits; the shell's own 0 and 1 back; the ends handed
+  over closed, since a reader sees EOF only once every write end is closed. The status is the
+  last command's (POSIX). A command that cannot start has its message printed and its pipe's
+  write end closed, so the next one sees EOF (bash too). Builtins are refused before anything
+  starts (`sh: pwd: a builtin cannot be in a pipeline yet`, status 1): bash runs them in a forked
+  copy of the shell, and in the shell itself `cd` or `exit` would change it.
+- **`/bin/cat`** (`user/bin/cat/`): each argument in order to stdout; none, or `-`, is stdin. Raw
+  `read`/`write` in 4096-byte chunks, so nothing waits in a stdio buffer; a failing file prints
+  `cat: name: strerror`, sets status 1, and the rest are still copied.
 - **Decisions** (details in `ROADMAP.md`): own syscall ABI and numbering (porting is at the
   POSIX/libc API, not Linux binaries); own libc through phase C, mlibc via sysdeps at phase D
   together with a GCC rebuild for libstdc++; `libk.a` stays ours.
@@ -2712,7 +2740,14 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   still print their fault messages; the user self-test's `files` program prints `Files test: stdout
   still works`. The stdio test's last line has no `'\n'` (it checks the flush at `exit`), so the
   runner's `test /usr/tests/stdio: ok` follows on the same line.
-- The shell has no arrow-key history (needs raw mode / termios), no `;`, `&&`, pipes or
+- Pipelines: a builtin cannot be in one until `fork` (C2; a fork of the shell runs it). Each stage
+  inherits every fd the shell had open, including the read end of its own output pipe, so a
+  writer whose reader is gone gets no `EPIPE` and `cat big | nope` hangs once the pipe fills;
+  moving pipelines to `fork` and closing the unused ends fixes it. At most `PIPELINE_MAX` (8)
+  commands (bash: no limit), no `pipefail` or `PIPESTATUS`. A syntax error does not set `$?`
+  (bash: 2). A failed `dup` or `dup2` around the spawn is not checked.
+- `cat` has no options.
+- The shell has no arrow-key history (needs raw mode / termios), no `;`, `&&`, `||` or
   redirections, no field splitting, no continuation lines for an open quote; a `'` inside `"..."`
   flips history expansion's quote tracking. The `shell` test covers scripts; the interactive
   parts (prompt, history, the banner) are still checked by hand (no pseudo-terminal). It reads

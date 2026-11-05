@@ -195,7 +195,7 @@ docs/                     # handoff, roadmap
    boots; the installer is phase G). An intermission after it: a current directory per
    process, `chdir`/`getcwd` and the shell's `cd`/`pwd` (done).
 8. Phase C (the process model) in progress, before phase B's hardware path (PCI, then
-   AHCI/NVMe; GPT). Order: C1 `dup`/`dup2` and pipes (done; the shell's first automatic tests next), C2 `fork` as a plain copy, C3
+   AHCI/NVMe; GPT). Order: C1 `dup`/`dup2`, pipes and the shell's `|` (done), C2 `fork` as a plain copy, C3
    `execve`, C4 copy-on-write and stack growth, C5 signals, C6 terminal control (process
    groups, termios), C7 Lua. Steps in `SESSION_HANDOFF.md`.
 
