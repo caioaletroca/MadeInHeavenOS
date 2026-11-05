@@ -106,6 +106,15 @@ static page_table_t *page_table_next(page_table_t *parent, uint16_t index, uint6
     return child;
 }
 
+/**
+ * Maps a virtual address to a physical address in the given page table root.
+ *
+ * @param root The root page table.
+ * @param virtual_address The virtual address to map.
+ * @param physical_address The physical address to map to.
+ * @param flags The flags for the page table entry.
+ * @return 0 on success, or -1 on error.
+ */
 static int page_map(page_table_t *root, uintptr_t virtual_address, physaddr_t physical_address, unsigned int flags)
 {
     if (root == NULL)
