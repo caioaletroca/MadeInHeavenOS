@@ -260,6 +260,39 @@ static void mm_copy_on_write_test(void)
     KASSERT(page_refs(shared) == 0 && page_refs(code) == 0);
 }
 
+/**
+ * Tests that the stack's pages appear on first use, up to the limit and no
+ * further, and that loading a program does not create them.
+ */
+static void mm_stack_growth_test(void)
+{
+    const uintptr_t top_page = USER_STACK_TOP - PAGE_SIZE;
+    const uintptr_t lowest = USER_STACK_TOP - USER_STACK_MAX;
+    uint64_t word = 1;
+    physaddr_t physical;
+
+    address_space_t *space = address_space_create();
+    KASSERT(space != NULL);
+    KASSERT(arch_mmu_translate(space->root, top_page, &physical) != 0);
+
+    KASSERT(address_space_fill(space, top_page, &word, sizeof(word)) != 0);
+    KASSERT(arch_mmu_translate(space->root, top_page, &physical) != 0);
+
+    KASSERT(address_space_write(space, top_page, &word, sizeof(word)) == 0);
+    KASSERT(arch_mmu_translate(space->root, top_page, &physical) == 0);
+
+    // A read grows it too, and a new page is zero
+    KASSERT(address_space_read(space, lowest, &word, sizeof(word)) == 0 && word == 0);
+
+    // Just outside, on both ends
+    KASSERT(address_space_read(space, lowest - PAGE_SIZE, &word, sizeof(word)) != 0);
+    KASSERT(address_space_write(space, lowest - PAGE_SIZE, &word, sizeof(word)) != 0);
+    KASSERT(address_space_write(space, USER_STACK_TOP, &word, sizeof(word)) != 0);
+    KASSERT(arch_mmu_translate(space->root, lowest - PAGE_SIZE, &physical) != 0);
+
+    address_space_destroy(space);
+}
+
 void mm_selftest(void)
 {
     mm_page_map_unmap_test();
@@ -271,4 +304,6 @@ void mm_selftest(void)
     mm_address_space_test();
 
     mm_copy_on_write_test();
+
+    mm_stack_growth_test();
 }

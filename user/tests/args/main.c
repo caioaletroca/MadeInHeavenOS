@@ -8,7 +8,7 @@
  * program with argv = {its path} and envp = {"PATH=/bin" (init's), "TEST_ROOT=..."}.
  */
 
-// USER_STACK_TOP and USER_STACK_SIZE in the kernel's <asm/memory.h>
+// USER_STACK_TOP in the kernel's <asm/memory.h>; a program starts in the stack's top pages
 #define STACK_TOP 0x00007FFFFFFFF000ULL
 #define STACK_SIZE (64 * 1024)
 
