@@ -54,6 +54,32 @@ long sys_exit(long status)
 }
 
 /**
+ * Create a child process with the given parent and address space.
+ *
+ * @param parent The parent process.
+ * @param space The address space for the child process.
+ * @return A pointer to the newly created child process, or NULL on failure.
+ */
+static process_t *child_create(process_t *parent, address_space_t *space)
+{
+    // From here the child owns the space: releasing it destroys both
+    process_t *child = process_create(space);
+    if (child == NULL)
+    {
+        address_space_destroy(space);
+        return NULL;
+    }
+
+    process_files_inherit(child, parent);
+    process_cwd_inherit(child, parent);
+
+    // The handle from process_create is the parent's reference, held until wait
+    process_child_add(parent, child);
+
+    return child;
+}
+
+/**
  * spawn(path, argv, envp): creates a new process with the specified executable, arguments, and environment.
  */
 long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
@@ -95,21 +121,39 @@ long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
     if (ret < 0)
         return ret;
 
-    // From here the child owns the space: releasing it destroys both
-    process_t *child = process_create(space);
+    process_t *child = child_create(parent, space);
     if (child == NULL)
+        return -ENOMEM;
+
+    if (process_start(child, entry, stack) < 0)
     {
-        address_space_destroy(space);
+        process_child_remove(child);
+        process_release(child);
         return -ENOMEM;
     }
 
-    process_files_inherit(child, parent);
-    process_cwd_inherit(child, parent);
+    return child->pid;
+}
 
-    // The handle from process_create is the parent's reference, held until wait
-    process_child_add(parent, child);
+/**
+ * fork(): creates a new process by duplicating the calling process.
+ *
+ * @return The process ID of the newly created child process, or a negative error code on failure.
+ */
+long sys_fork(void)
+{
+    thread_t *thread = scheduler_current();
+    process_t *parent = thread->process;
 
-    if (process_start(child, entry, stack) < 0)
+    address_space_t *space = address_space_clone(parent->space);
+    if (space == NULL)
+        return -ENOMEM;
+
+    process_t *child = child_create(parent, space);
+    if (child == NULL)
+        return -ENOMEM;
+
+    if (process_start_fork(child, thread) < 0)
     {
         process_child_remove(child);
         process_release(child);

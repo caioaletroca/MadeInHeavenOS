@@ -14,6 +14,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_exit((long)arg0);
     case SYS_BRK:
         return sys_brk((uintptr_t)arg0);
+    case SYS_FORK:
+        return sys_fork();
     case SYS_WRITE:
         return sys_write(arg0, arg1, arg2);
     case SYS_CLOSE:
