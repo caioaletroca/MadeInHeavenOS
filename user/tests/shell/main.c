@@ -1,5 +1,7 @@
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <spawn.h>
 #include <string.h>
 #include <errno.h>
@@ -12,10 +14,14 @@
  * shell is non-interactive (POSIX, and what bash and dash do): no banner, no
  * prompt, no history expansion, error messages on stderr, and its own output
  * flushed before the next command, so it stays in order with its programs'.
+ * Then pipelines: `|` between programs, with cat and the shell itself as the
+ * readers.
  */
 
 #define PIPE_SIZE 4096 // the kernel's buffer: a script must fit, nobody reads it while it is written
 #define OUTPUT_MAX 1024
+#define BINARY_MAX 65536 // a program piped through cat
+#define BINARY_PATH "/usr/tests/hello"
 
 typedef struct shell_case
 {
@@ -53,36 +59,72 @@ static const shell_case_t cases[] = {
     {"no history expansion", "echo one\necho !! !1\n", "one\n!! !1\n", "", 0},
     {"a parse error skips one line", "echo 'open\necho next\n", "next\n", "sh: unmatched quote\n", 0},
     {"an empty script", "", "", "", 0},
+
+    // Pipelines
+    {"a pipe into cat", "echo hello | cat\n", "hello\n", "", 0},
+    {"a pipe without spaces", "echo hello|cat\n", "hello\n", "", 0},
+    {"a chain of cats", "echo a b | cat | cat | cat\n", "a b\n", "", 0},
+    {"the longest pipeline", "echo eight | cat | cat | cat | cat | cat | cat | cat\n", "eight\n", "", 0},
+    {"a quoted or escaped | is a word", "echo 'x|y' \"|\" \\| | cat\n", "x|y | |\n", "", 0},
+    {"a script piped into a shell", "echo echo nested | sh\n", "nested\n", "", 0},
+    {"cat with files and -", "echo from stdin | cat /dev/null - /dev/null\n", "from stdin\n", "", 0},
+    {"in order with the commands around it",
+     "echo first\necho second | cat\necho third\n",
+     "first\nsecond\nthird\n", "", 0},
+    // POSIX: a pipeline's status is its last command's
+    {"the last command's status",
+     "echo x | /usr/tests/hello\necho $?\n/usr/tests/hello | cat\necho $?\n",
+     "42\n0\n", "", 0},
+    {"a command not found in a pipeline",
+     "nope | cat\necho $?\necho hi | nope\necho $?\n",
+     "0\n127\n",
+     "sh: nope: command not found\nsh: nope: command not found\n", 0},
+    {"cat's errors",
+     "cat /nope /dev/null\necho $?\n",
+     "1\n",
+     "cat: /nope: No such file or directory\n", 0},
+    {"| with a command missing",
+     "| cat\necho a |\necho a || cat\necho still running\n",
+     "still running\n",
+     "sh: syntax error near '|'\nsh: syntax error near '|'\nsh: syntax error near '|'\n", 0},
+    {"too many commands",
+     "echo 9 | cat | cat | cat | cat | cat | cat | cat | cat\n",
+     "",
+     "sh: too many commands in a pipeline\n", 0},
+    // A builtin would need its own process (fork) to run beside the others
+    {"a builtin in a pipeline",
+     "pwd | cat\necho $?\necho x | cd /usr\npwd\n",
+     "1\n/\n",
+     "sh: pwd: a builtin cannot be in a pipeline yet\nsh: cd: a builtin cannot be in a pipeline yet\n", 0},
 };
 
 static char *shell_environ[] = {"PATH=/bin", "GREETING=hello there", NULL};
 
-// Reads until EOF or size - 1 bytes and ends the text with '\0'; returns the count, or -1
-static long read_text(int fd, char *text, size_t size)
+// Reads until EOF or size bytes; returns the count, or -1
+static long read_all(int fd, char *data, size_t size)
 {
     size_t done = 0;
-    while (done < size - 1)
+    while (done < size)
     {
-        ssize_t n = read(fd, text + done, size - 1 - done);
+        ssize_t n = read(fd, data + done, size - done);
         if (n < 0)
             return -1;
         if (n == 0)
             break;
         done += (size_t)n;
     }
-    text[done] = '\0';
     return (long)done;
 }
 
 /*
- * Runs /bin/sh on script. Fills out and err (OUTPUT_MAX each) and *pid, and
- * returns the exit status, or -1. The script is written and its write end
- * closed before the spawn: the shell inherits every fd, and a write end it
- * held would keep its stdin from ever reaching EOF. The outputs are read to
- * EOF before the wait; they stay below a pipe's size, so the shell never
- * waits for room.
+ * Runs /bin/sh on script. Fills out (out_size bytes, *out_length set) and err
+ * (OUTPUT_MAX, '\0'-terminated) and *pid, and returns the exit status, or -1.
+ * The script is written and its write end closed before the spawn: the shell
+ * inherits every fd, and a write end it held would keep its stdin from ever
+ * reaching EOF. stdout is read to EOF, then stderr, then the wait; stderr
+ * stays below a pipe's size, so the shell never waits for room in it.
  */
-static int shell_run(const char *script, char *out, char *err, pid_t *pid)
+static int shell_run(const char *script, char *out, size_t out_size, long *out_length, char *err, pid_t *pid)
 {
     int input[2], output[2], errors[2];
     size_t length = strlen(script);
@@ -127,9 +169,11 @@ static int shell_run(const char *script, char *out, char *err, pid_t *pid)
     int status = -1;
     if (error == 0)
     {
-        int ok = read_text(output[0], out, OUTPUT_MAX) >= 0 && read_text(errors[0], err, OUTPUT_MAX) >= 0;
+        *out_length = read_all(output[0], out, out_size);
+        long err_length = read_all(errors[0], err, OUTPUT_MAX - 1);
+        err[err_length > 0 ? err_length : 0] = '\0';
         int raw;
-        if (waitpid(*pid, &raw, 0) == *pid && WIFEXITED(raw) && ok)
+        if (waitpid(*pid, &raw, 0) == *pid && WIFEXITED(raw) && *out_length >= 0 && err_length >= 0)
             status = WEXITSTATUS(raw);
     }
     close(output[0]);
@@ -147,9 +191,10 @@ static void expect_text(const char *name, const char *what, const char *got, con
 static void test_case(const shell_case_t *c)
 {
     static char out[OUTPUT_MAX], err[OUTPUT_MAX];
-    out[0] = err[0] = '\0';
+    long length = 0;
     pid_t pid;
-    int status = shell_run(c->script, out, err, &pid);
+    int status = shell_run(c->script, out, sizeof(out) - 1, &length, err, &pid);
+    out[length > 0 ? length : 0] = '\0';
 
     if (status != c->status)
         printf("  %s: status %d, expected %d\n", c->name, status, c->status);
@@ -162,8 +207,10 @@ static void test_case(const shell_case_t *c)
 static void test_pid(void)
 {
     static char out[OUTPUT_MAX], err[OUTPUT_MAX];
+    long length = 0;
     pid_t pid = -1;
-    CHECK(shell_run("echo $$\n", out, err, &pid) == 0);
+    CHECK(shell_run("echo $$\n", out, sizeof(out) - 1, &length, err, &pid) == 0);
+    out[length > 0 ? length : 0] = '\0';
 
     char want[16];
     snprintf(want, sizeof(want), "%d\n", pid);
@@ -171,11 +218,29 @@ static void test_pid(void)
     expect_text("$$", "stderr", err, "");
 }
 
+// A program file, bigger than a pipe's buffer and full of '\0's, through three cats unchanged
+static void test_binary(void)
+{
+    static char want[BINARY_MAX], got[BINARY_MAX], err[OUTPUT_MAX];
+    int fd = open(BINARY_PATH, O_RDONLY);
+    CHECK(fd >= 0);
+    long size = read_all(fd, want, sizeof(want));
+    close(fd);
+    CHECK(size > PIPE_SIZE && size < BINARY_MAX);
+
+    long length = 0;
+    pid_t pid;
+    CHECK(shell_run("cat " BINARY_PATH " | cat | cat\n", got, sizeof(got), &length, err, &pid) == 0);
+    CHECK(length == size && memcmp(got, want, (size_t)size) == 0);
+    expect_text("binary", "stderr", err, "");
+}
+
 int main(void)
 {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         test_case(&cases[i]);
     test_pid();
+    test_binary();
 
     // Every pipe is closed again: the next free fd is 3
     int fd = dup(0);
