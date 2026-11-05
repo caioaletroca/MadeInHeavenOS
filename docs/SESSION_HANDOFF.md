@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`help`/`history`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -86,6 +86,12 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+18262db docs(sched): the fd table needs a lock only with threads
+041ad76 test: cover exec and close-on-exec
+fc28efb feat(libc): add execve, execv, execvp and fcntl
+67812ad feat(sys): add exec and fcntl
+1bb9126 feat(sched): add close-on-exec and replace a process's program
+f7c83cb docs(architecture): document fork in handoff
 a016097 test: cover fork
 7e59598 feat(libc): add fork
 efc559c feat(sys): add fork
@@ -631,8 +637,8 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   files.c        sys_file (fd → file_t); open read write lseek close dup dup2 ioctl truncate ftruncate pipe
   directories.c  getdents unlink mkdir rmdir chdir getcwd
   stat.c         stat fstat
-  processes.c    exit spawn fork wait getpid getppid (child_create, spawn_args_t, user_vector_copy and
-                 wait_status_encode static there)
+  processes.c    exit spawn fork exec wait getpid getppid (child_create, program_load, spawn_args_t,
+                 user_vector_copy and wait_status_encode static there)
   memory.c       brk
   power.c        reboot, next to system_halt and the halt hooks
   ```
@@ -644,21 +650,29 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   newfd)`**: `oldfd` not open or `newfd` outside the table → `-EBADF` (checked first, so a
   refused `dup2` leaves `newfd` alone, and `dup2(5, 5)` on a closed 5 is `-EBADF`); equal fds →
   `newfd`, untouched; else the file goes into the slot before the old one is put (its release
-  may run). No `FD_CLOEXEC` yet (it comes with exec).
+  may run). Both give a clear `FD_CLOEXEC`; equal fds keep theirs (see `fcntl`).
 - **`pipe(fds)`** (`SYS_PIPE` 30, `sys_pipe` in `files.c`): `pipe_create` (`-ENOMEM`), the
   read end installed at the lowest free fd, then the write end (so fds 3 and 4 in a fresh
   process), then the pair `address_space_write`n out. Nothing is left behind on a failure:
   `-EMFILE` on the read end puts both files; on the write end the read end's fd is
   `sys_close`d (it owns its reference by then) and the write file put; a bad pointer
   `sys_close`s both fds and gives `-EFAULT` (Linux). libc `pipe(int fds[2])` in `<unistd.h>`.
+- **`fcntl(fd, command, arg)`** (`SYS_FCNTL` 31, `sys_fcntl` in `files.c`; Linux's values):
+  `F_GETFD` and `F_SETFD` for the one flag, `FD_CLOEXEC`; `-EBADF` for a closed fd, `-EINVAL` for
+  any other command. The flag is a bit per fd in `process_t.close_on_exec`, not in `file_t`: it
+  belongs to the slot, so two fds of one open file differ. `process_fd_install` and `dup2` clear
+  it, `process_files_inherit` copies it. libc `fcntl` in `<fcntl.h>` reads its third argument
+  only for `F_SETFD`.
 - **`spawn(path, argv, envp)`** → child pid or `-ENOENT`/`-ENOEXEC`/`-E2BIG`/`-EFAULT`/`-ENOMEM`.
-  Copies into a `kmalloc`'d `spawn_args_t`: the path (≤ 64 bytes, `-E2BIG` beyond), then each
+  `program_load` (shared with `exec`, touches nothing of the caller) copies into a `kmalloc`'d
+  `spawn_args_t`: the path (≤ 64 bytes, `-E2BIG` beyond), then each
   vector (≤ 64 entries, all strings together ≤ 4 KiB; a NULL `envp` is an empty environment),
   byte by byte through `address_space_read` (`user_string_copy`, `user_vector_copy`).
   `vfs_read_file(path)` (a kmalloc'd copy; `-EISDIR` becomes `-EACCES`, as POSIX exec) →
   `exec_load` → `kfree` of the copy → `process_create` → `process_files_inherit` (same fd numbers, one file
   reference each) → link as a child (the `process_create` handle is the parent's reference) →
-  `process_start`. Order matters: the child is complete before it can run.
+  `process_files_close_on_exec` (spawn is a fork and an exec in one) → `process_start`. Order
+  matters: the child is complete before it can run.
 - **`fork()`** → the child's pid in the parent, 0 in the child, or `-ENOMEM`. Every user page
   is copied with its flags (`address_space_clone` → `arch_mmu_root_copy` → `page_table_copy`,
   which allocates a frame per table and per page; each table is linked before it is filled, so
@@ -670,6 +684,17 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   kernel stack (Linux's `task_pt_regs`). The child's first run is the normal `isr_common` →
   `iretq`, landing after the parent's `int $0x80`. The fd table is copied, not shared; the
   `file_t`s are, with their offsets. libc `fork` in `<unistd.h>`.
+- **`exec(path, argv, envp)`** (`SYS_EXEC` 4) → no return on success, else the errors of `spawn`
+  with the caller untouched: `program_load` does everything that can fail, in a new address
+  space, before anything of the caller changes. Then `process_exec`, which cannot fail: the space
+  swapped in `process_t` and `thread_t`, activated, the old one destroyed (it must not be the
+  active one), `process_files_close_on_exec`, and `arch_user_context_init` on the thread's own
+  stack. That writes where the running system call's frame is (the same place `fork` copies
+  from), so the `iretq` enters the new program; the syscall's 0 lands in its `rax`. Stays: pid,
+  parent, children, directory, fds and offsets. Goes: memory, break, registers, marked fds.
+  libc `execve`, `execv` (`environ`) and `execvp` in `<unistd.h>`; `execvp` searches `PATH` like
+  the shell, a name with `'/'` is used as given, no `PATH` is `ENOENT`, and `EACCES` from any
+  entry beats "not found" (glibc). Any other error stops the search.
 - **`wait(pid, status)`** → the reaped child's pid, or `-ECHILD` (no matching child: not a child,
   already waited for, no children; `pid` 0 and `< -1` are process groups, which do not exist yet).
   `pid` -1 is any child. `process_wait_child` returns the child unlinked; `sys_wait` stores the POSIX
@@ -1177,6 +1202,17 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     console); `close` private and the offset shared; a pipe with the child's stdout `dup2`'d
     into it, EOF at its exit; `chdir` private; 4 children reaped with `wait`; a grandchild
     adopted by init (`getppid` 1); 200 forks in a row. fd 3 free at the end.
+  - `exec`: execs itself with a mode in `argv[1]`, so the new image checks what it got and
+    reports through its exit status. A fork also copies `test_failures`: a child that does not
+    exec must not exit with `test_status()` (one failure would count twice). Same pid and parent,
+    a global and `.bss` back to their values, `argv` and environment replaced, the break back
+    down; `hello`'s 42 through `wait`; `ENOENT`, `EACCES` (a directory), `EFAULT` (path, `argv`),
+    a marked fd still open after a failed exec; `fcntl`'s flag through `dup`, `dup2`, a used
+    slot, `fork`, `EBADF`, `EINVAL`; an offset kept, a marked fd closed, a pipe end kept; `spawn`
+    honouring the flag; a reader's EOF while the exec'd holder of the marked write end lives; the
+    directory; reaping the old program's child; 50 execs in one process; `execv` (`environ`);
+    `execvp` (a missing `PATH` entry skipped, `argv[0]` as passed, a `'/'` name, `ENOENT`,
+    `EACCES`, no `PATH`). fd 3 free at the end. No `ENOEXEC` case (neither root has a non-ELF file).
   - `spawn`: spawns itself with a mode in `argv[1]` (no extra modules): exit 7 / 300 (→ 44) /
     SIGSEGV through the `W*` macros, `argv`/`envp` passed exactly, NULL `envp`, two children waited
     in reverse order, waiting twice → `ECHILD`, 20 rounds, `ENOENT`/`EFAULT`/`E2BIG`/`ENOSYS`/
@@ -2545,8 +2581,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **C2 (done), `fork`** as a plain copy of the address space (every user page copied), the fd table
     (shared `file_t`s), `cwd` and `brk`; the child gets a copy of the parent's syscall frame with
     `rax` 0 (see "User mode and syscalls"), the `fork` test. Next: C3.
-  - **C3, `execve`**: build the new space, copy `argv`/`envp` out of the old one, swap, destroy
-    the old one, rewrite the saved frame; `FD_CLOEXEC`/`fcntl` with it. `SYS_EXEC` 4 reserved.
+  - **C3, `execve`**. C3a (done): `exec` (`SYS_EXEC` 4), `FD_CLOEXEC`/`fcntl` (`SYS_FCNTL` 31),
+    `execve`/`execv`/`execvp`, the `exec` test (see "User mode and syscalls"). Next, C3b: the
+    shell runs programs with `fork` + `execvp`. Each pipeline child does its own `dup2`s and
+    closes the ends it does not use, so `saved_in`/`saved_out` go and `cat big | nope` stops
+    hanging; the child reports a failed exec and `_exit`s 127 or 126; builtins run in a forked copy
+    of the shell inside a pipeline, and the shell test's refusal case is rewritten.
   - **C4, copy-on-write** (`frame_t.refs` exists; read-only pages, the write fault copies or,
     for the last user, makes it writable) **and stack growth** (also page-fault work).
   - **C5, signals**: `kill` (`SYS_KILL` 7), `sigaction`, `sigprocmask`, `sigreturn`, delivery on
@@ -2773,8 +2813,13 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   count. No `vfork`, `pthread_atfork` or `clone`. User vector registers (`xmm`) are in no saved
   frame: a context switch does not save them and a child does not get them (not yet checked
   whether user programs compile to code that uses them).
+- `exec`: `SYS_SPAWN` stays a system call (`posix_spawn` could become `fork` + `exec` in libc, with
+  file actions). `fcntl` has only `F_GETFD` and `F_SETFD`; no `O_CLOEXEC` or `pipe2`, so setting
+  the flag after `open` or `pipe` leaves a gap once threads exist. No `execl` family, no
+  `#!` scripts, no `ENOEXEC` test. `exec` must reset caught signals when C5 adds them, and stop
+  other threads when threads exist. Stdio buffers die with the old program, as on POSIX.
 - Pipelines: a builtin cannot be in one yet; `fork` makes that possible (a copy of the shell runs
-  it), but the shell does not use it. Programs need `execve` too (C3) to leave the dup dance. Each stage
+  it), but the shell does not use it yet (C3b, with `execvp` for programs). Each stage
   inherits every fd the shell had open, including the read end of its own output pipe, so a
   writer whose reader is gone gets no `EPIPE` and `cat big | nope` hangs once the pipe fills;
   moving pipelines to `fork` and `execve`, closing the unused ends between them, fixes it. At most `PIPELINE_MAX` (8)
@@ -2806,15 +2851,15 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   is not used); first fit walks the whole list (no size classes); no lock (needed with threads).
 - The malloc test hard-codes the 32-byte header (`sizeof(block_t)`).
 - Syscalls run with IRQs off for their whole duration (interrupt gate); long writes delay IRQs.
-- The fd table has no lock (safe only with one thread per process and no `fork`).
+- The fd table has no lock (safe only with one thread per process).
 - Pipes: no `SIGPIPE` (a write with no reader only returns `EPIPE`; signals are C5), no
-  `O_NONBLOCK`/`pipe2`/`fcntl`, no `poll`/`select`, no named FIFOs (`mkfifo`, ext2's FIFO
+  `O_NONBLOCK`/`pipe2`, no `poll`/`select`, no named FIFOs (`mkfifo`, ext2's FIFO
   inodes). The buffer is a fixed 4096 bytes (Linux: 16 pages, resizable with `F_SETPIPE_SZ`).
   `sys_write` hands the backend 256-byte chunks, so POSIX's `PIPE_BUF` promise holds per chunk
   only: a 1000-byte write can interleave with another writer's at a chunk boundary; and libc
   has no `<limits.h>` with `PIPE_BUF`. Wake-ups are `wake_all` per chunk (every waiter
-  retries). A spawned child inherits every fd, including the pipe ends it does not use (it
-  must close them itself, or a reader never sees EOF) until `FD_CLOEXEC` comes with exec.
+  retries). A spawned child inherits every unmarked fd, including pipe ends it does not use (it
+  must close them, or a reader never sees EOF), unless the parent marks them `FD_CLOEXEC`.
   `fstat`'s times on a pipe are 0.
 - `syscall_dispatch` is a switch, two lines per call. A table indexed by number would be
   neater, but the `sys_*` functions take different argument types, and calling them through
@@ -2827,7 +2872,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `process_wait(NULL)` returns -1, which is also a valid exit status (should assert).
 - `wait` has no `WNOHANG` and no process groups (`pid` 0, `< -1` give `-ECHILD`); waking every
   waiter on any child's exit is fine with one thread per process.
-- `spawn` copies user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
+- `spawn` and `exec` copy user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
   `ENAMETOOLONG`); programs come from the initrd only; no `posix_spawnp` (`PATH` search).
 - Power off works only on Bochs and QEMU (fixed ports); real hardware halts (needs the ACPI FADT).
   A `panic` still halts with `cli; hlt` (Bochs shows a popup), on purpose: the screen stays.
@@ -2899,7 +2944,6 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
     are ignored; `s_state` (not cleanly unmounted, errors) is not checked;
   - `volume->lock` covers the whole `ext2_node_get`, including its disk read: lookups of different new
     files wait for each other.
-- `sys_exec` (replacing the running image) is not implemented: comes with `fork` in phase C.
 - `process_start` returns -1 instead of an errno on failure.
 - In the counter test the counter shares a cache line with the loop's code, so every increment is
   handled as self-modifying code (about 25× slower than with the counter in a separate line).
