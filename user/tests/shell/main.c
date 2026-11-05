@@ -15,7 +15,7 @@
  * prompt, no history expansion, error messages on stderr, and its own output
  * flushed before the next command, so it stays in order with its programs'.
  * Then pipelines: `|` between programs, with cat and the shell itself as the
- * readers.
+ * readers, and builtins, each stage in a forked copy of the shell.
  */
 
 #define PIPE_SIZE 4096 // the kernel's buffer: a script must fit, nobody reads it while it is written
@@ -91,11 +91,29 @@ static const shell_case_t cases[] = {
      "echo 9 | cat | cat | cat | cat | cat | cat | cat | cat\n",
      "",
      "sh: too many commands in a pipeline\n", 0},
-    // A builtin would need its own process (fork) to run beside the others
+    // Found but not a program: exec's EACCES (bash: 126 too)
+    {"a directory as a command",
+     "/usr/tests\necho $?\n",
+     "126\n",
+     "sh: /usr/tests: cannot run (error 13)\n", 0},
+    // The shell's own buffer is empty at each fork: nothing comes out twice
     {"a builtin in a pipeline",
-     "pwd | cat\necho $?\necho x | cd /usr\npwd\n",
-     "1\n/\n",
-     "sh: pwd: a builtin cannot be in a pipeline yet\nsh: cd: a builtin cannot be in a pipeline yet\n", 0},
+     "pwd\npwd | cat\necho $?\npwd | cat | cat\n",
+     "/\n/\n0\n/\n", "", 0},
+    // It runs in a copy of the shell: what it does to itself stays there (bash too)
+    {"a builtin's changes stay in its copy",
+     "echo x | cd /usr\necho $?\npwd\necho x | exit 3\necho $?\necho still running\n",
+     "0\n/\n3\nstill running\n", "", 0},
+    {"a builtin failing in a pipeline",
+     "echo x | cd /nope\necho $?\n",
+     "1\n",
+     "cd: /nope: No such file or directory\n", 0},
+    // Bigger than a pipe, so cat fills it and waits. Nothing but nope's stage may hold the read
+    // end: its exit is what wakes cat, with EPIPE. SIGPIPE (C5) will end cat silently, as in bash
+    {"a reader that never starts",
+     "cat " BINARY_PATH " | nope\necho $?\n",
+     "127\n",
+     "sh: nope: command not found\ncat: " BINARY_PATH ": Broken pipe\n", 0},
 };
 
 static char *shell_environ[] = {"PATH=/bin", "GREETING=hello there", NULL};

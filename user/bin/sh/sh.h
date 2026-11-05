@@ -76,14 +76,6 @@ read_result_t command_parse(shell_t *sh, command_t *cmd);
 int builtin_run(shell_t *sh, stage_t *stage);
 
 /**
- * Checks if a builtin command exists.
- *
- * @param name The name of the command to check.
- * @return 1 if the builtin exists, 0 if not.
- */
-int builtin_exists(const char *name);
-
-/**
  * Runs a command.
  *
  * @param sh The shell instance.

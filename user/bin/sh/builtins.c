@@ -150,11 +150,6 @@ static const builtin_t *builtin_lookup(const char *name)
     return NULL;
 }
 
-int builtin_exists(const char *name)
-{
-    return builtin_lookup(name) != NULL;
-}
-
 int builtin_run(shell_t *sh, stage_t *stage)
 {
     const builtin_t *builtin = builtin_lookup(stage->argv[0]);
