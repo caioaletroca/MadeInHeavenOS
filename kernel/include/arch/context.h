@@ -36,6 +36,19 @@ void *arch_thread_context_init(void *stack, size_t stack_size);
 void *arch_user_context_init(void *stack, size_t stack_size, uintptr_t entry, uintptr_t user_stack);
 
 /**
+ * @brief Build the saved context of a forked thread: it resumes in user mode
+ * where the parent's system call returns, seeing a result of 0.
+ *
+ * @param stack Lowest address of the child's kernel stack.
+ * @param stack_size Size of the child's kernel stack in bytes.
+ * @param parent_stack Lowest address of the parent's kernel stack; the parent is in a system call.
+ * @param parent_stack_size Size of the parent's kernel stack in bytes.
+ *
+ * @return The saved context to resume, or NULL if the stack is too small.
+ */
+void *arch_user_context_fork(void *stack, size_t stack_size, void *parent_stack, size_t parent_stack_size);
+
+/**
  * @brief Prepare the CPU to run a thread: interrupts from user mode will use
  * the top of this kernel stack.
  *

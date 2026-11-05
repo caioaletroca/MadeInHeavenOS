@@ -132,15 +132,18 @@ thread_t *thread_create(thread_entry_t entry, void *arg)
     return thread;
 }
 
-thread_t *thread_create_user(process_t *process, uintptr_t entry, uintptr_t user_stack)
+/**
+ * @brief Add a user thread to the scheduler.
+ *
+ * @param process The process the thread belongs to.
+ * @param thread The thread structure.
+ * @param stack The kernel stack for the thread.
+ * @param context The initial context for the thread.
+ *
+ * @return The added thread, or NULL on failure.
+ */
+static thread_t *thread_user_add(process_t *process, thread_t *thread, void *stack, void *context)
 {
-    thread_t *thread = kzalloc(sizeof(thread_t));
-    void *stack = kmalloc(THREAD_STACK_SIZE);
-    void *context = NULL;
-
-    if (process != NULL && thread != NULL && stack != NULL)
-        context = arch_user_context_init(stack, THREAD_STACK_SIZE, entry, user_stack);
-
     if (context == NULL)
     {
         kfree(stack);
@@ -154,9 +157,33 @@ thread_t *thread_create_user(process_t *process, uintptr_t entry, uintptr_t user
     thread->space = process->space;
 
     if (scheduler_add(thread) != 0)
-        panic("thread_create_user: new thread rejected by the scheduler\n");
+        panic("thread_user_add: new thread rejected by the scheduler\n");
 
     return thread;
+}
+
+thread_t *thread_create_user(process_t *process, uintptr_t entry, uintptr_t user_stack)
+{
+    thread_t *thread = kzalloc(sizeof(thread_t));
+    void *stack = kmalloc(THREAD_STACK_SIZE);
+    void *context = NULL;
+
+    if (process != NULL && thread != NULL && stack != NULL)
+        context = arch_user_context_init(stack, THREAD_STACK_SIZE, entry, user_stack);
+
+    return thread_user_add(process, thread, stack, context);
+}
+
+thread_t *thread_create_fork(process_t *process, thread_t *parent)
+{
+    thread_t *thread = kzalloc(sizeof(thread_t));
+    void *stack = kmalloc(THREAD_STACK_SIZE);
+    void *context = NULL;
+
+    if (parent != NULL && thread != NULL && stack != NULL)
+        context = arch_user_context_fork(stack, THREAD_STACK_SIZE, parent->stack, THREAD_STACK_SIZE);
+
+    return thread_user_add(process, thread, stack, context);
 }
 
 void thread_sleep(uint64_t ticks)

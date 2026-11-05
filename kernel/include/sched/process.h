@@ -79,6 +79,15 @@ int process_fd_install(process_t *p, struct file *file);
 int process_start(process_t *p, uintptr_t entry, uintptr_t user_stack);
 
 /**
+ * Start a forked process: its thread resumes where parent's system call returns.
+ *
+ * @param p The child process.
+ * @param parent The calling thread, inside its fork system call.
+ * @return 0 on success, or a negative error code on failure.
+ */
+int process_start_fork(process_t *p, struct thread *parent);
+
+/**
  * Inherit open file descriptors from the parent process to the child process.
  *
  * @param child The child process.

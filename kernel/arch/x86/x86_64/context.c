@@ -50,6 +50,21 @@ void *arch_user_context_init(void *stack, size_t stack_size, uintptr_t entry, ui
     return context;
 }
 
+void *arch_user_context_fork(void *stack, size_t stack_size, void *parent_stack, size_t parent_stack_size)
+{
+    isr_context_t *context = arch_thread_context_init(stack, stack_size);
+    if (context == NULL)
+        return NULL;
+
+    // A trap from ring 3 starts at RSP0 (arch_thread_switch), so the frame of
+    // the parent's system call is the first thing on its kernel stack
+    uintptr_t parent_top = ALIGN_DOWN((uintptr_t)parent_stack + parent_stack_size, ABI_STACK_ALIGNMENT);
+    *context = *((isr_context_t *)parent_top - 1);
+    context->rax = 0;
+
+    return context;
+}
+
 void arch_thread_switch(void *stack, size_t stack_size)
 {
     // The CPU loads RSP0 when an interrupt arrives in ring 3. Kernel

@@ -135,6 +135,26 @@ int process_start(process_t *p, uintptr_t entry, uintptr_t user_stack)
     return 0;
 }
 
+int process_start_fork(process_t *p, thread_t *parent)
+{
+    if (p == NULL)
+        return -1;
+
+    scoped_guard(spinlock, &p->lock)
+    {
+        p->refs++;
+    }
+
+    p->thread = thread_create_fork(p, parent);
+    if (p->thread == NULL)
+    {
+        process_release(p);
+        return -1;
+    }
+
+    return 0;
+}
+
 void process_files_inherit(process_t *child, process_t *parent)
 {
     for (int fd = 0; fd < PROCESS_MAX_FILES; fd++)

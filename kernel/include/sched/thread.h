@@ -78,6 +78,16 @@ thread_t *thread_create(thread_entry_t entry, void *arg);
 thread_t *thread_create_user(struct process *process, uintptr_t entry, uintptr_t user_stack);
 
 /**
+ * @brief Create the thread of a forked process.
+ *
+ * @param process The child process. The thread does not take ownership of it.
+ * @param parent The calling thread, inside its fork system call.
+ *
+ * @return Pointer to the new thread, or NULL on failure.
+ */
+thread_t *thread_create_fork(struct process *process, thread_t *parent);
+
+/**
  * @brief Initialize a thread structure with the given stack, stack size, and entry point.
  *
  * @param thread Pointer to the thread structure to initialize.
