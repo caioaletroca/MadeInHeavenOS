@@ -112,6 +112,12 @@ static void program_run(shell_t *sh, stage_t *stage)
     sh->status = error != 0 ? program_failed(stage->argv[0], error) : program_wait(stage->argv[0], pid);
 }
 
+/**
+ * @brief Runs a pipeline of commands.
+ *
+ * @param sh The shell instance.
+ * @param cmd The command containing the pipeline stages.
+ */
 static void pipeline_run(shell_t *sh, command_t *cmd)
 {
     for (int i = 0; i < cmd->count; i++)

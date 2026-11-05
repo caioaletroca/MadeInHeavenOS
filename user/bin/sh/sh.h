@@ -71,7 +71,7 @@ read_result_t command_parse(shell_t *sh, command_t *cmd);
  *
  * @param sh The shell instance.
  * @param stage The stage of the pipeline to execute.
- * @return 1 if a builtin command was executed, 0 if not a builtin, -1 on error.
+ * @return 1 if a builtin command was executed, 0 if not a builtin.
  */
 int builtin_run(shell_t *sh, stage_t *stage);
 
