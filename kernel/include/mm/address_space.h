@@ -2,6 +2,7 @@
 #define _MM_ADDRESS_SPACE_H
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <arch/mmu.h>
 
@@ -56,6 +57,17 @@ int address_space_map(address_space_t *space, uintptr_t address, size_t size, un
  * @return 0 on success, -1 on failure.
  */
 int address_space_unmap(address_space_t *space, uintptr_t address, size_t size);
+
+/**
+ * @brief Make a user page ready for an access, as a page fault would: a stack
+ * page not touched yet is mapped, a shared one is copied before a write.
+ *
+ * @param space The address space.
+ * @param address An address inside the page.
+ * @param write Whether the access is a write.
+ * @return 0 if the access can go ahead, -1 if it cannot.
+ */
+int address_space_fault(address_space_t *space, uintptr_t address, bool write);
 
 /**
  * @brief Copy kernel data into user pages as a program's write would: read-only

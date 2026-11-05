@@ -281,10 +281,13 @@ static void page_fault_handler(isr_context_t *regs)
 
     if (isr_from_user(regs))
     {
-        // 0x3: a write to a present page. Outside user memory it is no copy-on-write,
-        // and returning would run the same instruction into the same fault forever
-        if ((error_code & 0x3) == 0x3 && virtual_address < USER_TOP &&
-            arch_mmu_prepare_write(scheduler_current()->space->root, virtual_address) == 0)
+        // Bit 0 clear: nothing mapped there. Bits 0 and 1 set: a write to a present page. Any
+        // other fault is a real violation, and outside user memory none can be resolved:
+        // returning would run the same instruction into the same fault forever
+        bool write = (error_code & 0x2) != 0;
+        if (((error_code & 0x1) == 0 || write) &&
+            virtual_address < USER_TOP &&
+            address_space_fault(scheduler_current()->space, virtual_address, write) == 0)
             return;
 
         kprintf("user page fault: %s %s at %p (thread %u, rip %p)\n",

@@ -11,7 +11,7 @@ long sys_brk(uintptr_t address)
     if (space == NULL)
         return -ENOMEM;
 
-    uintptr_t limit = USER_STACK_TOP - USER_STACK_SIZE - PAGE_SIZE;
+    uintptr_t limit = USER_STACK_TOP - USER_STACK_MAX - PAGE_SIZE;
 
     if (address < space->heap_start || address > limit)
         return (long)space->brk;

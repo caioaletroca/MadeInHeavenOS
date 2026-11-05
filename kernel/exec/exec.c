@@ -8,7 +8,7 @@
 #include <util.h>
 
 // Maximum size of the argument and environment strings on the stack.
-#define ARGS_MAX (USER_STACK_SIZE / 4)
+#define ARGS_MAX (4 * PAGE_SIZE)
 
 /**
  * Count the number of elements in a NULL-terminated vector.
@@ -43,8 +43,7 @@ static int strings_write(address_space_t *space, char *const vector[], uintptr_t
 
 /**
  * Build the initial stack for a new process.
- * Returns 0 on success, -E2BIG if the arguments are too large, -ENOMEM on memory allocation failure,
- * or -EFAULT if writing to the address space fails.
+ * Returns 0 on success, -E2BIG if the arguments are too large, or -ENOMEM on memory allocation failure.
  */
 static int stack_build(address_space_t *space, char *const argv[], char *const envp[], uintptr_t *stack)
 {
@@ -82,7 +81,7 @@ static int stack_build(address_space_t *space, char *const argv[], char *const e
 
     kfree(vector);
     if (ret != 0)
-        return -EFAULT;
+        return -ENOMEM;
 
     *stack = sp;
     return 0;
@@ -102,9 +101,6 @@ int exec_load(const void *image,
 
     uintptr_t end;
     int ret = elf_load(*space, image, size, entry, &end);
-
-    if (ret == 0 && address_space_map(*space, USER_STACK_TOP - USER_STACK_SIZE, USER_STACK_SIZE, MMU_WRITE) != 0)
-        ret = -ENOMEM;
 
     if (ret == 0)
         ret = stack_build(*space, argv, envp, stack);
