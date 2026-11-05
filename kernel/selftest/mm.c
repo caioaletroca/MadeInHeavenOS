@@ -188,6 +188,78 @@ static void mm_address_space_test(void)
     address_space_destroy(space);
 }
 
+static unsigned int page_refs(physaddr_t physical)
+{
+    return frame_lookup(physical)->refs;
+}
+
+/**
+ * Tests that a clone shares its pages until one is written, counting each
+ * frame's references, down to the frames being freed with the last sharer.
+ */
+static void mm_copy_on_write_test(void)
+{
+    static const char before[] = "before";
+    static const char after[] = "after";
+    const uintptr_t writable = USER_BASE;
+    const uintptr_t read_only = USER_BASE + PAGE_SIZE;
+    char text[sizeof(before)];
+
+    address_space_t *space = address_space_create();
+    KASSERT(space != NULL);
+    KASSERT(address_space_map(space, writable, PAGE_SIZE, MMU_WRITE) == 0);
+    KASSERT(address_space_map(space, read_only, PAGE_SIZE, 0) == 0);
+    KASSERT(address_space_write(space, writable, before, sizeof(before)) == 0);
+
+    // A read-only page refuses a write, but not the loader's fill
+    KASSERT(address_space_write(space, read_only, before, sizeof(before)) != 0);
+    KASSERT(address_space_fill(space, read_only, before, sizeof(before)) == 0);
+
+    physaddr_t shared, code, copied, other;
+    KASSERT(arch_mmu_translate(space->root, writable, &shared) == 0);
+    KASSERT(arch_mmu_translate(space->root, read_only, &code) == 0);
+    KASSERT(page_refs(shared) == 1 && page_refs(code) == 1);
+
+    // Clones map the same frames
+    address_space_t *copy = address_space_clone(space);
+    KASSERT(copy != NULL);
+    address_space_t *third = address_space_clone(copy);
+    KASSERT(third != NULL);
+
+    KASSERT(arch_mmu_translate(copy->root, writable, &copied) == 0 && copied == shared);
+    KASSERT(arch_mmu_translate(third->root, read_only, &other) == 0 && other == code);
+    KASSERT(page_refs(shared) == 3 && page_refs(code) == 3);
+
+    // A write gets its own frame, with the old content, and the others do not see it
+    KASSERT(address_space_write(copy, writable + sizeof(before) - 1, "!", 1) == 0);
+    KASSERT(arch_mmu_translate(copy->root, writable, &copied) == 0 && copied != shared);
+    KASSERT(page_refs(shared) == 2 && page_refs(copied) == 1);
+
+    KASSERT(address_space_read(copy, writable, text, sizeof(before) - 1) == 0);
+    KASSERT(memcmp(text, before, sizeof(before) - 1) == 0);
+    KASSERT(address_space_read(space, writable + sizeof(before) - 1, text, 1) == 0 && text[0] == '\0');
+
+    // A second write to the same page copies nothing
+    KASSERT(address_space_write(copy, writable, after, sizeof(after)) == 0);
+    KASSERT(arch_mmu_translate(copy->root, writable, &other) == 0 && other == copied);
+
+    // The last sharer keeps the frame: no copy
+    address_space_destroy(third);
+    KASSERT(page_refs(shared) == 1 && page_refs(code) == 2);
+    KASSERT(address_space_write(space, writable, after, sizeof(after)) == 0);
+    KASSERT(arch_mmu_translate(space->root, writable, &other) == 0 && other == shared);
+
+    // Sharing does not make a read-only page writable
+    KASSERT(address_space_write(copy, read_only, after, sizeof(after)) != 0);
+    KASSERT(page_refs(code) == 2);
+
+    address_space_destroy(copy);
+    KASSERT(page_refs(copied) == 0 && page_refs(code) == 1);
+
+    address_space_destroy(space);
+    KASSERT(page_refs(shared) == 0 && page_refs(code) == 0);
+}
+
 void mm_selftest(void)
 {
     mm_page_map_unmap_test();
@@ -197,4 +269,6 @@ void mm_selftest(void)
     mm_kmalloc_test();
 
     mm_address_space_test();
+
+    mm_copy_on_write_test();
 }
