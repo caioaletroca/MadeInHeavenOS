@@ -14,7 +14,7 @@ static bool address_space_range_valid(uintptr_t address, size_t size)
     return address >= USER_BASE && address <= USER_TOP && size <= USER_TOP - address;
 }
 
-static int address_space_copy(address_space_t *space, uintptr_t address, void *data, size_t size, bool to_user)
+static int address_space_copy(address_space_t *space, uintptr_t address, void *data, size_t size, bool to_user, bool as_user)
 {
     uint8_t *kernel = data;
 
@@ -30,6 +30,11 @@ static int address_space_copy(address_space_t *space, uintptr_t address, void *d
 
         if (chunk > size)
             chunk = size;
+
+        // The kernel reaches the frame directly, past the page's protection: do what the
+        // CPU does for a program's write. Before the translate: this may change the frame
+        if (as_user && arch_mmu_prepare_write(space->root, page) != 0)
+            return -1;
 
         if (arch_mmu_translate(space->root, page, &physical) != 0)
             return -1;
@@ -154,12 +159,17 @@ int address_space_unmap(address_space_t *space, uintptr_t address, size_t size)
 
 int address_space_write(address_space_t *space, uintptr_t address, const void *data, size_t size)
 {
-    return address_space_copy(space, address, (void *)data, size, true);
+    return address_space_copy(space, address, (void *)data, size, true, true);
+}
+
+int address_space_fill(address_space_t *space, uintptr_t address, const void *data, size_t size)
+{
+    return address_space_copy(space, address, (void *)data, size, true, false);
 }
 
 int address_space_read(address_space_t *space, uintptr_t address, void *data, size_t size)
 {
-    return address_space_copy(space, address, data, size, false);
+    return address_space_copy(space, address, data, size, false, false);
 }
 
 void address_space_activate(address_space_t *space)

@@ -72,6 +72,13 @@ void frame_free(physaddr_t address, unsigned int order)
     irq_restore(irq_flags);
 }
 
+void frame_share(physaddr_t address)
+{
+    irq_flags_t irq_flags = irq_save();
+    frame_lookup(address)->refs++;
+    irq_restore(irq_flags);
+}
+
 frame_t *frame_lookup(physaddr_t address)
 {
     for (zone_t *zone = zone_list; zone != NULL; zone = zone->next)

@@ -77,7 +77,7 @@ int elf_load(address_space_t *space, const void *image, size_t size, uintptr_t *
 
         // File bytes go exactly at p_vaddr; the rest up to p_memsz stays zero
         // because mapped frames start zeroed (.bss). Cannot fail: just mapped.
-        if (address_space_write(space, ph->p_vaddr, (const uint8_t *)image + ph->p_offset, ph->p_filesz) != 0)
+        if (address_space_fill(space, ph->p_vaddr, (const uint8_t *)image + ph->p_offset, ph->p_filesz) != 0)
             return -ENOEXEC;
 
         if ((ph->p_flags & PF_X) &&

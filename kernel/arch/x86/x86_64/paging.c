@@ -3,6 +3,7 @@
 #include <x86/vectors.h>
 #include <mm/frame.h>
 #include <mm/kmalloc.h>
+#include <mm/address_space.h>
 #include <sched/scheduler.h>
 #include <sched/process.h>
 #include <mihos/signal.h>
@@ -247,6 +248,31 @@ static int page_translate(page_table_t *root, uintptr_t virtual_address, physadd
     return 0;
 }
 
+/**
+ * @brief Find the page table entry corresponding to a virtual address.
+ *
+ * @param root Root of the page table hierarchy.
+ * @param virtual_address Virtual address to look up.
+ * @return Pointer to the page table entry if present, NULL otherwise.
+ */
+static page_table_entry_t *page_entry_find(page_table_t *root, uintptr_t virtual_address)
+{
+    page_table_t *table = root;
+
+    for (int shift = P4_INDEX_SHIFT; shift > P1_INDEX_SHIFT; shift -= 9)
+    {
+        page_table_entry_t entry = table->pages[PAGE_ENTRY_INDEX(virtual_address, shift)];
+
+        if ((entry & PAGE_TABLE_ENTRY_PRESENT) == 0 || (entry & PAGE_TABLE_ENTRY_PAGE_SIZE) != 0)
+            return NULL;
+
+        table = page_table_from_entry(entry);
+    }
+
+    page_table_entry_t *entry = &table->pages[PAGE_ENTRY_INDEX(virtual_address, P1_INDEX_SHIFT)];
+    return (*entry & PAGE_TABLE_ENTRY_PRESENT) != 0 ? entry : NULL;
+}
+
 static void page_fault_handler(isr_context_t *regs)
 {
     uintptr_t virtual_address;
@@ -255,6 +281,12 @@ static void page_fault_handler(isr_context_t *regs)
 
     if (isr_from_user(regs))
     {
+        // 0x3: a write to a present page. Outside user memory it is no copy-on-write,
+        // and returning would run the same instruction into the same fault forever
+        if ((error_code & 0x3) == 0x3 && virtual_address < USER_TOP &&
+            arch_mmu_prepare_write(scheduler_current()->space->root, virtual_address) == 0)
+            return;
+
         kprintf("user page fault: %s %s at %p (thread %u, rip %p)\n",
                 (error_code & 0x10) ? "exec" : (error_code & 0x2) ? "write"
                                                                   : "read",
@@ -316,6 +348,38 @@ int arch_mmu_translate(mmu_root_t *root, uintptr_t virtual_address, physaddr_t *
     return page_translate(root->top, virtual_address, physical_address);
 }
 
+int arch_mmu_prepare_write(mmu_root_t *root, uintptr_t virtual_address)
+{
+    page_table_entry_t *entry = page_entry_find(root->top, virtual_address);
+    if (entry == NULL)
+        return -1;
+    if ((*entry & PAGE_TABLE_ENTRY_WRITE) != 0)
+        return 0;
+    if ((*entry & PAGE_TABLE_ENTRY_COPY_ON_WRITE) == 0)
+        return -1;
+
+    physaddr_t shared = *entry & PAGE_4K_ADDRESS_MASK;
+    physaddr_t page = shared;
+
+    // The last user just keeps the frame
+    if (frame_lookup(shared)->refs > 1)
+    {
+        page = frame_alloc(0, 0);
+        if (page == 0)
+            return -1;
+
+        memcpy(phys_to_kern(page), phys_to_kern(shared), PAGE_SIZE);
+        frame_free(shared, 0);
+    }
+
+    uint64_t flags = *entry & ~PAGE_4K_ADDRESS_MASK & ~PAGE_TABLE_ENTRY_COPY_ON_WRITE;
+    *entry = page | flags | PAGE_TABLE_ENTRY_WRITE;
+
+    __asm__ __volatile__("invlpg (%0)" ::"r"(virtual_address) : "memory");
+
+    return 0;
+}
+
 static inline physaddr_t cr3_read(void)
 {
     physaddr_t value;
@@ -358,7 +422,8 @@ static void page_table_free(physaddr_t physical, int level)
 }
 
 /**
- * Copy a user-half page table and everything below it.
+ * Copy a user-half page table and share the pages below it: writable ones
+ * become copy-on-write in both spaces, read-only ones are simply shared.
  *
  * @param from Source table.
  * @param to Destination table.
@@ -379,6 +444,19 @@ static int page_table_copy(page_table_t *from, page_table_t *to, int level)
         if (level > 1 && (entry & PAGE_TABLE_ENTRY_PAGE_SIZE) != 0)
             panic("page_table_copy: Huge page in a user address space\n");
 
+        if (level == 1)
+        {
+            if ((entry & PAGE_TABLE_ENTRY_WRITE) != 0)
+            {
+                entry = (entry & ~PAGE_TABLE_ENTRY_WRITE) | PAGE_TABLE_ENTRY_COPY_ON_WRITE;
+                from->pages[i] = entry;
+            }
+
+            to->pages[i] = entry;
+            frame_share(entry & PAGE_4K_ADDRESS_MASK);
+            continue;
+        }
+
         // A table and a page are both one frame
         physaddr_t physical;
         page_table_t *copy = page_table_create(&physical);
@@ -388,10 +466,7 @@ static int page_table_copy(page_table_t *from, page_table_t *to, int level)
         // Linked first: from here on, destroying the root frees it
         to->pages[i] = physical | (entry & ~PAGE_4K_ADDRESS_MASK);
 
-        page_table_t *source = page_table_from_entry(entry);
-        if (level == 1)
-            memcpy(copy, source, PAGE_SIZE);
-        else if (page_table_copy(source, copy, level - 1) != 0)
+        if (page_table_copy(page_table_from_entry(entry), copy, level - 1) != 0)
             return -1;
     }
 
@@ -466,7 +541,14 @@ void arch_mmu_root_destroy(mmu_root_t *root)
 
 int arch_mmu_root_copy(mmu_root_t *to, mmu_root_t *from)
 {
-    return page_table_copy(from->top, to->top, 4);
+    int ret = page_table_copy(from->top, to->top, 4);
+
+    // Pages of from just lost write access, but the TLB may still remember it. Even after a
+    // failure: the pages shared so far stay copy-on-write
+    if (cr3_read() == from->top_physical)
+        cr3_write(from->top_physical);
+
+    return ret;
 }
 
 void arch_mmu_activate(mmu_root_t *root)

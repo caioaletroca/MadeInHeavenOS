@@ -57,6 +57,17 @@ int arch_mmu_unmap(mmu_root_t *root, uintptr_t virtual_address);
 int arch_mmu_translate(mmu_root_t *root, uintptr_t virtual_address, uintptr_t *physical_address);
 
 /**
+ * @brief Get a mapped page ready for a write. A page shared by copy-on-write
+ * becomes private and writable.
+ *
+ * @param root Pointer to the root of the translation hierarchy.
+ * @param virtual_address Virtual address inside the page.
+ * @return 0 if the page can be written, negative value if it is not mapped,
+ * read-only for good, or there is no memory for the copy.
+ */
+int arch_mmu_prepare_write(mmu_root_t *root, uintptr_t virtual_address);
+
+/**
  * @brief Prepare the kernel half for sharing between address spaces.
  *
  * Must run after the frame allocator is up and before the first

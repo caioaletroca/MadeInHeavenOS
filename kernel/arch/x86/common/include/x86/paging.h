@@ -32,6 +32,9 @@
 // Bit representing the page size, 2 MiB (true) or 4 KB (false)
 #define PAGE_TABLE_ENTRY_PAGE_SIZE (1ULL << 7)
 
+// Ignored by the CPU, ours to use: read-only until the next write, which makes a private copy
+#define PAGE_TABLE_ENTRY_COPY_ON_WRITE (1ULL << 9)
+
 typedef uint64_t page_table_entry_t;
 
 /**

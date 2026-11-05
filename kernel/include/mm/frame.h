@@ -35,6 +35,13 @@ physaddr_t frame_alloc(unsigned int order, unsigned int flags);
 void frame_free(physaddr_t address, unsigned int order);
 
 /**
+ * Add a reference to a frame: frame_free frees it only once the last one is gone
+ *
+ * @param address       Memory physical address
+ */
+void frame_share(physaddr_t address);
+
+/**
  * Look up the frame structure corresponding to a physical address
  *
  * @param address       Memory physical address
