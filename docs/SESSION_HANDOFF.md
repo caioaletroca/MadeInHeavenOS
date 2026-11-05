@@ -2869,6 +2869,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   and after `user_selftest` to catch a missing `process_release` / `file_put`.
 - Fault messages print the thread id, not the pid.
 - `process_wait(NULL)` returns -1, which is also a valid exit status (should assert).
+- A zombie keeps its whole address space until its parent waits: `process_release` is the only
+  place that destroys it, so a parent that never waits holds every child's memory (Linux frees
+  it at exit and keeps only the small struct). A running thread cannot destroy the space it is
+  on, so the reaper is the natural place, once the thread is gone.
 - `wait` has no `WNOHANG` and no process groups (`pid` 0, `< -1` give `-ECHILD`); waking every
   waiter on any child's exit is fine with one thread per process.
 - `spawn` and `exec` copy user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
