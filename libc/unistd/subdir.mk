@@ -11,6 +11,9 @@ getcwd.c \
 close.c \
 pipe.c \
 fork.c \
+execv.c \
+execve.c \
+execvp.c \
 dup.c \
 dup2.c \
 lseek.c \

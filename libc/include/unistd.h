@@ -14,10 +14,6 @@ __BEGIN_DECLS
  */
 extern char **environ;
 
-int execv(const char *, char *const[]);
-int execve(const char *, char *const[], char *const[]);
-int execvp(const char *, char *const[]);
-
 /**
  * Set the end of the data segment (heap) for the calling process.
  *
@@ -40,6 +36,34 @@ void *sbrk(intptr_t increment);
  * @return The process ID of the newly created child process, or -1 on error.
  */
 pid_t fork(void);
+
+/**
+ * Execute a program, replacing the current process image.
+ *
+ * @param path The path to the program to execute.
+ * @param argv The argument vector for the program.
+ * @return -1 on error.
+ */
+int execv(const char *path, char *const argv[]);
+
+/**
+ * Execute a program, replacing the current process image.
+ *
+ * @param path The path to the program to execute.
+ * @param argv The argument vector for the program.
+ * @param envp The environment vector for the program.
+ * @return -1 on error.
+ */
+int execve(const char *path, char *const argv[], char *const envp[]);
+
+/**
+ * Execute a program, searching for it in the directories listed in the PATH environment variable.
+ *
+ * @param name The name of the program to execute.
+ * @param argv The argument vector for the program.
+ * @return -1 on error.
+ */
+int execvp(const char *name, char *const argv[]);
 
 /**
  * Reposition the read/write file offset of the open file associated with the file descriptor.

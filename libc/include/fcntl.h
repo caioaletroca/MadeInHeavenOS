@@ -27,6 +27,15 @@ int open(const char *path, int flags, ...);
  */
 int creat(const char *path, mode_t mode);
 
+/**
+ * @brief Reads or sets a file descriptor's flags.
+ *
+ * @param fd The file descriptor.
+ * @param command F_GETFD, or F_SETFD with the new flags as a third argument.
+ * @return The flags for F_GETFD, 0 for F_SETFD. On error, -1 is returned.
+ */
+int fcntl(int fd, int command, ...);
+
 __END_DECLS
 
 #endif /* _FCNTL_H_ */
