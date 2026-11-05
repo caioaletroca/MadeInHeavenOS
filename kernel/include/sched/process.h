@@ -38,7 +38,8 @@ typedef struct process
     wait_queue_t child_exits; // the parent sleeps here in wait; every child's exit wakes it
 
     struct file *files[PROCESS_MAX_FILES];
-    struct vfs_node *cwd; // the current directory, where relative paths start (one reference); NULL: the root
+    uint32_t close_on_exec; // bit n: close fd n at exec. Only meaningful for an open fd
+    struct vfs_node *cwd;   // the current directory, where relative paths start (one reference); NULL: the root
 
     spinlock_t lock;
 } process_t;
@@ -111,6 +112,24 @@ void process_cwd_inherit(process_t *child, process_t *parent);
  * @param dir A directory, with one reference for the process.
  */
 void process_cwd_set(process_t *p, struct vfs_node *dir);
+
+/**
+ * Close every fd marked close-on-exec.
+ *
+ * @param p The process.
+ */
+void process_files_close_on_exec(process_t *p);
+
+/**
+ * Turn the calling process into a new program, which cannot fail: its address
+ * space is replaced and its saved user registers rewritten, so the current
+ * system call returns into the new program.
+ *
+ * @param space The new address space, taken over by the process.
+ * @param entry User address where execution starts.
+ * @param user_stack Initial user stack pointer.
+ */
+void process_exec(struct address_space *space, uintptr_t entry, uintptr_t user_stack);
 
 /**
  * Add a child process to its parent's list of children.

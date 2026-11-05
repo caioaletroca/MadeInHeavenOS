@@ -1,5 +1,6 @@
-#include <mihos/signal.h>
 #include <stdbool.h>
+#include <arch/context.h>
+#include <mihos/signal.h>
 #include <sched/process.h>
 #include <sched/scheduler.h>
 #include <sched/thread.h>
@@ -108,6 +109,7 @@ int process_fd_install(process_t *p, file_t *file)
         if (p->files[i] == NULL)
         {
             p->files[i] = file;
+            p->close_on_exec &= ~(1u << i);
             return i;
         }
     }
@@ -160,6 +162,42 @@ void process_files_inherit(process_t *child, process_t *parent)
     for (int fd = 0; fd < PROCESS_MAX_FILES; fd++)
         if (parent->files[fd] != NULL)
             child->files[fd] = file_get(parent->files[fd]);
+
+    child->close_on_exec = parent->close_on_exec;
+}
+
+void process_files_close_on_exec(process_t *p)
+{
+    for (int fd = 0; fd < PROCESS_MAX_FILES; fd++)
+    {
+        if ((p->close_on_exec & (1u << fd)) != 0 && p->files[fd] != NULL)
+        {
+            file_put(p->files[fd]);
+            p->files[fd] = NULL;
+        }
+    }
+
+    p->close_on_exec = 0;
+}
+
+void process_exec(address_space_t *space, uintptr_t entry, uintptr_t user_stack)
+{
+    thread_t *thread = scheduler_current();
+    process_t *p = thread->process;
+
+    address_space_t *old = p->space;
+    p->space = space;
+    thread->space = space;
+
+    // The old space must not be active when it is destroyed
+    address_space_activate(space);
+    address_space_destroy(old);
+
+    process_files_close_on_exec(p);
+
+    // A trap from ring 3 starts at the top of the kernel stack, so this
+    // overwrites the frame of the running system call: its iretq enters the program
+    arch_user_context_init(thread->stack, thread->stack_size, entry, user_stack);
 }
 
 void process_cwd_inherit(process_t *child, process_t *parent)
