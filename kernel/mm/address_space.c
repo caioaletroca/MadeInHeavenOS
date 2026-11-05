@@ -76,6 +76,24 @@ void address_space_destroy(address_space_t *space)
     kfree(space);
 }
 
+address_space_t *address_space_clone(address_space_t *space)
+{
+    address_space_t *copy = address_space_create();
+    if (copy == NULL)
+        return NULL;
+
+    if (arch_mmu_root_copy(copy->root, space->root) != 0)
+    {
+        address_space_destroy(copy);
+        return NULL;
+    }
+
+    copy->heap_start = space->heap_start;
+    copy->brk = space->brk;
+
+    return copy;
+}
+
 int address_space_map(address_space_t *space, uintptr_t address, size_t size, unsigned int flags)
 {
     if ((address & (PAGE_SIZE - 1)) != 0)

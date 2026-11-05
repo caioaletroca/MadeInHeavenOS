@@ -357,6 +357,47 @@ static void page_table_free(physaddr_t physical, int level)
     frame_free(physical, 0);
 }
 
+/**
+ * Copy a user-half page table and everything below it.
+ *
+ * @param from Source table.
+ * @param to Destination table.
+ * @param level 4 for an L4 table, down to 1 for an L1 table (whose entries are pages).
+ * @return 0 on success, -1 on failure.
+ */
+static int page_table_copy(page_table_t *from, page_table_t *to, int level)
+{
+    unsigned int count = level == 4 ? PAGE_TABLE_KERNEL_FIRST : PAGE_TABLE_ENTRIES;
+
+    for (unsigned int i = 0; i < count; i++)
+    {
+        page_table_entry_t entry = from->pages[i];
+
+        if ((entry & PAGE_TABLE_ENTRY_PRESENT) == 0)
+            continue;
+
+        if (level > 1 && (entry & PAGE_TABLE_ENTRY_PAGE_SIZE) != 0)
+            panic("page_table_copy: Huge page in a user address space\n");
+
+        // A table and a page are both one frame
+        physaddr_t physical;
+        page_table_t *copy = page_table_create(&physical);
+        if (copy == NULL)
+            return -1;
+
+        // Linked first: from here on, destroying the root frees it
+        to->pages[i] = physical | (entry & ~PAGE_4K_ADDRESS_MASK);
+
+        page_table_t *source = page_table_from_entry(entry);
+        if (level == 1)
+            memcpy(copy, source, PAGE_SIZE);
+        else if (page_table_copy(source, copy, level - 1) != 0)
+            return -1;
+    }
+
+    return 0;
+}
+
 void arch_mmu_init(void)
 {
     // Address spaces copy the kernel's L4 entries when created. An L4 entry
@@ -421,6 +462,11 @@ void arch_mmu_root_destroy(mmu_root_t *root)
 
     frame_free(root->top_physical, 0);
     kfree(root);
+}
+
+int arch_mmu_root_copy(mmu_root_t *to, mmu_root_t *from)
+{
+    return page_table_copy(from->top, to->top, 4);
 }
 
 void arch_mmu_activate(mmu_root_t *root)

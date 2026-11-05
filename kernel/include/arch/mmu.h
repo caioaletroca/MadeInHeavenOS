@@ -80,6 +80,15 @@ mmu_root_t *arch_mmu_root_create(void);
 void arch_mmu_root_destroy(mmu_root_t *root);
 
 /**
+ * @brief Copy the contents of one translation root to another.
+ *
+ * @param to Destination root.
+ * @param from Source root.
+ * @return 0 on success, negative value on failure.
+ */
+int arch_mmu_root_copy(mmu_root_t *to, mmu_root_t *from);
+
+/**
  * @brief Switch the CPU to a translation root.
  *
  * @param root Root to activate, or NULL for the kernel root.

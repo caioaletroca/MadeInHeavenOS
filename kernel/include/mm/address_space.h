@@ -31,6 +31,13 @@ address_space_t *address_space_create(void);
 void address_space_destroy(address_space_t *space);
 
 /**
+ * @brief Make a private copy of an address space: every page, and the heap's limits.
+ *
+ * @return The copy, or NULL if out of memory.
+ */
+address_space_t *address_space_clone(address_space_t *space);
+
+/**
  * @brief Map fresh zeroed pages covering [address, address + size) for user access.
  *
  * @param address Page-aligned start, inside [USER_BASE, USER_TOP).
