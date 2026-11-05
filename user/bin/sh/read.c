@@ -93,7 +93,8 @@ static int word_close(parser_t *p)
     if (!p->in_word)
         return 0;
 
-    if (p->cmd->argc == MAX_ARGS)
+    stage_t *stage = &p->cmd->stages[p->cmd->count];
+    if (stage->argc == MAX_ARGS)
     {
         p->error = "too many arguments";
         return -1;
@@ -106,8 +107,43 @@ static int word_close(parser_t *p)
     }
 
     p->cmd->words[p->pos++] = '\0';
-    p->cmd->argv[p->cmd->argc++] = &p->cmd->words[p->start];
+    stage->argv[stage->argc++] = &p->cmd->words[p->start];
     p->in_word = 0;
+    return 0;
+}
+
+/**
+ * Closes the current stage in the parser.
+ *
+ * @param p The parser state.
+ * @param more Indicates if more stages are expected (i.e., a '|' was encountered).
+ * @return 0 on success, -1 on error.
+ */
+static int stage_close(parser_t *p, int more)
+{
+    if (word_close(p) < 0)
+        return -1;
+
+    stage_t *stage = &p->cmd->stages[p->cmd->count];
+    if (stage->argc == 0)
+    {
+        p->error = "syntax error near '|'"; // "| a", "a |", "a || b"
+        return -1;
+    }
+
+    stage->argv[stage->argc] = NULL; // NULL-terminate the argv array
+    p->cmd->count++;                 // increment the stage count for the next stage if needed
+
+    if (more)
+    {
+        if (p->cmd->count == PIPELINE_MAX)
+        {
+            p->error = "too many commands in a pipeline";
+            return -1;
+        }
+        p->cmd->stages[p->cmd->count].argc = 0; // initialize the next stage's argc
+    }
+
     return 0;
 }
 
@@ -182,7 +218,8 @@ read_result_t command_parse(shell_t *sh, command_t *cmd)
     parser_t parser = {
         .cmd = cmd};
     quote_state_t state = STATE_UNQUOTED;
-    cmd->argc = 0;
+    cmd->count = 0;
+    cmd->stages[0].argc = 0;
 
     for (const char *s = cmd->command; *s != '\0'; s++)
     {
@@ -208,6 +245,8 @@ read_result_t command_parse(shell_t *sh, command_t *cmd)
                 ret = expand(&parser, sh, &s);
             else if (c == '\\' && s[1] != '\0')
                 ret = word_append(&parser, *++s);
+            else if (c == '|')
+                ret = stage_close(&parser, 1);
             else
                 ret = word_append(&parser, c);
             break;
@@ -250,6 +289,15 @@ read_result_t command_parse(shell_t *sh, command_t *cmd)
         return READ_NOTHING;
     }
 
-    cmd->argv[cmd->argc] = NULL;
-    return cmd->argc == 0 ? READ_NOTHING : READ_COMMAND;
+    // A blank line: nothing to run, and no error
+    if (cmd->count == 0 && cmd->stages[0].argc == 0)
+        return READ_NOTHING;
+
+    if (stage_close(&parser, 0) < 0)
+    {
+        fprintf(stderr, "sh: %s\n", parser.error);
+        return READ_NOTHING;
+    }
+
+    return READ_COMMAND;
 }

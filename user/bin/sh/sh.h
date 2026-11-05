@@ -6,6 +6,7 @@
 #define CWD_MAX 1024
 #define COMMAND_MAX 1024
 #define MAX_ARGS 64
+#define PIPELINE_MAX 8 // commands in one pipeline: a | b | ... (bash: no limit)
 
 /**
  * Structure representing the shell state.
@@ -29,14 +30,23 @@ typedef enum
 } read_result_t;
 
 /**
+ * One command of a pipeline.
+ */
+typedef struct stage
+{
+    char *argv[MAX_ARGS + 1]; // NULL-terminated, pointing into command_t.words
+    int argc;
+} stage_t;
+
+/**
  * Structure representing a command.
  */
 typedef struct command
 {
     char command[COMMAND_MAX];
-    char *argv[MAX_ARGS + 1];
-    int argc;
-    char words[COMMAND_MAX]; // the words, each '\0'-terminated; argv points here
+    stage_t stages[PIPELINE_MAX]; // in order: stages[0]'s stdout is stages[1]'s stdin
+    int count;                    // stages used; 1 for a plain command
+    char words[COMMAND_MAX];      // every stage's words, each '\0'-terminated; stage_t.argv points here
 } command_t;
 
 /**
@@ -60,10 +70,18 @@ read_result_t command_parse(shell_t *sh, command_t *cmd);
  * Runs a builtin command.
  *
  * @param sh The shell instance.
- * @param cmd The command structure containing the command to execute.
+ * @param stage The stage of the pipeline to execute.
  * @return 1 if a builtin command was executed, 0 if not a builtin, -1 on error.
  */
-int builtin_run(shell_t *sh, command_t *cmd);
+int builtin_run(shell_t *sh, stage_t *stage);
+
+/**
+ * Checks if a builtin command exists.
+ *
+ * @param name The name of the command to check.
+ * @return 1 if the builtin exists, 0 if not.
+ */
+int builtin_exists(const char *name);
 
 /**
  * Runs a command.

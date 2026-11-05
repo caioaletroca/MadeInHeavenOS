@@ -135,19 +135,32 @@ static int builtin_pwd(shell_t *sh, int argc, char *argv[])
     return 0;
 }
 
-int builtin_run(shell_t *sh, command_t *cmd)
+/**
+ * Lookup a builtin command by name.
+ *
+ * @param name The name of the builtin command.
+ * @return A pointer to the builtin_t structure if found, NULL otherwise.
+ */
+static const builtin_t *builtin_lookup(const char *name)
 {
-    if (cmd == NULL || cmd->argc == 0)
-        return -1;
-
     for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++)
-    {
-        if (strcmp(cmd->argv[0], builtins[i].name) == 0)
-        {
-            sh->status = builtins[i].run(sh, cmd->argc, cmd->argv);
-            return 1;
-        }
-    }
+        if (strcmp(name, builtins[i].name) == 0)
+            return &builtins[i];
 
-    return 0;
+    return NULL;
+}
+
+int builtin_exists(const char *name)
+{
+    return builtin_lookup(name) != NULL;
+}
+
+int builtin_run(shell_t *sh, stage_t *stage)
+{
+    const builtin_t *builtin = builtin_lookup(stage->argv[0]);
+    if (builtin == NULL)
+        return 0;
+
+    sh->status = builtin->run(sh, stage->argc, stage->argv);
+    return 1;
 }
