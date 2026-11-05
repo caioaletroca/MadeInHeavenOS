@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`help`/`history`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -86,6 +86,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+21554b6 test: cover copy-on-write
+289f271 feat(mm): share pages at fork and copy them on write
+9d2a99f docs(architecture): record a zombie's memory as debt
+86b15f7 docs(architecture): document the shell on fork and exec in handoff
 f959568 feat(sh): run commands with fork and exec
 844ffdc docs(architecture): document exec and close-on-exec in handoff
 18262db docs(sched): the fd table needs a lock only with threads
@@ -569,7 +573,7 @@ boot_info regions ──▶ mmap_init ──▶ zones (one buddy system each) �
 ### Virtual memory and address spaces
 
 ```text
-L4[0..255]   user half    private per address space, every page owned by it
+L4[0..255]   user half    private per address space, pages counted (a fork shares them)
 L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at boot,
                           arch_mmu_root_create copies the 256 entries into each new root
 ```
@@ -585,11 +589,23 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   ```
 - `address_space_t` (`mm/address_space.c`): `root`, `heap_start`, `brk`; `create` (zeroed: no heap
   until `exec_load`), `map` (fresh zeroed frames, `MMU_USER` added; on failure unmaps what it mapped,
-  so nothing stays), `unmap` (translate, unmap, `frame_free`; skips holes), `write`/`read` (copy
+  so nothing stays), `unmap` (translate, unmap, `frame_free`; skips holes), `write`/`read`/`fill` (copy
   through the direct map, no activation needed), `activate` (NULL = kernel root), `destroy`.
-  **Ownership rule:** everything mapped in the user half is freed with the space, so shared or kernel
-  frames must never be mapped there. `heap_start`/`brk` have no lock (one thread per process, like
-  the fd table).
+  `write` is a program's write: the direct map ignores page protection, so it runs
+  `arch_mmu_prepare_write` on each page first (read-only `-1`, shared pages copied). `fill` skips
+  that, for the ELF loader writing `.text` into a space nothing runs in yet.
+  **Ownership rule:** every frame in a user half is counted in `frame_t.refs` and freed with the last
+  space mapping it, so kernel frames must never be mapped there. `heap_start`/`brk` have no lock (one
+  thread per process, like the fd table).
+- **Copy-on-write:** `page_table_copy` copies tables but shares pages (`frame_share`, `refs`
+  +1). Writable pages lose `WRITE` and gain `PAGE_TABLE_ENTRY_COPY_ON_WRITE` (bit 9, ignored by the
+  CPU) in both spaces; that bit is what tells them from pages read-only for good. Read-only pages
+  are only shared. `arch_mmu_root_copy` then reloads CR3 even after a failure, or the parent's TLB
+  would keep allowing writes into shared frames. `arch_mmu_prepare_write` (the walk is
+  `page_entry_find`): writable → 0; no bit → -1; `refs` > 1 → copy into a new frame and
+  `frame_free` the old one; the last user keeps its frame; then `WRITE` back, the bit off, `invlpg`.
+  `page_fault_handler` calls it for a user write to a present page (`0x3`) below `USER_TOP`, and
+  returns so the instruction runs again; a failure ends in `SIGSEGV` like any bad access.
 - `arch_mmu_root_destroy` walks `L4[0..255]` and frees pages and tables; it panics on the active root.
   `arch_mmu_activate` skips the CR3 reload when the root is already active.
 - Intermediate tables get the USER bit when the mapping has `MMU_USER` (`page_table_next`); the kernel
@@ -676,9 +692,9 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `process_files_close_on_exec` (spawn is a fork and an exec in one) → `process_start`. Order
   matters: the child is complete before it can run.
 - **`fork()`** → the child's pid in the parent, 0 in the child, or `-ENOMEM`. Every user page
-  is copied with its flags (`address_space_clone` → `arch_mmu_root_copy` → `page_table_copy`,
-  which allocates a frame per table and per page; each table is linked before it is filled, so
-  `address_space_destroy` frees a partial copy), with `heap_start` and `brk`. `child_create`
+  is shared copy-on-write (`address_space_clone` → `arch_mmu_root_copy` → `page_table_copy`, see
+  "Copy-on-write"; it allocates a frame per table; each table is linked before it is filled, so
+  `address_space_destroy` undoes a partial copy), with `heap_start` and `brk`. `child_create`
   (shared with spawn): `process_create`, fds and directory inherited, linked as a child.
   `process_start_fork` → `thread_create_fork` → `arch_user_context_fork`: the first context of
   the child's kernel stack is a copy of the parent's system call frame, with `rax` 0. That
@@ -1217,6 +1233,16 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     directory; reaping the old program's child; 50 execs in one process; `execv` (`environ`);
     `execvp` (a missing `PATH` entry skipped, `argv[0]` as passed, a `'/'` name, `ENOENT`,
     `EACCES`, no `PATH`). fd 3 free at the end. No `ENOEXEC` case (neither root has a non-ELF file).
+  - `cow`: `fork_flushed` resets the child's `test_failures`, so each reports only its own. 16
+    children alive over a 128 MiB block (2 GiB as copies, on 1 GiB: only sharing fits), each writing
+    its own page; the parent writing first, to a page it just used (the TLB flush); the child
+    first, then the parent as last user; three generations on one page. The kernel's writes into
+    shared pages (`read` across two pages, `stat`, `getcwd`, `pipe`, `waitpid`'s status) leave the
+    parent's alone. `read` into a `const` and into code `EFAULT`, before and after a fork; a write
+    to a kernel address `SIGSEGV` (a regression hangs the suite here: the fault would retry
+    forever). The break shrunk on shared pages; 200 rounds with `_exit` and `exec`. fd 3 free.
+    The boot's `mm_selftest` reads the counts directly: three clones (`refs` 3), a write gets a
+    new frame, the last user keeps its own, read-only pages stay shared and refuse, 0 at the end.
   - `spawn`: spawns itself with a mode in `argv[1]` (no extra modules): exit 7 / 300 (→ 44) /
     SIGSEGV through the `W*` macros, `argv`/`envp` passed exactly, NULL `envp`, two children waited
     in reverse order, waiting twice → `ECHILD`, 20 rounds, `ENOENT`/`EFAULT`/`E2BIG`/`ENOSYS`/
@@ -2588,8 +2614,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **C3 (done), `execve`**. C3a: `exec` (`SYS_EXEC` 4), `FD_CLOEXEC`/`fcntl` (`SYS_FCNTL` 31),
     `execve`/`execv`/`execvp`, the `exec` test (see "User mode and syscalls"). C3b: the shell
     runs everything with `fork` + `execvp`, builtins in pipelines included (see "Shell"). Next: C4.
-  - **C4, copy-on-write** (`frame_t.refs` exists; read-only pages, the write fault copies or,
-    for the last user, makes it writable) **and stack growth** (also page-fault work).
+  - **C4.** C4a (done): copy-on-write (see "Virtual memory", the `cow` test). Next, C4b: **stack
+    growth**: reserve up to 8 MiB below `USER_STACK_TOP` (Linux's default limit) and map a page on
+    its first touch instead of 64 KiB up front. A not-present fault in that range maps a zeroed
+    page; the kernel's copies need the same path, or `read` into an untouched stack buffer
+    is `EFAULT`. `sys_brk`'s limit and `ARGS_MAX` use `USER_STACK_SIZE` and follow it.
   - **C5, signals**: `kill` (`SYS_KILL` 7), `sigaction`, `sigprocmask`, `sigreturn`, delivery on
     the way back to ring 3, default actions, `SIGCHLD`, `SIGPIPE`, `EINTR`.
   - **C6, terminal control**: process groups and sessions, Ctrl+C → `SIGINT` to the foreground
@@ -2810,9 +2839,13 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   still print their fault messages; the user self-test's `files` program prints `Files test: stdout
   still works`. The stdio test's last line has no `'\n'` (it checks the flush at `exit`), so the
   runner's `test /usr/tests/stdio: ok` follows on the same line.
-- `fork` copies every page, text included, at once (copy-on-write is C4). The `fork` test cannot
-  see a small frame leak: 200 rounds stay far below QEMU's 1 GiB, and nothing reads a free-frame
-  count. No `vfork`, `pthread_atfork` or `clone`. User vector registers (`xmm`) are in no saved
+- Copy-on-write: page tables are still copied at each fork (Linux shares none either, but builds
+  them lazily for some mappings). Out of memory at a write fault is `SIGSEGV` (Linux has an OOM
+  killer and `SIGBUS`); in a system call it is `EFAULT` (should be `ENOMEM`), as `-1` carries no
+  reason. A `read` refused by a read-only buffer has already moved the file offset (Linux
+  checks first). `frame_share` and the fault path take no lock beyond IRQs off: fine on one CPU.
+  Nothing reads a free-frame count, so only `mm_selftest` sees a leaked frame.
+- No `vfork`, `pthread_atfork` or `clone`. User vector registers (`xmm`) are in no saved
   frame: a context switch does not save them and a child does not get them (not yet checked
   whether user programs compile to code that uses them).
 - `exec`: `SYS_SPAWN` stays a system call (`posix_spawn` could become `fork` + `exec` in libc, with

@@ -196,7 +196,7 @@ docs/                     # handoff, roadmap
    process, `chdir`/`getcwd` and the shell's `cd`/`pwd` (done).
 8. Phase C (the process model) in progress, before phase B's hardware path (PCI, then
    AHCI/NVMe; GPT). Order: C1 `dup`/`dup2`, pipes and the shell's `|` (done), C2 `fork` as a plain copy (done), C3
-   `execve` (done, the shell runs on `fork` + `execvp`), C4 copy-on-write and stack growth, C5 signals, C6 terminal control (process
+   `execve` (done, the shell runs on `fork` + `execvp`), C4 copy-on-write (done) and stack growth (next), C5 signals, C6 terminal control (process
    groups, termios), C7 Lua. Steps in `SESSION_HANDOFF.md`.
 
 ## Reference projects
