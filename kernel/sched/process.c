@@ -332,7 +332,7 @@ __attribute__((noreturn)) void process_exit(int status)
             wait_queue_wake_all(&adopter->child_exits);
     }
 
-    // One thread per process: only this thread touches the table now (needs a lock with threads or fork)
+    // One thread per process: only this thread touches the table now (needs a lock with threads)
     process_close_files(current);
 
     // Release the current working directory of the process
