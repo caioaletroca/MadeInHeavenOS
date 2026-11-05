@@ -86,6 +86,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+f959568 feat(sh): run commands with fork and exec
+844ffdc docs(architecture): document exec and close-on-exec in handoff
 18262db docs(sched): the fd table needs a lock only with threads
 041ad76 test: cover exec and close-on-exec
 fc28efb feat(libc): add execve, execv, execvp and fcntl
@@ -1157,7 +1159,7 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     buffered (`3 stderr first`, then the rest at exit's flush, `5 flushed by exit` last). Then
     on the console, line-buffered, checked by eye (`1`, `3`, `2 no newline... 4`, `checks: …`,
     `5 flushed by exit` last, only via `exit`). Return values, `ferror` + `EBADF` after `close(2)`.
-  - `shell`: `/bin/sh` on 29 scripts, each written into a pipe that becomes its stdin (written
+  - `shell`: `/bin/sh` on 33 scripts, each written into a pipe that becomes its stdin (written
     and its write end closed before the spawn, or the shell would inherit it and never see
     EOF), stdout and stderr in a pipe each, `PATH=/bin` and `GREETING` in its environment; both
     outputs and the status compared exactly. No banner or prompt; quotes and escapes; `$NAME`,
@@ -1170,8 +1172,10 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     a quoted or escaped `|` as a word, a script piped into `sh`, `cat /dev/null - /dev/null`,
     the order with the commands around it, the last command's status (`echo x | hello` 42,
     `hello | cat` 0), not found first (0) and last (127), `cat`'s error and status 1, the three
-    syntax errors with the script going on, 9 commands refused, builtins refused (`cd` in a
-    pipeline leaves the directory alone). `/usr/tests/hello` (28 KB, over a pipe's buffer, full
+    syntax errors with the script going on, 9 commands refused. A directory as a command (126).
+    Builtins in a pipeline: `pwd | cat` with nothing printed twice, `cd` and `exit` changing only
+    their copy of the shell, `cd`'s failure through `wait`. `cat hello | nope` ends, with `cat`'s
+    `Broken pipe` (a regression hangs the suite here). `/usr/tests/hello` (28 KB, over a pipe's buffer, full
     of `'\0'`) through three `cat`s, byte for byte. fd 3 free at the end.
   - `brk`: heap on the page after `.bss`, exact unaligned break, zeroed pages after shrink and regrow,
     `ENOMEM` past the limit / on wrap / below `heap_start`, a 32 KiB stack array.
@@ -2581,12 +2585,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **C2 (done), `fork`** as a plain copy of the address space (every user page copied), the fd table
     (shared `file_t`s), `cwd` and `brk`; the child gets a copy of the parent's syscall frame with
     `rax` 0 (see "User mode and syscalls"), the `fork` test. Next: C3.
-  - **C3, `execve`**. C3a (done): `exec` (`SYS_EXEC` 4), `FD_CLOEXEC`/`fcntl` (`SYS_FCNTL` 31),
-    `execve`/`execv`/`execvp`, the `exec` test (see "User mode and syscalls"). Next, C3b: the
-    shell runs programs with `fork` + `execvp`. Each pipeline child does its own `dup2`s and
-    closes the ends it does not use, so `saved_in`/`saved_out` go and `cat big | nope` stops
-    hanging; the child reports a failed exec and `_exit`s 127 or 126; builtins run in a forked copy
-    of the shell inside a pipeline, and the shell test's refusal case is rewritten.
+  - **C3 (done), `execve`**. C3a: `exec` (`SYS_EXEC` 4), `FD_CLOEXEC`/`fcntl` (`SYS_FCNTL` 31),
+    `execve`/`execv`/`execvp`, the `exec` test (see "User mode and syscalls"). C3b: the shell
+    runs everything with `fork` + `execvp`, builtins in pipelines included (see "Shell"). Next: C4.
   - **C4, copy-on-write** (`frame_t.refs` exists; read-only pages, the write fault copies or,
     for the last user, makes it writable) **and stack growth** (also page-fault work).
   - **C5, signals**: `kill` (`SYS_KILL` 7), `sigaction`, `sigprocmask`, `sigreturn`, delivery on
@@ -2652,21 +2653,22 @@ sh.h / history.h   shared types and declarations ("..." includes)
 - **History:** `lines[HISTORY_MAX]` (32) `strdup`'d copies, oldest at `lines[start]`, `count`
   stored, `total` ever added; full → free the oldest and advance `start`. Blank lines are skipped.
   `history` prints entry `i` as number `total - count + 1 + i` (bash's numbering).
-- **Programs:** a name with `'/'` is spawned as given; otherwise each `PATH` entry is tried as
-  `dir/name` (`snprintf` with `%.*s`, so `PATH` is never cut up; empty entries skipped). `ENOENT`
-  moves to the next entry. Not found → `sh: name: command not found`, 127; other spawn errors → 126; killed
-  → message and 128 + signal. Children inherit fds and `environ`. Three steps, so a pipeline can
-  start everything before waiting: `program_start` (the search and the spawn, 0 or an errno),
-  `program_failed` (the message, 127 or 126), `program_wait` (the status as `$?` shows it).
+- **Programs:** `command_run` gives a lone builtin to the shell itself (`cd` and `exit` must
+  change this process); everything else is a pipeline, of one stage for a plain program. A stage
+  runs in a forked child: `stage_run` does `execvp` (the `PATH` search is in libc now), and if
+  that comes back, `program_failed` prints the message and the child `_exit`s with it. Not found
+  → `sh: name: command not found`, 127; other exec errors → 126; killed → message and 128 +
+  signal, from `program_wait`. Children inherit fds and `environ`. `_exit`, not `exit`: the
+  shell's atexit handlers and buffers belong to the parent.
 - **Pipelines** (`pipeline_run`, `a | b | c`): every command is started, then all are waited for
   (waiting first would deadlock once a pipe fills). For each stage: a pipe unless it is the
-  last; `dup` of fds 0 and 1; `dup2` of the previous read end onto 0 and the new write end onto
-  1; `program_start`, which the child inherits; the shell's own 0 and 1 back; the ends handed
-  over closed, since a reader sees EOF only once every write end is closed. The status is the
-  last command's (POSIX). A command that cannot start has its message printed and its pipe's
-  write end closed, so the next one sees EOF (bash too). Builtins are refused before anything
-  starts (`sh: pwd: a builtin cannot be in a pipeline yet`, status 1): bash runs them in a forked
-  copy of the shell, and in the shell itself `cd` or `exit` would change it.
+  last, then `fork`. The child `dup2`s the previous read end onto 0 and the new write end onto
+  1, closes the originals and the new read end, and runs the stage; the shell's own 0 and 1 never
+  move. The shell closes the ends it handed over, since a reader sees EOF only once every write
+  end is closed, and a writer gets `EPIPE` only once every read end is. So nothing keeps a pipe
+  open but the stages using it. The status is the last command's (POSIX). A command that cannot
+  start exits like any other, so the next one sees EOF (bash too). A builtin in a pipeline runs
+  in its child: `builtin_run`, a flush, `_exit`. What it changes stays in that copy (bash too).
 - **`/bin/cat`** (`user/bin/cat/`): each argument in order to stdout; none, or `-`, is stdin. Raw
   `read`/`write` in 4096-byte chunks, so nothing waits in a stdio buffer; a failing file prints
   `cat: name: strerror`, sets status 1, and the rest are still copied.
@@ -2818,13 +2820,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   the flag after `open` or `pipe` leaves a gap once threads exist. No `execl` family, no
   `#!` scripts, no `ENOEXEC` test. `exec` must reset caught signals when C5 adds them, and stop
   other threads when threads exist. Stdio buffers die with the old program, as on POSIX.
-- Pipelines: a builtin cannot be in one yet; `fork` makes that possible (a copy of the shell runs
-  it), but the shell does not use it yet (C3b, with `execvp` for programs). Each stage
-  inherits every fd the shell had open, including the read end of its own output pipe, so a
-  writer whose reader is gone gets no `EPIPE` and `cat big | nope` hangs once the pipe fills;
-  moving pipelines to `fork` and `execve`, closing the unused ends between them, fixes it. At most `PIPELINE_MAX` (8)
-  commands (bash: no limit), no `pipefail` or `PIPESTATUS`. A syntax error does not set `$?`
-  (bash: 2). A failed `dup` or `dup2` around the spawn is not checked.
+- Pipelines: at most `PIPELINE_MAX` (8) commands (bash: no limit), no `pipefail` or `PIPESTATUS`.
+  A syntax error does not set `$?` (bash: 2). A failed `dup2` in a stage's child is not checked.
+  Without `SIGPIPE` (C5) a writer whose reader left prints its error: `cat big | nope` ends with
+  `cat: ...: Broken pipe`, where bash's `cat` dies silently. Update the shell test's case then.
 - `cat` has no options.
 - The shell has no arrow-key history (needs raw mode / termios), no `;`, `&&`, `||` or
   redirections, no field splitting, no continuation lines for an open quote; a `'` inside `"..."`
