@@ -33,8 +33,8 @@ void signal_exec_reset(process_t *p);
 /**
  * @brief Records a signal for a process and wakes it from an interruptible sleep.
  *
- * Does nothing for init, for a process that already exited, and for signals
- * whose default action is to do nothing.
+ * Does nothing for init without a handler, for a process that already exited, and, unless it is blocked, for a signal
+ * that would do nothing.
  *
  * @param p The target process.
  * @param signal The signal, 1..31.

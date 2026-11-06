@@ -130,6 +130,8 @@ void signal_deliver(void)
         if (action.sa_handler == SIG_DFL)
             process_exit_signal(signal);
 
+        long restart_number = (action.sa_flags & SA_RESTART) != 0 ? thread->syscall_number : SYSCALL_NOT_RESTARTABLE;
+
         if (arch_signal_frame_push(
                 thread->stack,
                 thread->stack_size,
@@ -137,11 +139,20 @@ void signal_deliver(void)
                 signal,
                 (uintptr_t)action.sa_handler,
                 (uintptr_t)action.sa_restorer,
-                p->signals_blocked) != 0)
+                p->signals_blocked,
+                restart_number) != 0)
             process_exit_signal(SIGSEGV);
 
         // Its own signal too, so a handler is not entered again while it runs
-        p->signals_blocked |= (action.sa_mask | (1u << signal) & ~SIGNAL_UNBLOCKABLE);
+        sigset_t block = action.sa_mask;
+        if ((action.sa_flags & SA_NODEFER) == 0)
+            block |= 1u << signal;
+
+        p->signals_blocked |= block & ~SIGNAL_UNBLOCKABLE;
+
+        if ((action.sa_flags & SA_RESETHAND) != 0)
+            p->signal_actions[signal] = (struct sigaction){0};
+
         return;
     }
 }

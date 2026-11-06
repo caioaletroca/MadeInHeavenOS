@@ -49,6 +49,23 @@ int sigaction(int signal, const struct sigaction *action, struct sigaction *old)
 int sigprocmask(int how, const sigset_t *set, sigset_t *old);
 
 /**
+ * @brief Retrieves the set of signals that are pending for the calling process.
+ *
+ * @param set The signal set to store the pending signals.
+ * @return 0 on success, or -1 on error with errno set appropriately.
+ */
+int sigpending(sigset_t *set);
+
+/**
+ * @brief Sets a signal handler for the specified signal.
+ *
+ * @param number The signal number.
+ * @param handler The signal handler function.
+ * @return The previous signal handler on success, or SIG_ERR on error with errno set appropriately.
+ */
+void (*signal(int number, void (*handler)(int)))(int);
+
+/**
  * @brief Initializes the signal set to be empty.
  *
  * @param set The signal set to initialize.

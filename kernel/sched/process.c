@@ -274,6 +274,7 @@ long process_wait_child(process_t *parent, long pid, process_t **out)
 
     scoped_guard(spinlock, &process_tree_lock)
     {
+        int interrupted = 0;
         for (;;)
         {
             bool found = false;
@@ -300,10 +301,12 @@ long process_wait_child(process_t *parent, long pid, process_t **out)
             if (!found)
                 return -ECHILD;
 
-            // Releases the lock while asleep, retakes it before returning; then scan again
-            int interrupted = wait_queue_sleep_interruptible(&parent->child_exits, &process_tree_lock);
+            // A second pass, after the scan: the child that woke us beats the signal that came with it
             if (interrupted < 0)
                 return interrupted;
+
+            // Releases the lock while asleep, retakes it before returning; then scan again
+            interrupted = wait_queue_sleep_interruptible(&parent->child_exits, &process_tree_lock);
         }
     }
 
@@ -337,7 +340,10 @@ __attribute__((noreturn)) void process_exit(int status)
     {
         // The parent may be asleep in wait for this child (or any child)
         if (current->parent != NULL)
+        {
             wait_queue_wake_all(&current->parent->child_exits);
+            signal_send(current->parent, SIGCHLD);
+        }
 
         // Remaining children go to init with their reference; init reaps them with wait(-1).
         // No adopter before init exists (kernel self-tests) or when init itself exits (the

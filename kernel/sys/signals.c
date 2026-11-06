@@ -104,6 +104,9 @@ long sys_sigreturn(void)
     uint32_t blocked;
     long result;
 
+    // No system call of the program ends here, whatever the restored rax says
+    thread->syscall_number = SYSCALL_NOT_RESTARTABLE;
+
     if (arch_signal_frame_pop(
             thread->stack,
             thread->stack_size,
@@ -117,4 +120,37 @@ long sys_sigreturn(void)
 
     p->signals_blocked = blocked & ~SIGNAL_UNBLOCKABLE;
     return result;
+}
+
+/**
+ * sys_sigpending(set): returns the set of signals that are pending for the current process.
+ */
+long sys_sigpending(uintptr_t set)
+{
+    process_t *p = scheduler_current()->process;
+    sigset_t waiting = p->signals_pending & p->signals_blocked;
+
+    if (address_space_write(syscall_space(), set, &waiting, sizeof(waiting)) != 0)
+        return -EFAULT;
+
+    return 0;
+}
+
+/**
+ * sys_pause(): suspends the calling process until a signal is received.
+ */
+long sys_pause(void)
+{
+    thread_t *thread = scheduler_current();
+    thread->syscall_number = SYSCALL_NOT_RESTARTABLE;
+
+    wait_queue_t nobody;
+    wait_queue_init(&nobody);
+    spinlock_t lock = SPINLOCK_INIT;
+
+    guard(spinlock, &lock);
+    while (wait_queue_sleep_interruptible(&nobody, &lock) == 0)
+        ;
+
+    return -EINTR;
 }

@@ -16,6 +16,7 @@ execve.c \
 execvp.c \
 dup.c \
 dup2.c \
+pause.c \
 lseek.c \
 reboot.c \
 getpid.c \

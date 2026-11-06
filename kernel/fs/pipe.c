@@ -2,6 +2,9 @@
 #include <fs/file.h>
 #include <fs/vfs.h>
 #include <sched/wait.h>
+#include <sched/scheduler.h>
+#include <sched/thread.h>
+#include <sched/signal.h>
 #include <mm/kmalloc.h>
 #include <sys/list.h>
 #include <mihos/errno.h>
@@ -85,7 +88,10 @@ static long pipe_write(file_t *file, const char *buf, size_t count)
         }
 
         if (pipe->readers == 0)
+        {
+            signal_send(scheduler_current()->process, SIGPIPE);
             return done > 0 ? (long)done : -EPIPE;
+        }
 
         while (done < count && pipe->write_count - pipe->read_count < PIPE_SIZE)
             pipe->buffer[pipe->write_count++ % PIPE_SIZE] = buf[done++];

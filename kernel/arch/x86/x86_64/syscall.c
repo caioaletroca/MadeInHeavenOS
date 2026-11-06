@@ -2,6 +2,7 @@
 #include <x86/isr.h>
 #include <x86/syscall.h>
 #include <x86/vectors.h>
+#include <sched/scheduler.h>
 
 /**
  * @brief Handles system calls invoked via the syscall interrupt.
@@ -10,6 +11,8 @@
  */
 static void syscall_handler(isr_context_t *context)
 {
+    scheduler_current()->syscall_number = (long)context->rax;
+
     // rax = number, rdi rsi rdx r10 r8 r9 = arguments; the result goes back
     // in the saved rax, which isr_common restores before iretq
     context->rax = (uint64_t)syscall_dispatch(

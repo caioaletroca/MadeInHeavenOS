@@ -29,6 +29,8 @@ typedef enum thread_state
  */
 struct address_space;
 
+#define SYSCALL_NOT_RESTARTABLE (-1)
+
 /**
  * @brief Thread structure representing a single thread in the system.
  */
@@ -42,9 +44,10 @@ typedef struct thread
     thread_entry_t entry;
     void *arg; // Argument to pass to the thread entry function
     thread_state_t state;
-    uint64_t wake_tick; // sleeping: the tick to wake at; a timed wait: its deadline
-    bool timed_out;     // a timed wait ended by its deadline, not by a wake (scheduler state)
-    bool interruptible; // asleep in a sleep that a signal may end
+    uint64_t wake_tick;  // sleeping: the tick to wake at; a timed wait: its deadline
+    bool timed_out;      // a timed wait ended by its deadline, not by a wake (scheduler state)
+    bool interruptible;  // asleep in a sleep that a signal may end
+    long syscall_number; // the last one, or SYSCALL_NOT_RESTARTABLE. Its result overwrites the saved rax
     struct address_space *space;
     struct process *process;
 

@@ -3,4 +3,6 @@ kill.c \
 raise.c \
 sigaction.c \
 sigprocmask.c \
-sigset.c
+sigset.c \
+signal.c \
+sigpending.c

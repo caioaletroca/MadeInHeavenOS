@@ -76,6 +76,10 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_sigprocmask((int)arg0, arg1, arg2);
     case SYS_SIGRETURN:
         return sys_sigreturn();
+    case SYS_SIGPENDING:
+        return sys_sigpending(arg0);
+    case SYS_PAUSE:
+        return sys_pause();
     default:
         return -ENOSYS;
     }

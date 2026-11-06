@@ -37,6 +37,8 @@
 #define SYS_SIGACTION 32
 #define SYS_SIGPROCMASK 33
 #define SYS_SIGRETURN 34
+#define SYS_SIGPENDING 35
+#define SYS_PAUSE 36
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)

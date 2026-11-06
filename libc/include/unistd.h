@@ -173,6 +173,13 @@ int dup(int fd);
 int dup2(int oldfd, int newfd);
 
 /**
+ * Suspend the calling process until a signal is received.
+ *
+ * @return -1 on error with errno set appropriately.
+ */
+int pause(void);
+
+/**
  * Get the process ID of the calling process.
  *
  * @return The process ID of the calling process.
