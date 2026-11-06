@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <errno.h>
 #include "sh.h"
@@ -41,7 +42,9 @@ static int program_wait(const char *name, pid_t pid)
 
     if (WIFSIGNALED(status))
     {
-        fprintf(stderr, "sh: %s: killed by signal %d\n", name, WTERMSIG(status));
+        // A reader that left is normal in a pipeline, not worth a line
+        if (WTERMSIG(status) != SIGPIPE)
+            fprintf(stderr, "sh: %s: killed by signal %d\n", name, WTERMSIG(status));
         return 128 + WTERMSIG(status);
     }
     return WEXITSTATUS(status);
