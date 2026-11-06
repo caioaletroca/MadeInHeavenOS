@@ -1,6 +1,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <signal.h>
+#include <stdlib.h>
 #include <spawn.h>
 #include <stdint.h>
 #include <errno.h>
@@ -34,6 +35,7 @@
 #define NOT_USER_ADDRESS 0xFFFFFFFF80100000ULL
 #define NOT_CANONICAL 0x4141414141414141ULL
 #define JUNK_WORDS 256
+#define RESTARTS 5 // interruptions a restarted call goes through
 
 static volatile sig_atomic_t count;
 static volatile sig_atomic_t last_signal;
@@ -808,6 +810,263 @@ static void test_forged_frame(void)
     child_killed_by(child, SIGSEGV);
 }
 
+// ---- Flags, restart and the last signals ----
+
+static int feed_fd;
+static pid_t restart_target;
+
+static void handle_flags(int signal, void (*handler)(int), int flags)
+{
+    struct sigaction action = {0};
+    action.sa_handler = handler;
+    action.sa_flags = flags;
+    CHECK(sigaction(signal, &action, NULL) == 0);
+}
+
+// Interrupts the sleep several times, and only then gives it what it waits for
+static void on_signal_feed(int signal)
+{
+    (void)signal;
+    if (++count == RESTARTS)
+        write(feed_fd, "x", 1);
+}
+
+static void on_signal_end_target(int signal)
+{
+    (void)signal;
+    if (++count == RESTARTS)
+        kill(restart_target, SIGKILL);
+}
+
+static void on_raise_second(int signal)
+{
+    (void)signal;
+    count++;
+    raise(SIGUSR2);
+}
+
+// The call starts over each time, with the same arguments, until it can finish
+static void test_restart_read(void)
+{
+    handle_flags(SIGUSR1, on_signal_feed, SA_RESTART);
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    feed_fd = fds[1];
+
+    pid_t poker = poker_start();
+    char byte = 0;
+    CHECK(read(fds[0], &byte, 1) == 1 && byte == 'x');
+    CHECK(count >= RESTARTS);
+    poker_stop(poker);
+}
+
+static void test_restart_wait(void)
+{
+    handle_flags(SIGUSR1, on_signal_end_target, SA_RESTART);
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+
+    restart_target = fork_flushed();
+    CHECK(restart_target >= 0);
+    if (restart_target == 0)
+    {
+        char byte;
+        read(fds[0], &byte, 1); // never gets data: it holds the write end too
+        _exit(0);
+    }
+
+    pid_t poker = poker_start();
+    int status = 0;
+    CHECK(waitpid(restart_target, &status, 0) == restart_target);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+    poker_stop(poker);
+}
+
+/*
+ * A handler without SA_RESTART leaves EINTR in the saved registers, and a
+ * second signal, held back by sa_mask, arrives on the way out of sigreturn.
+ * That one has SA_RESTART, but no system call of the program is ending there:
+ * restarting would run sigreturn again.
+ */
+static void test_restart_after_sigreturn(void)
+{
+    handle(SIGUSR1, on_raise_second, set_of(SIGUSR2));
+    handle_flags(SIGUSR2, on_signal, SA_RESTART);
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+
+    pid_t poker = poker_start();
+    char byte;
+    errno = 0;
+    CHECK(read(fds[0], &byte, 1) == -1 && errno == EINTR);
+    poker_stop(poker);
+}
+
+// pause exists to end at a signal: it never restarts, whatever the flags say
+static void test_pause(void)
+{
+    handle_plain(SIGUSR1, on_signal);
+    pid_t poker = poker_start();
+    errno = 0;
+    CHECK(pause() == -1 && errno == EINTR);
+    CHECK(count >= 1);
+    poker_stop(poker);
+
+    handle_flags(SIGUSR1, on_signal, SA_RESTART);
+    poker = poker_start();
+    errno = 0;
+    CHECK(pause() == -1 && errno == EINTR);
+    poker_stop(poker);
+}
+
+// The fatal case is in the signal test: here the program chose to live, and write says what happened
+static void test_sigpipe(void)
+{
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    close(fds[0]);
+
+    handle_plain(SIGPIPE, on_signal);
+    errno = 0;
+    CHECK(write(fds[1], "x", 1) == -1 && errno == EPIPE);
+    CHECK(count == 1 && last_signal == SIGPIPE);
+
+    struct sigaction ignore = {0};
+    ignore.sa_handler = SIG_IGN;
+    CHECK(sigaction(SIGPIPE, &ignore, NULL) == 0);
+    errno = 0;
+    CHECK(write(fds[1], "x", 1) == -1 && errno == EPIPE);
+    CHECK(count == 1);
+    close(fds[1]);
+}
+
+static void test_sigchld(void)
+{
+    handle_plain(SIGCHLD, on_signal);
+
+    // Asleep in wait when it arrives: the child is what it waited for, so wait
+    // returns it, not EINTR
+    pid_t child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+    {
+        for (volatile int i = 0; i < READER_SPINS; i++)
+            ;
+        _exit(0);
+    }
+    CHECK(waitpid(child, NULL, 0) == child);
+    CHECK(count == 1 && last_signal == SIGCHLD);
+
+    // However it ended
+    child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+        raise(SIGKILL);
+    child_killed_by(child, SIGKILL);
+    CHECK(count == 2);
+}
+
+static void test_nodefer(void)
+{
+    // Without SA_NODEFER the same handler gives 1, 2, 3 (see test_nesting)
+    handle_flags(SIGUSR1, on_again, SA_NODEFER);
+    raise(SIGUSR1);
+    expect_steps(1, 3, 2);
+}
+
+static void test_resethand(void)
+{
+    handle_flags(SIGUSR1, on_signal, SA_RESETHAND);
+    raise(SIGUSR1);
+    CHECK(count == 1);
+
+    struct sigaction old;
+    CHECK(sigaction(SIGUSR1, NULL, &old) == 0 && old.sa_handler == SIG_DFL);
+
+    pid_t child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+    {
+        raise(SIGUSR1);
+        _exit(1); // not reached
+    }
+    child_killed_by(child, SIGUSR1);
+}
+
+static void test_sigpending(void)
+{
+    handle_plain(SIGUSR1, on_signal);
+    block(SIGUSR1);
+
+    sigset_t waiting;
+    CHECK(sigpending(&waiting) == 0);
+    CHECK(sigismember(&waiting, SIGUSR1) == 0);
+
+    raise(SIGUSR1);
+    CHECK(sigpending(&waiting) == 0);
+    CHECK(sigismember(&waiting, SIGUSR1) == 1 && sigismember(&waiting, SIGUSR2) == 0);
+
+    unblock(SIGUSR1);
+    CHECK(count == 1);
+    CHECK(sigpending(&waiting) == 0);
+    CHECK(sigismember(&waiting, SIGUSR1) == 0);
+
+    errno = 0;
+    CHECK(sigpending((sigset_t *)16) == -1 && errno == EFAULT);
+}
+
+static void test_signal_function(void)
+{
+    CHECK(signal(SIGUSR1, on_signal) == SIG_DFL);
+    CHECK(signal(SIGUSR1, SIG_IGN) == on_signal);
+    CHECK(signal(SIGUSR1, on_signal) == SIG_IGN);
+
+    // BSD's behaviour, as glibc: the handler stays, and calls restart
+    raise(SIGUSR1);
+    raise(SIGUSR1);
+    CHECK(count == 2);
+
+    struct sigaction old;
+    CHECK(sigaction(SIGUSR1, NULL, &old) == 0);
+    CHECK((old.sa_flags & SA_RESTART) != 0);
+
+    errno = 0;
+    CHECK(signal(0, on_signal) == SIG_ERR && errno == EINVAL);
+    errno = 0;
+    CHECK(signal(SIGKILL, on_signal) == SIG_ERR && errno == EINVAL);
+}
+
+// abort always ends the program with SIGABRT: a handler may run first, and that is all
+static void test_abort(void)
+{
+    pid_t child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+    {
+        handle_plain(SIGABRT, on_signal);
+        abort();
+    }
+    child_killed_by(child, SIGABRT);
+
+    child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+    {
+        block(SIGABRT);
+        abort();
+    }
+    child_killed_by(child, SIGABRT);
+
+    child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+    {
+        signal(SIGABRT, SIG_IGN);
+        abort();
+    }
+    child_killed_by(child, SIGABRT);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "after-exec") == 0)
@@ -834,6 +1093,17 @@ int main(int argc, char **argv)
     isolated(test_fork);
     isolated(test_exec);
     isolated(test_spawn);
+    isolated(test_restart_read);
+    isolated(test_restart_wait);
+    isolated(test_restart_after_sigreturn);
+    isolated(test_pause);
+    isolated(test_sigpipe);
+    isolated(test_sigchld);
+    isolated(test_nodefer);
+    isolated(test_resethand);
+    isolated(test_sigpending);
+    isolated(test_signal_function);
+    test_abort();
     test_fault_handled();
     test_fault_not_refused();
     test_no_stack_for_handler();

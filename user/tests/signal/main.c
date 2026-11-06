@@ -270,6 +270,24 @@ static void test_files_closed(void)
     close(hold[1]);
 }
 
+// Nobody left to read: the writer is told by the kernel, and by default that ends it
+static void test_broken_pipe(void)
+{
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    close(fds[0]);
+
+    pid_t child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+    {
+        write(fds[1], "x", 1);
+        _exit(0); // not reached
+    }
+    child_killed_by(child, SIGPIPE);
+    close(fds[1]);
+}
+
 // Between processes: a child can signal its parent
 static void test_child_kills_parent(void)
 {
@@ -380,6 +398,7 @@ int main(void)
     test_sleeping_on_stdin();
     test_ignored_keeps_sleeping();
     test_files_closed();
+    test_broken_pipe();
     test_child_kills_parent();
     test_errors();
     test_exited_child();

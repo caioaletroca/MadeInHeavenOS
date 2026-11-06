@@ -108,11 +108,11 @@ static const shell_case_t cases[] = {
      "1\n",
      "cd: /nope: No such file or directory\n", 0},
     // Bigger than a pipe, so cat fills it and waits. Nothing but nope's stage may hold the read
-    // end: its exit is what wakes cat, with EPIPE. SIGPIPE (C5) will end cat silently, as in bash
+    // end: its exit is what wakes cat, and SIGPIPE ends it silently, as in bash
     {"a reader that never starts",
      "cat " BINARY_PATH " | nope\necho $?\n",
      "127\n",
-     "sh: nope: command not found\ncat: " BINARY_PATH ": Broken pipe\n", 0},
+     "sh: nope: command not found\n", 0},
 };
 
 static char *shell_environ[] = {"PATH=/bin", "GREETING=hello there", NULL};

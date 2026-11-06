@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <spawn.h>
+#include <signal.h>
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
@@ -163,7 +164,7 @@ static void test_eof_and_epipe(void)
     CHECK(read(fds[0], buffer, sizeof(buffer)) == 0);
     close(fds[0]);
 
-    // The read end closed: writing is EPIPE (no SIGPIPE before signals)
+    // The read end closed: writing is EPIPE (main ignores SIGPIPE; the signal test has it)
     CHECK(pipe(fds) == 0);
     CHECK(close(fds[0]) == 0);
     errno = 0;
@@ -328,6 +329,9 @@ static void test_table_full(void)
 int main(int argc, char **argv)
 {
     self = argv[0];
+
+    // Before the child modes too: this test is about the error, and exec keeps an ignored signal
+    signal(SIGPIPE, SIG_IGN);
 
     if (argc > 2)
     {
