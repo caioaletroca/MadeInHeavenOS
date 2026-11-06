@@ -4,6 +4,32 @@
 #include <stdbool.h>
 #include <sched/process.h>
 
+#define SIGNAL_UNBLOCKABLE ((1u << SIGKILL) | (1u << SIGSTOP))
+
+/**
+ * @brief Sends a fault to the current process. A fault cannot be refused: the
+ * instruction would fault forever, so blocked or ignored becomes the default action.
+ *
+ * @param signal The signal for the fault.
+ */
+void signal_force(int signal);
+
+/**
+ * @brief Replaces a signal's action. Ignoring it drops one already waiting.
+ */
+void signal_action_set(process_t *p, int signal, const struct sigaction *action);
+
+/**
+ * @brief What a new process takes from its parent: actions and mask, not pending signals.
+ */
+void signal_inherit(process_t *child, process_t *parent);
+
+/**
+ * @brief exec: handlers live in the old program, so they go back to the default.
+ * Ignored signals, the mask and pending signals stay.
+ */
+void signal_exec_reset(process_t *p);
+
 /**
  * @brief Records a signal for a process and wakes it from an interruptible sleep.
  *

@@ -70,6 +70,12 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_exec(arg0, arg1, arg2);
     case SYS_KILL:
         return sys_kill((long)arg0, (int)arg1);
+    case SYS_SIGACTION:
+        return sys_sigaction((int)arg0, arg1, arg2);
+    case SYS_SIGPROCMASK:
+        return sys_sigprocmask((int)arg0, arg1, arg2);
+    case SYS_SIGRETURN:
+        return sys_sigreturn();
     default:
         return -ENOSYS;
     }

@@ -63,6 +63,9 @@ long sys_getppid(void);
 
 // signals.c
 long sys_kill(long pid, int signal);
+long sys_sigaction(int signal, uintptr_t action, uintptr_t old);
+long sys_sigprocmask(int how, uintptr_t set, uintptr_t old);
+long sys_sigreturn(void);
 
 // memory.c
 long sys_brk(uintptr_t address);

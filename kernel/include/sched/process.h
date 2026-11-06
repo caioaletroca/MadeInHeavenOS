@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <sched/wait.h>
 #include <sched/spinlock.h>
+#include <mihos/signal.h>
 #include <fs/file.h>
 #include <fs/vfs.h>
 #include <sys/list.h>
@@ -30,11 +31,13 @@ typedef struct process
     unsigned int refs;
     struct address_space *space;
     struct thread *thread;
-    struct process *parent;   // NULL for processes the kernel started; init for orphans. Protected by process_tree_lock.
-    list_t children;          // spawned or adopted, not yet waited for; one reference each. Protected by process_tree_lock.
-    list_t sibling;           // link in parent->children. Protected by process_tree_lock.
-    list_t all_link;          // link in the list of all processes. Protected by process_tree_lock.
-    uint32_t signals_pending; // one bit per signal sent and not yet acted on. Protected by lock.
+    struct process *parent;                // NULL for processes the kernel started; init for orphans. Protected by process_tree_lock.
+    list_t children;                       // spawned or adopted, not yet waited for; one reference each. Protected by process_tree_lock.
+    list_t sibling;                        // link in parent->children. Protected by process_tree_lock.
+    list_t all_link;                       // link in the list of all processes. Protected by process_tree_lock.
+    uint32_t signals_pending;              // one bit per signal sent and not yet acted on. Protected by lock.
+    uint32_t signals_blocked;              // waits in signals_pending while set here. Protected by lock.
+    struct sigaction signal_actions[NSIG]; // zeroed: every signal starts as SIG_DFL. Protected by lock.
 
     wait_queue_t waiters;
     wait_queue_t child_exits; // the parent sleeps here in wait; every child's exit wakes it

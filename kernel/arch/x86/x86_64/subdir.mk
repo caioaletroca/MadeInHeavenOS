@@ -15,4 +15,5 @@ exceptions.c \
 paging.c \
 isr.c \
 idt.c \
-syscall.c
+syscall.c \
+signal.c

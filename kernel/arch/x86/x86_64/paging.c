@@ -6,6 +6,7 @@
 #include <mm/address_space.h>
 #include <sched/scheduler.h>
 #include <sched/process.h>
+#include <sched/signal.h>
 #include <mihos/signal.h>
 #include <kprintf.h>
 #include <panic.h>
@@ -295,7 +296,8 @@ static void page_fault_handler(isr_context_t *regs)
                                                                   : "read",
                 (error_code & 0x1) ? "protection violation" : "not present",
                 (void *)virtual_address, scheduler_current()->id, (void *)regs->rip);
-        process_exit_signal(SIGSEGV);
+        signal_force(SIGSEGV);
+        return;
     }
 
     panic("Page fault at address: %p, error: %p", virtual_address, error_code);

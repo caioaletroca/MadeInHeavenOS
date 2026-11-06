@@ -1,5 +1,6 @@
 #include "internal.h"
 #include <exec/exec.h>
+#include <sched/signal.h>
 
 // ---- Processes: exit, spawn, wait, pids ----
 
@@ -72,6 +73,7 @@ static process_t *child_create(process_t *parent, address_space_t *space)
 
     process_files_inherit(child, parent);
     process_cwd_inherit(child, parent);
+    signal_inherit(child, parent);
 
     // The handle from process_create is the parent's reference, held until wait
     process_child_add(parent, child);
@@ -144,6 +146,7 @@ long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
 
     // spawn is a fork and an exec in one
     process_files_close_on_exec(child);
+    signal_exec_reset(child);
 
     if (process_start(child, entry, stack) < 0)
     {

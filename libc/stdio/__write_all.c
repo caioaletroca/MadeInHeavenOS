@@ -1,7 +1,7 @@
 #include <FILE.h>
 #include <unistd.h>
+#include <errno.h>
 
-// TODO: retry on EINTR once signals exist
 size_t __write_all(FILE *f, const unsigned char *data, size_t n)
 {
     size_t done = 0;
@@ -9,6 +9,8 @@ size_t __write_all(FILE *f, const unsigned char *data, size_t n)
     while (done < n)
     {
         ssize_t written = write(f->fd, data + done, n - done);
+        if (written < 0 && errno == EINTR)
+            continue;
         if (written <= 0)
         {
             f->flags |= F_ERR;

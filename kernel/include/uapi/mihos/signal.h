@@ -27,6 +27,24 @@
 #define SIGURG 23
 #define SIGWINCH 28
 
+#define SIG_DFL ((void (*)(int))0) // the signal's default action
+#define SIG_IGN ((void (*)(int))1) // do nothing
+
+// sigprocmask's how
+#define SIG_BLOCK 0
+#define SIG_UNBLOCK 1
+#define SIG_SETMASK 2
+
+typedef unsigned int sigset_t; // bit n = signal n
+
+struct sigaction
+{
+    void (*sa_handler)(int);
+    sigset_t sa_mask;          // also blocked while the handler runs
+    int sa_flags;              // no flags yet (C5c)
+    void (*sa_restorer)(void); // set by libc: where the handler returns to
+};
+
 #define SIGNAL_EXIT_STATUS(signal) (128 + (signal))
 
 #endif /* _UAPI_MIHOS_SIGNAL_H_ */

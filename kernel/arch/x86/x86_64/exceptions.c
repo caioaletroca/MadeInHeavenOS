@@ -4,6 +4,7 @@
 #include <sched/scheduler.h>
 #include <sched/process.h>
 #include <kprintf.h>
+#include <sched/signal.h>
 #include <mihos/signal.h>
 #include <stdbool.h>
 
@@ -78,7 +79,7 @@ static bool exception_is_fatal(uint8_t int_no)
  * @param regs The ISR context.
  * @param int_no The interrupt number.
  */
-__attribute__((noreturn)) static void exception_user_handler(isr_context_t *regs, uint8_t int_no)
+static void exception_user_handler(isr_context_t *regs, uint8_t int_no)
 {
     kprintf("user exception: %s (thread %u)\n"
             "\trip: %p, rsp: %p, err_code: %u\n",
@@ -87,7 +88,7 @@ __attribute__((noreturn)) static void exception_user_handler(isr_context_t *regs
 
     int signal = exception_signals[int_no] != 0 ? exception_signals[int_no] : SIGKILL;
 
-    process_exit_signal(signal);
+    signal_force(signal);
 }
 
 /**
@@ -102,7 +103,10 @@ static void exception_handler(isr_context_t *regs)
     if (int_no < 32)
     {
         if (isr_from_user(regs) && !exception_is_fatal(int_no))
+        {
             exception_user_handler(regs, int_no);
+            return;
+        }
 
         panic(
             "Exception: %s\n"

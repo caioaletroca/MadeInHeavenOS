@@ -4,6 +4,7 @@
 #include <sched/process.h>
 #include <sched/scheduler.h>
 #include <sched/thread.h>
+#include <sched/signal.h>
 #include <mm/kmalloc.h>
 #include <mm/address_space.h>
 #include <syscall.h>
@@ -225,6 +226,7 @@ void process_exec(address_space_t *space, uintptr_t entry, uintptr_t user_stack)
     address_space_destroy(old);
 
     process_files_close_on_exec(p);
+    signal_exec_reset(p);
 
     // A trap from ring 3 starts at the top of the kernel stack, so this
     // overwrites the frame of the running system call: its iretq enters the program

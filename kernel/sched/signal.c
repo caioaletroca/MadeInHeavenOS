@@ -1,4 +1,5 @@
 #include <sched/signal.h>
+#include <arch/signal.h>
 #include <mihos/signal.h>
 #include <sched/process.h>
 #include <sched/scheduler.h>
@@ -23,10 +24,22 @@ static bool signal_ignored_by_default(int signal)
     }
 }
 
+/**
+ * @brief Whether a signal does nothing for a given process.
+ *
+ * @param p The process.
+ * @param signal The signal.
+ * @return true if the signal is ignored or has the default action and is ignored by default.
+ */
+static bool signal_does_nothing(process_t *p, int signal)
+{
+    void (*handler)(int) = p->signal_actions[signal].sa_handler;
+    return handler == SIG_IGN || (handler == SIG_DFL && signal_ignored_by_default(signal));
+}
+
 void signal_send(process_t *p, int signal)
 {
-    // init has no handlers yet, and its exit panics the kernel
-    if (p == NULL || p->pid == PROCESS_INIT_PID || signal_ignored_by_default(signal))
+    if (p == NULL)
         return;
 
     guard(spinlock, &p->lock);
@@ -35,24 +48,100 @@ void signal_send(process_t *p, int signal)
     if (p->state == PROCESS_EXITED)
         return;
 
-    p->signals_pending |= 1u << signal;
+    // init takes only what it has a handler for: its exit panics the kernel
+    if (p->pid == PROCESS_INIT_PID && p->signal_actions[signal].sa_handler == SIG_DFL)
+        return;
+
+    uint32_t bit = 1u << signal;
+
+    // A blocked signal stays: the action may change before it is unblocked
+    if ((p->signals_blocked & bit) == 0 && signal_does_nothing(p, signal))
+        return;
+
+    p->signals_pending |= bit;
 
     // NULL while the process is being created
-    if (p->thread != NULL && p->thread->interruptible)
+    if ((p->signals_blocked & bit) == 0 && p->thread != NULL && p->thread->interruptible)
         scheduler_wake(p->thread);
+}
+
+void signal_force(int signal)
+{
+    process_t *p = scheduler_current()->process;
+    uint32_t bit = 1u << signal;
+
+    guard(spinlock, &p->lock);
+
+    if ((p->signals_blocked & bit) != 0 ||
+        p->signal_actions[signal].sa_handler == SIG_IGN)
+    {
+        p->signals_blocked &= ~bit;
+        p->signal_actions[signal] = (struct sigaction){0};
+    }
+
+    p->signals_pending |= bit;
 }
 
 bool signal_pending(process_t *p)
 {
-    return p != NULL && p->signals_pending != 0;
+    return p != NULL && (p->signals_pending & ~p->signals_blocked) != 0;
+}
+
+void signal_action_set(process_t *p, int signal, const struct sigaction *action)
+{
+    guard(spinlock, &p->lock);
+
+    p->signal_actions[signal] = *action;
+    p->signal_actions[signal].sa_mask &= ~SIGNAL_UNBLOCKABLE;
+
+    if (signal_does_nothing(p, signal))
+        p->signals_pending &= ~(1u << signal);
+}
+
+void signal_inherit(process_t *child, process_t *parent)
+{
+    for (int signal = 0; signal < NSIG; signal++)
+        child->signal_actions[signal] = parent->signal_actions[signal];
+
+    child->signals_blocked = parent->signals_blocked;
+}
+
+void signal_exec_reset(process_t *p)
+{
+    for (int signal = 0; signal < NSIG; signal++)
+        if (p->signal_actions[signal].sa_handler != SIG_IGN)
+            p->signal_actions[signal] = (struct sigaction){0};
 }
 
 void signal_deliver(void)
 {
-    process_t *p = scheduler_current()->process;
-    if (!signal_pending(p))
-        return;
+    thread_t *thread = scheduler_current();
+    process_t *p = thread->process;
 
-    // Every signal left here ends the process: the lowest number goes first
-    process_exit_signal(__builtin_ctz(p->signals_pending));
+    while (signal_pending(p))
+    {
+        int signal = __builtin_ctz(p->signals_pending & ~p->signals_blocked);
+        struct sigaction action = p->signal_actions[signal];
+        p->signals_pending &= ~(1u << signal);
+
+        if (signal_does_nothing(p, signal))
+            continue;
+
+        if (action.sa_handler == SIG_DFL)
+            process_exit_signal(signal);
+
+        if (arch_signal_frame_push(
+                thread->stack,
+                thread->stack_size,
+                p->space,
+                signal,
+                (uintptr_t)action.sa_handler,
+                (uintptr_t)action.sa_restorer,
+                p->signals_blocked) != 0)
+            process_exit_signal(SIGSEGV);
+
+        // Its own signal too, so a handler is not entered again while it runs
+        p->signals_blocked |= (action.sa_mask | (1u << signal) & ~SIGNAL_UNBLOCKABLE);
+        return;
+    }
 }

@@ -13,4 +13,5 @@ dirent \
 stat \
 ioctl \
 cxx \
-signal
+signal \
+arch/$(ARCH)
