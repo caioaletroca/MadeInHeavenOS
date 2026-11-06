@@ -44,7 +44,11 @@ static long pipe_read(file_t *file, char *buf, size_t count)
 
     guard(spinlock, &pipe->lock);
     while (pipe->read_count == pipe->write_count && pipe->writers > 0)
-        wait_queue_sleep_locked(&pipe->readable, &pipe->lock);
+    {
+        int interrupted = wait_queue_sleep_interruptible(&pipe->readable, &pipe->lock);
+        if (interrupted < 0)
+            return interrupted;
+    }
 
     size_t done = 0;
     while (done < count && pipe->read_count != pipe->write_count)
@@ -74,7 +78,11 @@ static long pipe_write(file_t *file, const char *buf, size_t count)
     {
         size_t need = count <= PIPE_ATOMIC ? count : 1;
         while (pipe->readers > 0 && PIPE_SIZE - (pipe->write_count - pipe->read_count) < need)
-            wait_queue_sleep_locked(&pipe->writable, &pipe->lock);
+        {
+            int interrupted = wait_queue_sleep_interruptible(&pipe->writable, &pipe->lock);
+            if (interrupted < 0)
+                return done > 0 ? (long)done : interrupted;
+        }
 
         if (pipe->readers == 0)
             return done > 0 ? (long)done : -EPIPE;

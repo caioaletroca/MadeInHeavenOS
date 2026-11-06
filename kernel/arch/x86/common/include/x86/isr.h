@@ -79,4 +79,10 @@ void isr_set_info(uint8_t vector, isr_info_t *info);
  */
 isr_context_t *isr_handler(isr_context_t *ctx);
 
+/**
+ * @brief Called when returning from an ISR, handles user-mode signal delivery.
+ * @param ctx Pointer to the ISR context
+ */
+void isr_return(isr_context_t *ctx);
+
 #endif

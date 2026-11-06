@@ -1,4 +1,5 @@
 .extern isr_handler
+.extern isr_return
 
 /* 
  * This macro creates a stub for an ISR which does not pass it's own
@@ -65,6 +66,14 @@ isr_common:
     andq $-16, %rsp
     call isr_handler
     movq %rax, %rsp
+
+    # Now on the stack of the thread that will resume. rbx survives the call,
+    # and the pops below restore the thread's own rbx
+    movq %rsp, %rbx
+    movq %rsp, %rdi
+    andq $-16, %rsp
+    call isr_return
+    movq %rbx, %rsp
 
     # Pop back register
     popq %rax

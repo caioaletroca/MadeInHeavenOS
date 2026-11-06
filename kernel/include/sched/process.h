@@ -30,9 +30,11 @@ typedef struct process
     unsigned int refs;
     struct address_space *space;
     struct thread *thread;
-    struct process *parent; // NULL for processes the kernel started; init for orphans. Protected by process_tree_lock.
-    list_t children;        // spawned or adopted, not yet waited for; one reference each. Protected by process_tree_lock.
-    list_t sibling;         // link in parent->children. Protected by process_tree_lock.
+    struct process *parent;   // NULL for processes the kernel started; init for orphans. Protected by process_tree_lock.
+    list_t children;          // spawned or adopted, not yet waited for; one reference each. Protected by process_tree_lock.
+    list_t sibling;           // link in parent->children. Protected by process_tree_lock.
+    list_t all_link;          // link in the list of all processes. Protected by process_tree_lock.
+    uint32_t signals_pending; // one bit per signal sent and not yet acted on. Protected by lock.
 
     wait_queue_t waiters;
     wait_queue_t child_exits; // the parent sleeps here in wait; every child's exit wakes it
@@ -192,5 +194,12 @@ int process_wait(process_t *p);
  * @param p The process to release.
  */
 void process_release(process_t *p);
+
+/**
+ * @brief Finds a process by pid, with a reference: process_release when done.
+ *
+ * @return The process, or NULL if no such process exists.
+ */
+process_t *process_find(uint32_t pid);
 
 #endif // _SCHED_PROCESS_H

@@ -283,7 +283,7 @@ static void console_thread(void *arg)
 static long console_file_read(file_t *file, char *buf, size_t n)
 {
     (void)file;
-    return (long)console_read(buf, n);
+    return console_read(buf, n);
 }
 
 /**
@@ -362,7 +362,7 @@ void console_set_keymap(const keymap_t *map)
     keymap = map;
 }
 
-size_t console_read(char *buf, size_t n)
+long console_read(char *buf, size_t n)
 {
     size_t count = 0;
 
@@ -372,7 +372,11 @@ size_t console_read(char *buf, size_t n)
     guard(spinlock, &console_lock);
 
     while (read_index == write_index)
-        wait_queue_sleep_locked(&readers, &console_lock);
+    {
+        int interrupted = wait_queue_sleep_interruptible(&readers, &console_lock);
+        if (interrupted < 0)
+            return interrupted;
+    }
 
     while (count < n && read_index != write_index)
     {
@@ -393,7 +397,7 @@ size_t console_read(char *buf, size_t n)
             break;
     }
 
-    return count;
+    return (long)count;
 }
 
 size_t console_write(const char *buf, size_t n)

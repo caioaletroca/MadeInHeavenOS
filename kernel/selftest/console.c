@@ -44,7 +44,7 @@ void console_selftest(void)
         panic("Console self-test: failed to create the feeder thread\n");
 
     // Blocks: the feeder waits first, so this sleeps with console_lock released
-    size_t length = console_read(line, sizeof(line));
+    long length = console_read(line, sizeof(line));
 
     if (length != 3 || memcmp(line, "hi\n", 3) != 0)
         panic("Console self-test: read %u bytes instead of \"hi\\n\"\n", (unsigned int)length);

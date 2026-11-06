@@ -3,6 +3,8 @@
 
 #define EPERM 1         // operation not permitted
 #define ENOENT 2        // no such file: spawn of an unknown path
+#define ESRCH 3         // no such process
+#define EINTR 4         // a signal ended the sleep
 #define EIO 5           // input/output error
 #define E2BIG 7         // argument list too long
 #define ENOEXEC 8       // exec format error

@@ -61,6 +61,9 @@ long sys_wait(long pid, uintptr_t status);
 long sys_getpid(void);
 long sys_getppid(void);
 
+// signals.c
+long sys_kill(long pid, int signal);
+
 // memory.c
 long sys_brk(uintptr_t address);
 

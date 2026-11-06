@@ -3,4 +3,5 @@ thread.c \
 scheduler.c \
 wait.c \
 sync.c \
-process.c
+process.c \
+signal.c

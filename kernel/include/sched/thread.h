@@ -44,6 +44,7 @@ typedef struct thread
     thread_state_t state;
     uint64_t wake_tick; // sleeping: the tick to wake at; a timed wait: its deadline
     bool timed_out;     // a timed wait ended by its deadline, not by a wake (scheduler state)
+    bool interruptible; // asleep in a sleep that a signal may end
     struct address_space *space;
     struct process *process;
 

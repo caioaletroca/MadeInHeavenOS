@@ -68,6 +68,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_fcntl(arg0, (int)arg1, (long)arg2);
     case SYS_EXEC:
         return sys_exec(arg0, arg1, arg2);
+    case SYS_KILL:
+        return sys_kill((long)arg0, (int)arg1);
     default:
         return -ENOSYS;
     }

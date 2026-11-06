@@ -30,9 +30,9 @@ void console_set_keymap(const keymap_t *map);
  *
  * @param buf The buffer to store the read input.
  * @param n The maximum number of bytes to read.
- * @return The number of bytes actually read.
+ * @return The number of bytes actually read, or a negative error code on failure.
  */
-size_t console_read(char *buf, size_t n);
+long console_read(char *buf, size_t n);
 
 /**
  * Write output to the console.

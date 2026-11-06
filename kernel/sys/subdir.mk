@@ -7,4 +7,5 @@ files.c \
 directories.c \
 stat.c \
 processes.c \
-memory.c
+memory.c \
+signals.c

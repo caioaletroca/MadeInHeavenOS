@@ -2,6 +2,7 @@
 #include <arch/irq.h>
 #include <platform/platform.h>
 #include <sched/scheduler.h>
+#include <sched/signal.h>
 #include <x86/idt.h>
 #include <x86/isr.h>
 #include <x86/vectors.h>
@@ -53,4 +54,10 @@ isr_context_t *isr_handler(isr_context_t *ctx)
         return scheduler_on_interrupt(ctx);
 
     return ctx;
+}
+
+void isr_return(isr_context_t *ctx)
+{
+    if (isr_from_user(ctx))
+        signal_deliver();
 }

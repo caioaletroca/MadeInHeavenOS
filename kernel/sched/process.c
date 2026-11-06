@@ -16,6 +16,9 @@ static uint32_t next_pid = PROCESS_INIT_PID + 1;
 // first, then a process's lock (never take this while holding p->lock).
 static spinlock_t process_tree_lock = SPINLOCK_INIT;
 
+// Every process, for kill to find by pid. Protected by process_tree_lock.
+static list_t all_processes = {.next = &all_processes, .prev = &all_processes};
+
 // /sbin/init once process_create_init made it; adopts orphans. Set before init
 // can run, never cleared: init exiting panics the kernel (init_start).
 static process_t *init_process;
@@ -84,6 +87,12 @@ process_t *process_create(address_space_t *space)
     wait_queue_init(&p->child_exits);
     spinlock_init(&p->lock);
 
+    list_init(&p->all_link);
+    scoped_guard(spinlock, &process_tree_lock)
+    {
+        list_insert_before(&all_processes, &p->all_link);
+    }
+
     return p;
 }
 
@@ -97,6 +106,28 @@ process_t *process_create_init(address_space_t *space)
     }
 
     return p;
+}
+
+process_t *process_find(uint32_t pid)
+{
+    scoped_guard(spinlock, &process_tree_lock)
+    {
+        list_t *pos;
+        list_for_each(pos, &all_processes)
+        {
+            process_t *p = list_container(pos, process_t, all_link);
+            if (p->pid != pid)
+                continue;
+
+            scoped_guard(spinlock, &p->lock)
+            {
+                p->refs++;
+            }
+            return p;
+        }
+    }
+
+    return NULL;
 }
 
 int process_fd_install(process_t *p, file_t *file)
@@ -257,6 +288,7 @@ long process_wait_child(process_t *parent, long pid, process_t **out)
                 if (p->state == PROCESS_EXITED)
                 {
                     list_remove(&p->sibling);
+                    list_remove(&p->all_link);
                     p->parent = NULL;
                     *out = p;
                     return p->pid;
@@ -267,7 +299,9 @@ long process_wait_child(process_t *parent, long pid, process_t **out)
                 return -ECHILD;
 
             // Releases the lock while asleep, retakes it before returning; then scan again
-            wait_queue_sleep_locked(&parent->child_exits, &process_tree_lock);
+            int interrupted = wait_queue_sleep_interruptible(&parent->child_exits, &process_tree_lock);
+            if (interrupted < 0)
+                return interrupted;
         }
     }
 
@@ -376,9 +410,15 @@ void process_release(process_t *p)
 
     bool last = false;
 
-    scoped_guard(spinlock, &p->lock)
+    // Tree lock first: kill must never find a process that is being freed
+    scoped_guard(spinlock, &process_tree_lock)
     {
-        last = (--p->refs == 0);
+        scoped_guard(spinlock, &p->lock)
+        {
+            last = (--p->refs == 0);
+        }
+        if (last)
+            list_remove(&p->all_link);
     }
 
     if (last)

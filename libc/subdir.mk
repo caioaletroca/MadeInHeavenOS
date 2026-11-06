@@ -12,4 +12,5 @@ fcntl \
 dirent \
 stat \
 ioctl \
-cxx
+cxx \
+signal
