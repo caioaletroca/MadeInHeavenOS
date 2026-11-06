@@ -86,6 +86,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+15c9790 test: cover SIGPIPE, SIGCHLD and restartable system calls
+6898f5f feat(sh): stay silent when SIGPIPE ends a program
+7d1aed6 feat(sched): add SIGPIPE, SIGCHLD and restartable system calls
+0c51e97 docs(architecture): document signal handlers in handoff
 24adae0 test: cover signal handlers
 5818cdf feat(sched): run signal handlers in user mode
 745bb41 docs(architecture): document kill and default signal actions in handoff
@@ -901,6 +905,23 @@ it itself, on its own stack, on its way back to ring 3. Linux numbers (`uapi/mih
 - **Faults:** `page_fault_handler` and `exception_user_handler` call `signal_force` and return, and
   `isr_return` delivers it, so a program can catch a fault. Blocked or ignored becomes the default
   action: returning would run the same instruction into the same fault forever.
+- **Restart:** `SA_RESTART` makes the kernel do a program's retry loop. `syscall_handler` keeps the
+  number in `thread->syscall_number`, since the result overwrites `rax`. When a handler with the flag
+  is entered on a return from a system call (the vector, since a tick can land with -4 in `rax`)
+  ending in `-EINTR`, `arch_signal_frame_push` puts the number back in `rax` and takes 2 off `rip`,
+  before saving the frame: after the handler, `int $0x80` simply runs again. Two calls set
+  `SYSCALL_NOT_RESTARTABLE`: `pause`, whose purpose is to end at a signal, and `sigreturn`, where
+  a restored `-EINTR` and a second signal would otherwise run `sigreturn` again.
+- **`SIGPIPE`:** `pipe_write` sends it to the writer when no reader is left, also after a partial
+  write, then returns as before: `EPIPE` for a program that ignores or catches it. **`SIGCHLD`:**
+  `process_exit` sends it to the parent under `process_tree_lock`. `process_wait_child` returns
+  `EINTR` only after scanning again, so the child that woke it wins over the signal that came
+  with it.
+- **Flags and the rest:** `SA_NODEFER`, `SA_RESETHAND`; `pause` (`SYS_PAUSE` 36, a sleep on a queue
+  nothing wakes), `sigpending` (`SYS_SIGPENDING` 35), libc's `signal` (BSD's behaviour, as glibc:
+  `SA_RESTART`, the handler stays). `abort` raises, then sets the default, unblocks and raises
+  again, so it ends the program past a handler that returns, a block or `SIG_IGN`. The shell prints
+  no "killed by signal" line for `SIGPIPE`, as bash.
 
 ### Files (`fs/file.c`)
 
@@ -1267,8 +1288,8 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     `hello | cat` 0), not found first (0) and last (127), `cat`'s error and status 1, the three
     syntax errors with the script going on, 9 commands refused. A directory as a command (126).
     Builtins in a pipeline: `pwd | cat` with nothing printed twice, `cd` and `exit` changing only
-    their copy of the shell, `cd`'s failure through `wait`. `cat hello | nope` ends, with `cat`'s
-    `Broken pipe` (a regression hangs the suite here). `/usr/tests/hello` (28 KB, over a pipe's buffer, full
+    their copy of the shell, `cd`'s failure through `wait`. `cat hello | nope` ends, `SIGPIPE`
+    killing `cat` silently (a regression hangs the suite here). `/usr/tests/hello` (28 KB, over a pipe's buffer, full
     of `'\0'`) through three `cat`s, byte for byte. fd 3 free at the end.
   - `brk`: heap on the page after `.bss`, exact unaligned break, zeroed pages after shrink and regrow,
     `ENOMEM` past the limit / on wrap / below `heap_start`, a 32 KiB stack array.
@@ -1281,7 +1302,9 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     the red zone surviving a signal at any instruction (a helper process, the poker, sends
     `SIGUSR1` until stopped), a handler needing stack growth, `EINTR` in `read`, `write` and
     `wait`, stdio's retry, fork, exec and spawn, caught and unrefusable faults, no stack for a
-    handler, forged `sigreturn` frames.
+    handler, forged `sigreturn` frames, then `SA_RESTART` on `read` and `wait` (and not after
+    `sigreturn`), `pause`, `SIGPIPE`, `SIGCHLD`, `SA_NODEFER`, `SA_RESETHAND`, `sigpending`,
+    `signal`, `abort`.
   - `signal`: every fatal signal sent to itself, `raise`, `abort`, the ignored signals, a
     target in a loop and asleep in `read`, `write`, `wait` and on stdin, an ignored signal
     leaving a sleep alone, fds closed by dying, a child killing its parent, `kill`'s errors,
@@ -2713,10 +2736,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **C5, signals.** C5a (done): `kill`, default actions, delivery on the way back to ring 3,
     interruptible sleep, a real `abort`, the `signal` test. C5b (done): `sigaction` with handlers,
     the signal frame, `sigreturn`, a libc restorer, `sigprocmask`, faults through signals, `EINTR`
-    visible to programs, the `sigaction` test (see "Signals"). C5c (next): `SIGCHLD`, `SIGPIPE`,
-    `SA_RESTART` (needs the system call's number kept, since its result overwrites `rax`),
-    `SA_NODEFER`/`SA_RESETHAND`, `pause`, `signal()`, `sigpending`, `abort` over a handler that
-    returns, the shell test's "a reader that never starts" case.
+    visible to programs, the `sigaction` test. C5c (done): `SIGCHLD`, `SIGPIPE`, `SA_RESTART`,
+    `SA_NODEFER`/`SA_RESETHAND`, `pause`, `signal`, `sigpending`, a full `abort`, the shell silent
+    on `SIGPIPE` (see "Signals"). Next: C6.
   - **C6, terminal control**: process groups and sessions, Ctrl+C → `SIGINT` to the foreground
     group, `termios` with raw mode (then the shell's arrow-key history).
   - **C7, graduation**: port Lua (needs `fopen`/`fread`, `setjmp`, math); maybe dash.
@@ -2955,15 +2977,14 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   `#!` scripts, no `ENOEXEC` test. `exec` must stop other threads when threads exist. Stdio buffers die with the old program, as on POSIX.
 - Pipelines: at most `PIPELINE_MAX` (8) commands (bash: no limit), no `pipefail` or `PIPESTATUS`.
   A syntax error does not set `$?` (bash: 2). A failed `dup2` in a stage's child is not checked.
-  Without `SIGPIPE` (C5c) a writer whose reader left prints its error: `cat big | nope` ends with
-  `cat: ...: Broken pipe`, where bash's `cat` dies silently. Update the shell test's case then.
 - Signals: stop signals do nothing until C6. `kill` with pid 0 or a negative pid is `-ESRCH` until
   process groups (C6). init takes only signals it has a handler for. Several pending signals: the
   lowest number wins, so a fault can lose its turn to one below it. No `pthread_kill`; the mask
-  and pending set are per process until threads exist. `sa_flags` is stored and ignored until
-  C5c. `abort` with a handler that returns exits with 134 (POSIX: default action, raise again;
-  C5c). No `sigaltstack`, so a stack overflow cannot reach a handler and ends the process. No
-  `siginfo_t`, `sigsuspend` or realtime signals.
+  and pending set are per process until threads exist. No `sigaltstack`, so a stack overflow
+  cannot reach a handler and ends the process. `SIG_IGN` on `SIGCHLD` does not reap children on
+  its own. No `SA_SIGINFO`/`siginfo_t`, `SA_NOCLDSTOP`, `SA_NOCLDWAIT` or realtime signals. No
+  `sigsuspend`, so a program cannot wait for a signal without a race (needed by dash, if C7
+  ports it).
 - `cat` has no options.
 - The shell has no arrow-key history (needs raw mode / termios), no `;`, `&&`, `||` or
   redirections, no field splitting, no continuation lines for an open quote; a `'` inside `"..."`
@@ -2991,9 +3012,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The malloc test hard-codes the 32-byte header (`sizeof(block_t)`).
 - Syscalls run with IRQs off for their whole duration (interrupt gate); long writes delay IRQs.
 - The fd table has no lock (safe only with one thread per process).
-- Pipes: no `SIGPIPE` (a write with no reader only returns `EPIPE`; it waits for C5c, since a
-  program must first be able to ignore it), no
-  `O_NONBLOCK`/`pipe2`, no `poll`/`select`, no named FIFOs (`mkfifo`, ext2's FIFO
+- Pipes: no `O_NONBLOCK`/`pipe2`, no `poll`/`select`, no named FIFOs (`mkfifo`, ext2's FIFO
   inodes). The buffer is a fixed 4096 bytes (Linux: 16 pages, resizable with `F_SETPIPE_SZ`).
   `sys_write` hands the backend 256-byte chunks, so POSIX's `PIPE_BUF` promise holds per chunk
   only: a 1000-byte write can interleave with another writer's at a chunk boundary; and libc
