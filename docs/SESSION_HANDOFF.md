@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`help`/`history`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -86,6 +86,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+24adae0 test: cover signal handlers
+5818cdf feat(sched): run signal handlers in user mode
+745bb41 docs(architecture): document kill and default signal actions in handoff
 ee2b951 test: cover kill and default signal actions
 4e0820a feat(sched): add kill, default signal actions and interruptible sleep
 b8635ad docs(architecture): document stack growth in handoff
@@ -842,7 +845,7 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
 
 A signal is a bit in the target's `signals_pending`; sending acts on nothing. The target acts on
 it itself, on its own stack, on its way back to ring 3. Linux numbers (`uapi/mihos/signal.h`),
-`NSIG` 32. C5a has default actions only, so a delivered signal always ends the process.
+`NSIG` 32. The mask and the pending set live in the process: one thread each.
 
 - **`kill(pid, signal)`** (`SYS_KILL` 7): `signal` outside 0..31 → `-EINVAL`; `pid <= 0` →
   `-ESRCH` (groups and "everyone" wait for C6); unknown pid → `-ESRCH`; signal 0 only checks that
@@ -853,10 +856,12 @@ it itself, on its own stack, on its way back to ring 3. Linux numbers (`uapi/mih
   at once: the reaper may not have run yet, and `kill` must already say `-ESRCH`.
   `process_release` takes the tree lock, then `p->lock`, and unlinks the last reference for
   processes never waited for, so `kill` cannot find one being freed.
-- **`signal_send(p, signal)`** drops the signal for init (no handlers, and its exit panics), for
-  a default action of nothing (`SIGCHLD`, `SIGCONT`, `SIGURG`, `SIGWINCH`, and the stop signals
-  until C6) and for an exited process (`p->thread` is gone; `state` is set under `p->lock`).
-  Otherwise it sets the bit and wakes the thread if `thread->interruptible`.
+- **`signal_send(p, signal)`** drops the signal for an exited process (`p->thread` is gone;
+  `state` is set under `p->lock`), for init without a handler for it (its exit panics) and, unless
+  it is blocked, for anything that would do nothing: `SIG_IGN`, or a default action of nothing
+  (`SIGCHLD`, `SIGCONT`, `SIGURG`, `SIGWINCH`, and the stop signals until C6). A blocked signal
+  stays, since its action may change. Otherwise it sets the bit and, if unblocked, wakes the
+  thread when `thread->interruptible`.
 - **Delivery:** `isr_common` calls `isr_return(ctx)` right after `movq %rax, %rsp`, on the stack
   of the thread about to resume. Not inside `isr_handler`: `scheduler_on_interrupt` changes the
   current thread while still on the old thread's stack. `isr_return` acts only on a return to
@@ -868,8 +873,34 @@ it itself, on its own stack, on its way back to ring 3. Linux numbers (`uapi/mih
   is safe and the wait may never end: `pipe_read`, `pipe_write` (partial count kept),
   `console_read`, `process_wait_child`. Mutexes, semaphores and disk waits keep the plain sleep,
   since their callers have no error path: the signal waits until the sleep ends.
-  `process_wait` (kernel self-tests) stays plain too. No program sees `EINTR` yet: every delivered
-  signal ends it first.
+  `process_wait` (kernel self-tests) stays plain too. A handler's frame saves `rax` = `-EINTR`, so
+  the program sees `EINTR` after the handler; `write` with bytes already moved returns their
+  count, and stdio's `__write_all` retries.
+- **Handlers** (`arch/signal.h`, `arch/x86/x86_64/signal.c`): `sigaction` (`SYS_SIGACTION` 32)
+  stores `struct sigaction` per signal in `process_t`; libc fills `sa_restorer` with
+  `__signal_restore` (`libc/arch/x86_64/signal_restore.S`), which calls `sigreturn`
+  (`SYS_SIGRETURN` 34). `signal_deliver` takes the lowest unblocked signal, skips what does
+  nothing, exits for a default action, or pushes a frame: below the user `rsp` and the 128-byte
+  red zone, aligned as `call` leaves it, holding the return address (the restorer), the mask and
+  the whole `isr_context_t`. Then it sets `rip` to the handler, `rsp` to the frame, `rdi` to the
+  signal, clears DF, and blocks `sa_mask` plus the signal itself. One frame per return to ring 3;
+  the next signal waits for the next way out. A frame that cannot be written ends the process
+  with `SIGSEGV`. A handler may nest under a signal it does not block.
+- **`sigreturn`** finds the frame at `rsp - 8` (the handler's `ret` popped the return address).
+  The frame is user memory and any program can call this with no signal: `rip` or `rsp` at or past
+  `USER_TOP` is refused (`iretq` to a bad `rip` faults in the kernel, which would panic), `cs`, `ss`
+  and `info` stay the kernel's, only CF PF AF ZF SF DF OF are taken from the saved flags, and
+  `SIGKILL`/`SIGSTOP` cannot enter the mask. A refused frame is `signal_force(SIGSEGV)`.
+  `sys_sigreturn` returns the saved `rax`, since the dispatch writes its result over `rax`.
+- **`sigprocmask`** (`SYS_SIGPROCMASK` 33): a blocked signal waits in `signals_pending` and runs on
+  the way out of the call that unblocks it. Bits, not a queue: two sent while blocked run once.
+  libc: `sigemptyset`, `sigfillset`, `sigaddset`, `sigdelset`, `sigismember`.
+- **Inheritance:** `child_create` copies actions and mask, never pending signals. `exec` and
+  `spawn` (`signal_exec_reset`) put handlers back to the default, since they live in the old
+  program; ignored signals and the mask stay, and after `exec` so do pending signals.
+- **Faults:** `page_fault_handler` and `exception_user_handler` call `signal_force` and return, and
+  `isr_return` delivers it, so a program can catch a fault. Blocked or ignored becomes the default
+  action: returning would run the same instruction into the same fault forever.
 
 ### Files (`fs/file.c`)
 
@@ -1246,6 +1277,11 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     growth, a 100 KiB block, `calloc` zeroing reused dirty memory, `realloc` semantics, `ENOMEM`
     cases.
   - `malloc_abort`: double free (killed by `SIGABRT`, which the runner counts as 134).
+  - `sigaction`: handlers, `sa_mask`, nesting, stack alignment, the mask, errors, registers and
+    the red zone surviving a signal at any instruction (a helper process, the poker, sends
+    `SIGUSR1` until stopped), a handler needing stack growth, `EINTR` in `read`, `write` and
+    `wait`, stdio's retry, fork, exec and spawn, caught and unrefusable faults, no stack for a
+    handler, forged `sigreturn` frames.
   - `signal`: every fatal signal sent to itself, `raise`, `abort`, the ignored signals, a
     target in a loop and asleep in `read`, `write`, `wait` and on stdin, an ignored signal
     leaving a sleep alone, fds closed by dying, a child killing its parent, `kill`'s errors,
@@ -2675,10 +2711,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **C4 (done).** C4a: copy-on-write (the `cow` test). C4b: stack growth (the `stack` test).
     See "Virtual memory". Next: C5.
   - **C5, signals.** C5a (done): `kill`, default actions, delivery on the way back to ring 3,
-    interruptible sleep, a real `abort`, the `signal` test (see "Signals"). C5b (next):
-    `sigaction` with handlers, the signal frame, `sigreturn`, a libc restorer, `sigprocmask`,
-    `pause`, exec resetting handlers, `SIGCHLD`, `SIGPIPE`, `EINTR` visible to programs,
-    `SA_RESTART`.
+    interruptible sleep, a real `abort`, the `signal` test. C5b (done): `sigaction` with handlers,
+    the signal frame, `sigreturn`, a libc restorer, `sigprocmask`, faults through signals, `EINTR`
+    visible to programs, the `sigaction` test (see "Signals"). C5c (next): `SIGCHLD`, `SIGPIPE`,
+    `SA_RESTART` (needs the system call's number kept, since its result overwrites `rax`),
+    `SA_NODEFER`/`SA_RESETHAND`, `pause`, `signal()`, `sigpending`, `abort` over a handler that
+    returns, the shell test's "a reader that never starts" case.
   - **C6, terminal control**: process groups and sessions, Ctrl+C → `SIGINT` to the foreground
     group, `termios` with raw mode (then the shell's arrow-key history).
   - **C7, graduation**: port Lua (needs `fopen`/`fread`, `setjmp`, math); maybe dash.
@@ -2905,22 +2943,27 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   reason. A `read` refused by a read-only buffer has already moved the file offset (Linux
   checks first). `frame_share` and the fault path take no lock beyond IRQs off: fine on one CPU.
   Nothing reads a free-frame count, so only `mm_selftest` sees a leaked frame.
-- No `vfork`, `pthread_atfork` or `clone`. User vector registers (`xmm`) are in no saved
-  frame: a context switch does not save them and a child does not get them (not yet checked
-  whether user programs compile to code that uses them).
+- No `vfork`, `pthread_atfork` or `clone`.
+- **Blocks C7:** user vector registers (`xmm`) are in no saved frame. `boot.S` enables SSE and
+  `USER_CFLAGS` does not turn it off, so the compiler may use them, but a context switch does not
+  save them, a child does not get them, and a signal frame does not hold them (not yet checked
+  whether current programs use them). Lua's numbers are doubles, which live there: save them
+  in the context switch and in the signal frame before C7.
 - `exec`: `SYS_SPAWN` stays a system call (`posix_spawn` could become `fork` + `exec` in libc, with
   file actions). `fcntl` has only `F_GETFD` and `F_SETFD`; no `O_CLOEXEC` or `pipe2`, so setting
   the flag after `open` or `pipe` leaves a gap once threads exist. No `execl` family, no
-  `#!` scripts, no `ENOEXEC` test. `exec` must reset caught signals when C5b adds them, and stop
-  other threads when threads exist. Stdio buffers die with the old program, as on POSIX.
+  `#!` scripts, no `ENOEXEC` test. `exec` must stop other threads when threads exist. Stdio buffers die with the old program, as on POSIX.
 - Pipelines: at most `PIPELINE_MAX` (8) commands (bash: no limit), no `pipefail` or `PIPESTATUS`.
   A syntax error does not set `$?` (bash: 2). A failed `dup2` in a stage's child is not checked.
-  Without `SIGPIPE` (C5b) a writer whose reader left prints its error: `cat big | nope` ends with
+  Without `SIGPIPE` (C5c) a writer whose reader left prints its error: `cat big | nope` ends with
   `cat: ...: Broken pipe`, where bash's `cat` dies silently. Update the shell test's case then.
-- Signals (C5a): default actions only, no handlers (C5b). Stop signals do nothing until C6.
-  `kill` with pid 0 or a negative pid is `-ESRCH` until process groups (C6). init ignores every
-  signal. Several pending signals: the lowest number wins. No `pthread_kill` or per-thread
-  signals. libc's `__write_all` has no `EINTR` retry yet: nothing can reach it before C5b.
+- Signals: stop signals do nothing until C6. `kill` with pid 0 or a negative pid is `-ESRCH` until
+  process groups (C6). init takes only signals it has a handler for. Several pending signals: the
+  lowest number wins, so a fault can lose its turn to one below it. No `pthread_kill`; the mask
+  and pending set are per process until threads exist. `sa_flags` is stored and ignored until
+  C5c. `abort` with a handler that returns exits with 134 (POSIX: default action, raise again;
+  C5c). No `sigaltstack`, so a stack overflow cannot reach a handler and ends the process. No
+  `siginfo_t`, `sigsuspend` or realtime signals.
 - `cat` has no options.
 - The shell has no arrow-key history (needs raw mode / termios), no `;`, `&&`, `||` or
   redirections, no field splitting, no continuation lines for an open quote; a `'` inside `"..."`
@@ -2948,7 +2991,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The malloc test hard-codes the 32-byte header (`sizeof(block_t)`).
 - Syscalls run with IRQs off for their whole duration (interrupt gate); long writes delay IRQs.
 - The fd table has no lock (safe only with one thread per process).
-- Pipes: no `SIGPIPE` (a write with no reader only returns `EPIPE`; it waits for C5b, since a
+- Pipes: no `SIGPIPE` (a write with no reader only returns `EPIPE`; it waits for C5c, since a
   program must first be able to ignore it), no
   `O_NONBLOCK`/`pipe2`, no `poll`/`select`, no named FIFOs (`mkfifo`, ext2's FIFO
   inodes). The buffer is a fixed 4096 bytes (Linux: 16 pages, resizable with `F_SETPIPE_SZ`).
