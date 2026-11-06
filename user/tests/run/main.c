@@ -91,12 +91,16 @@ static int test_run(const char *name, int expected)
         return 0;
     }
 
+    // A signal counts as 128 + its number, as in a shell's $?
     if (WIFSIGNALED(status))
     {
-        printf("test %s: FAIL (signal %d, expected status %d)\n", path, WTERMSIG(status), expected);
-        return 0;
+        if (128 + WTERMSIG(status) != expected)
+        {
+            printf("test %s: FAIL (signal %d, expected status %d)\n", path, WTERMSIG(status), expected);
+            return 0;
+        }
     }
-    if (WEXITSTATUS(status) != expected)
+    else if (WEXITSTATUS(status) != expected)
     {
         printf("test %s: FAIL (status %d, expected %d)\n", path, WEXITSTATUS(status), expected);
         return 0;

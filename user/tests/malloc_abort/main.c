@@ -2,8 +2,8 @@
 #include <stdio.h>
 
 /*
- * free must catch a double free and abort: the expected exit status is 134
- * (128 + SIGABRT, see grub/grub.cfg). Reaching the end means it went unnoticed.
+ * free must catch a double free and abort: killed by SIGABRT, which the test
+ * runner counts as status 134 (128 + 6). Reaching the end means it went unnoticed.
  */
 int main(void)
 {

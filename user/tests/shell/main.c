@@ -40,11 +40,10 @@ static const shell_case_t cases[] = {
      "/usr/tests/hello\necho $?\nnope\necho $?\n/no/such\necho $?\necho $?\n",
      "42\n127\n127\n0\n",
      "sh: nope: command not found\nsh: /no/such: command not found\n", 0},
-    // abort exits with 128 + SIGABRT until signals (C5): an exit to the shell, so no "killed by signal" line
     {"an aborted program",
      "/usr/tests/malloc_abort\necho $?\n",
      "134\n",
-     "free: invalid pointer or double free\n", 0},
+     "free: invalid pointer or double free\nsh: /usr/tests/malloc_abort: killed by signal 6\n", 0},
     // pwd's output waits in the shell's buffer (a pipe is fully buffered) unless it is flushed before echo runs
     {"builtins and programs in order",
      "pwd\ncd /usr/tests\npwd\necho between\ncd ..\npwd\n",
