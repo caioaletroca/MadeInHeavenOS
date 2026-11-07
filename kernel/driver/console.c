@@ -10,6 +10,7 @@
 #include <sched/process.h>
 #include <sched/scheduler.h>
 #include <sched/sync.h>
+#include <sched/signal.h>
 #include <mihos/stat.h>
 #include <mihos/fcntl.h>
 #include <mihos/ioctl.h>
@@ -135,6 +136,13 @@ static bool console_erase(void)
     return true;
 }
 
+/**
+ * Send a signal to the foreground group and drop all input waiting (Linux too,
+ * unless NOFLSH is set): what was typed for a program that is ending must not
+ * reach the next one.
+ *
+ * @param signal The signal.
+ */
 static void console_signal(int signal)
 {
     scoped_guard(spinlock, &console_lock)
@@ -173,6 +181,10 @@ static void console_input(uint32_t codepoint)
     case CTRL('\\'):
         tty_write("^\\\n", 3);
         console_signal(SIGQUIT);
+        return;
+    case CTRL('Z'):
+        tty_write("^Z\n", 3);
+        console_signal(SIGTSTP);
         return;
     case '\n':
         if (console_store("\n", 1, true))
@@ -305,6 +317,32 @@ static void console_thread(void *arg)
 }
 
 /**
+ * Check if a process is in the background and should receive a signal.
+ *
+ * @param p The process to check.
+ * @param signal The signal to potentially send.
+ * @return 0 if the process is not in the background, or a negative error code if it is.
+ */
+static long console_background_check(process_t *p, int signal)
+{
+    if (p == NULL)
+        return 0;
+
+    uint32_t session = (uint32_t)process_session_get(p, 0);
+    uint32_t group = (uint32_t)process_group_get(p, 0);
+
+    if (session != console_session || group == console_foreground)
+        return 0;
+
+    // Nobody would resume a read that refuses the signal. A shell taking the terminal back may
+    if (signal_refused(p, signal))
+        return signal == SIGTTIN ? -EIO : 0;
+
+    process_signal_group(group, signal);
+    return -EINTR;
+}
+
+/**
  * Read function for the console device file.
  *
  * @param file The file representing the console device.
@@ -315,6 +353,14 @@ static void console_thread(void *arg)
 static long console_file_read(file_t *file, char *buf, size_t n)
 {
     (void)file;
+
+    scoped_guard(mutex, &input_lock)
+    {
+        long allowed = console_background_check(scheduler_current()->process, SIGTTIN);
+        if (allowed < 0)
+            return allowed;
+    }
+
     return console_read(buf, n);
 }
 
@@ -369,6 +415,10 @@ static long console_foreground_set(process_t *p, int32_t group)
 
     if (session != console_session)
         return -ENOTTY;
+
+    long allowed = console_background_check(p, SIGTTOU);
+    if (allowed < 0)
+        return allowed;
 
     if (group <= 0)
         return -EINVAL;
