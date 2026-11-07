@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`help`/`history`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -86,6 +86,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+6847548 test: cover process groups and sessions
+8abce1f feat(libc): add setpgid, getpgid, getpgrp, setsid and getsid
+b64432c feat(sched): add process groups and sessions
+3c1c25d docs(sched): correct the stack parameters of the signal frame
+0ccab48 docs(architecture): document the end of signals in handoff
 15c9790 test: cover SIGPIPE, SIGCHLD and restartable system calls
 6898f5f feat(sh): stay silent when SIGPIPE ends a program
 7d1aed6 feat(sched): add SIGPIPE, SIGCHLD and restartable system calls
@@ -733,8 +738,9 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   the shell, a name with `'/'` is used as given, no `PATH` is `ENOENT`, and `EACCES` from any
   entry beats "not found" (glibc). Any other error stops the search.
 - **`wait(pid, status)`** → the reaped child's pid, or `-ECHILD` (no matching child: not a child,
-  already waited for, no children; `pid` 0 and `< -1` are process groups, which do not exist yet).
-  `pid` -1 is any child. `process_wait_child` returns the child unlinked; `sys_wait` stores the POSIX
+  already waited for, no children).
+  `pid` -1 is any child, 0 a child in the caller's group, `< -1` a child in group `-pid`.
+  `process_wait_child` returns the child unlinked; `sys_wait` stores the POSIX
   status (`signal`, or `(exit_status & 0xFF) << 8`) if `status != 0` (`-EFAULT` after reaping on a
   bad pointer) and `process_release`s it.
 - **`reboot(command)`**: only pid 1, else `-EPERM` (checked before the command); `REBOOT_HALT`
@@ -845,15 +851,49 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
   process itself touch it; `fork` copies the table before the child runs, so only threads
   would need one.
 
+### Process groups and sessions (`sched/process.c`, `sys/processes.c`)
+
+A **group** is the set of processes a signal can reach together, a pipeline being one. A **session**
+holds groups, roughly one login. Each is a number in `process_t`, under `process_tree_lock`: a
+group is named after the pid of its first member, a session after its leader's. There is no group
+object: a group exists while any process, exited ones included until they are waited for, carries
+its number, so it outlives its first member. Lookups walk `all_processes`.
+
+```text
+session 12 (the shell, pid 12, is its leader)
+|-- group 12: sh
+`-- group 30: cat (pid 30), cat (pid 31), cat (pid 32)
+```
+
+- **Start:** `process_create` gives a process its own pid as both; init is set to 1 after its pid
+  is overwritten. `child_create` copies the parent's (`process_group_inherit`), for fork and spawn.
+  exec keeps them. Nothing calls `setsid` yet, so today everything sits in init's group and session
+  (C6b changes that for the shell).
+- **`setpgid(pid, group)`** (`SYS_SETPGID` 37; 0 means the caller, 0 for `group` the one named after
+  the process): negative → `-EINVAL`; neither the caller nor its child → `-ESRCH`; another session
+  → `-EPERM`; a child that ran exec → `-EACCES` (`exec_done`, set by `process_exec` and `sys_spawn`:
+  a running program's group does not change under it); a session leader → `-EPERM`; a group that
+  does not exist in this session, unless it is the process's own → `-EPERM`.
+- **`getpgid(pid)`** (38), **`getsid(pid)`** (40): 0 is the caller, negative or unknown → `-ESRCH`.
+  libc also has `getpgrp`, which is `getpgid(0)`.
+- **`setsid()`** (39): a new session and a new group, both named after the caller. `-EPERM` if a
+  group with its pid exists: that group would be left behind in the old session with the caller's
+  name on it.
+- **`kill`:** `pid` 0 is the caller's group, sender included, `< -1` is group `-pid`, -1 everyone but
+  init and the caller (Linux's choice). `-ESRCH` when nobody matched; signal 0 only checks.
+  `process_signal_group` and `process_signal_everyone` call `signal_send` under the tree lock, as
+  `process_exit` does: the order is that lock, then `p->lock`.
+- **`wait`:** `process_wait_matches` decides, under the tree lock, on each scan.
+
 ### Signals (`sched/signal.c`, `sys/signals.c`)
 
 A signal is a bit in the target's `signals_pending`; sending acts on nothing. The target acts on
 it itself, on its own stack, on its way back to ring 3. Linux numbers (`uapi/mihos/signal.h`),
 `NSIG` 32. The mask and the pending set live in the process: one thread each.
 
-- **`kill(pid, signal)`** (`SYS_KILL` 7): `signal` outside 0..31 → `-EINVAL`; `pid <= 0` →
-  `-ESRCH` (groups and "everyone" wait for C6); unknown pid → `-ESRCH`; signal 0 only checks that
-  the process exists. A zombie still exists until it is waited for: 0, no effect. libc: `kill`,
+- **`kill(pid, signal)`** (`SYS_KILL` 7): `signal` outside 0..31 → `-EINVAL`; `pid` 0, -1
+  and `< -1` name groups and everyone (see "Process groups and sessions"); unknown pid → `-ESRCH`;
+  signal 0 only checks that the process exists. A zombie still exists until it is waited for: 0, no effect. libc: `kill`,
   `raise`; `abort` raises `SIGABRT`, keeping `_exit(134)` behind it.
 - **`process_find(pid)`** walks `all_processes` (a link in every `process_t`, under
   `process_tree_lock`) and returns with a reference. `process_wait_child` unlinks a reaped child
@@ -2739,8 +2779,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     visible to programs, the `sigaction` test. C5c (done): `SIGCHLD`, `SIGPIPE`, `SA_RESTART`,
     `SA_NODEFER`/`SA_RESETHAND`, `pause`, `signal`, `sigpending`, a full `abort`, the shell silent
     on `SIGPIPE` (see "Signals"). Next: C6.
-  - **C6, terminal control**: process groups and sessions, Ctrl+C → `SIGINT` to the foreground
-    group, `termios` with raw mode (then the shell's arrow-key history).
+  - **C6, terminal control.** C6a (done): process groups and sessions, `kill` and `wait` on groups,
+    the `groups` test (see "Process groups and sessions"). C6b (next): the foreground group, the
+    shell in a session of its own with each pipeline in a group, Ctrl+C → `SIGINT` to that group.
+    A test needs a way to press a key: Linux's `TIOCSTI`, an `ioctl` that pushes a byte into the
+    input, is the candidate. C6c: stop signals, Ctrl+Z, `fg`. C6d: `termios` with raw mode. C6e:
+    the shell's line editing, arrow keys and history.
   - **C7, graduation**: port Lua (needs `fopen`/`fread`, `setjmp`, math); maybe dash.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
 
@@ -2977,8 +3021,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   `#!` scripts, no `ENOEXEC` test. `exec` must stop other threads when threads exist. Stdio buffers die with the old program, as on POSIX.
 - Pipelines: at most `PIPELINE_MAX` (8) commands (bash: no limit), no `pipefail` or `PIPESTATUS`.
   A syntax error does not set `$?` (bash: 2). A failed `dup2` in a stage's child is not checked.
-- Signals: stop signals do nothing until C6. `kill` with pid 0 or a negative pid is `-ESRCH` until
-  process groups (C6). init takes only signals it has a handler for. Several pending signals: the
+- Signals: stop signals do nothing until C6c. init takes only signals it has a handler for. Several pending signals: the
   lowest number wins, so a fault can lose its turn to one below it. No `pthread_kill`; the mask
   and pending set are per process until threads exist. No `sigaltstack`, so a stack overflow
   cannot reach a handler and ends the process. `SIG_IGN` on `SIGCHLD` does not reap children on
@@ -3033,8 +3076,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   place that destroys it, so a parent that never waits holds every child's memory (Linux frees
   it at exit and keeps only the small struct). A running thread cannot destroy the space it is
   on, so the reaper is the natural place, once the thread is gone.
-- `wait` has no `WNOHANG` and no process groups (`pid` 0, `< -1` give `-ECHILD`); waking every
-  waiter on any child's exit is fine with one thread per process.
+- `wait` has no `WNOHANG`; waking every waiter on any child's exit is fine with one thread per
+  process.
+- Process groups: orphaned groups are not handled (Linux sends a stopped one `SIGHUP` and
+  `SIGCONT`; matters from C6c). `kill(-1)` is tested only with signal 0: a real signal would end
+  the test run. `exec_done` is written without `process_tree_lock`, fine on one CPU.
 - `spawn` and `exec` copy user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
   `ENAMETOOLONG`); programs come from the initrd only; no `posix_spawnp` (`PATH` search).
 - Power off works only on Bochs and QEMU (fixed ports); real hardware halts (needs the ACPI FADT).
