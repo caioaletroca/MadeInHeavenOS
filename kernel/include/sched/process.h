@@ -39,12 +39,16 @@ typedef struct process
     uint32_t group;                        // process group: the pid of its first member. Protected by process_tree_lock.
     uint32_t session;                      // session: the pid of its leader. Protected by process_tree_lock.
     bool exec_done;                        // ran exec: its parent may no longer move it to another group
+    bool stopped;                          // asleep on resume_waiters until SIGCONT or SIGKILL. Protected by lock.
+    bool stop_reported;                    // wait already told the parent about this stop
+    int stop_signal;                       // the signal that stopped it
+    wait_queue_t resume_waiters;           // a stopped process sleeps here
     uint32_t signals_pending;              // one bit per signal sent and not yet acted on. Protected by lock.
     uint32_t signals_blocked;              // waits in signals_pending while set here. Protected by lock.
     struct sigaction signal_actions[NSIG]; // zeroed: every signal starts as SIG_DFL. Protected by lock.
 
     wait_queue_t waiters;
-    wait_queue_t child_exits; // the parent sleeps here in wait; every child's exit wakes it
+    wait_queue_t child_exits; // the parent sleeps here in wait; every child's exit or stop wakes it
 
     struct file *files[PROCESS_MAX_FILES];
     uint32_t close_on_exec; // bit n: close fd n at exec. Only meaningful for an open fd
@@ -156,14 +160,17 @@ void process_child_add(process_t *parent, process_t *child);
 void process_child_remove(process_t *child);
 
 /**
- * Wait for a child of parent to exit and take it off the children list.
+ * Wait for a child of parent to exit or, with WUNTRACED, to stop.
  *
  * @param parent The waiting process (the caller).
  * @param pid The child's pid, -1 for any child, 0 for a child in the caller's group, < -1 for a child in group -pid.
- * @param out Set to the exited child; the caller now owns its reference and releases it.
- * @return The child's pid, or -ECHILD if no child matches.
+ * @param options WNOHANG, WUNTRACED, or 0.
+ * @param out Set to an exited child, taken off the children list: the caller now owns its
+ *            reference and releases it. Left alone otherwise.
+ * @param stop_status Set to the POSIX status of a child that stopped.
+ * @return The child's pid, 0 with WNOHANG if no child changed, or -ECHILD if no child matches.
  */
-long process_wait_child(process_t *parent, long pid, process_t **out);
+long process_wait_child(process_t *parent, long pid, int options, process_t **out, int *stop_status);
 
 /**
  * Get the parent process ID of the specified process.
@@ -279,5 +286,12 @@ bool process_group_in_session(uint32_t group, uint32_t session);
  * @return true if its leader has not exited.
  */
 bool process_session_leader_alive(uint32_t session);
+
+/**
+ * Stop the current process: tell its parent, then sleep until SIGCONT or SIGKILL.
+ *
+ * @param signal The signal that stopped it.
+ */
+void process_stop(int signal);
 
 #endif // _SCHED_PROCESS_H

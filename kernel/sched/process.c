@@ -1,14 +1,17 @@
 #include <stdbool.h>
 #include <arch/context.h>
-#include <mihos/signal.h>
 #include <sched/process.h>
 #include <sched/scheduler.h>
 #include <sched/thread.h>
 #include <sched/signal.h>
 #include <mm/kmalloc.h>
 #include <mm/address_space.h>
+#include <mihos/signal.h>
+#include <mihos/wait.h>
 #include <syscall.h>
 #include <kprintf.h>
+
+#define WAIT_STATUS_STOPPED 0x7F // POSIX status: the low byte of a child that stopped
 
 static spinlock_t pid_lock = SPINLOCK_INIT;
 static uint32_t next_pid = PROCESS_INIT_PID + 1;
@@ -88,6 +91,7 @@ process_t *process_create(address_space_t *space)
     list_init(&p->sibling);
     wait_queue_init(&p->waiters);
     wait_queue_init(&p->child_exits);
+    wait_queue_init(&p->resume_waiters);
     spinlock_init(&p->lock);
 
     list_init(&p->all_link);
@@ -455,7 +459,7 @@ static bool process_wait_matches(process_t *parent, process_t *child, long pid)
     return child->group == group;
 }
 
-long process_wait_child(process_t *parent, long pid, process_t **out)
+long process_wait_child(process_t *parent, long pid, int options, process_t **out, int *stop_status)
 {
     scoped_guard(spinlock, &process_tree_lock)
     {
@@ -481,10 +485,20 @@ long process_wait_child(process_t *parent, long pid, process_t **out)
                     *out = p;
                     return p->pid;
                 }
+
+                if ((options & WUNTRACED) != 0 && p->stopped && !p->stop_reported)
+                {
+                    p->stop_reported = true;
+                    *stop_status = (p->stop_signal << 8) | WAIT_STATUS_STOPPED;
+                    return p->pid;
+                }
             }
 
             if (!found)
                 return -ECHILD;
+
+            if ((options & WNOHANG) != 0)
+                return 0;
 
             // A second pass, after the scan: the child that woke us beats the signal that came with it
             if (interrupted < 0)
@@ -580,6 +594,31 @@ __attribute__((noreturn)) void process_exit_signal(int signal)
     process_t *current = scheduler_current()->process;
     current->signal = signal;
     process_exit(SIGNAL_EXIT_STATUS(signal));
+}
+
+void process_stop(int signal)
+{
+    process_t *current = scheduler_current()->process;
+
+    scoped_guard(spinlock, &process_tree_lock)
+    {
+        scoped_guard(spinlock, &current->lock)
+        {
+            current->stopped = true;
+            current->stop_reported = false;
+            current->stop_signal = signal;
+        }
+
+        if (current->parent != NULL)
+        {
+            wait_queue_wake_all(&current->parent->child_exits);
+            signal_send(current->parent, SIGCHLD);
+        }
+    }
+
+    guard(spinlock, &current->lock);
+    while (current->stopped)
+        wait_queue_sleep_locked(&current->resume_waiters, &current->lock);
 }
 
 int process_wait(process_t *p)

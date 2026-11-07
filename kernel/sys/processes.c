@@ -1,6 +1,7 @@
 #include "internal.h"
 #include <exec/exec.h>
 #include <sched/signal.h>
+#include <mihos/wait.h>
 
 // ---- Processes: exit, spawn, wait, pids ----
 
@@ -221,18 +222,27 @@ static int wait_status_encode(const process_t *p)
 }
 
 /**
- * wait(pid, status): waits for child pid, or any child for -1, and retrieves its exit status.
+ * wait(pid, status, options): waits for child pid, or any child for -1, and
+ * retrieves its status. With WUNTRACED a child that stopped counts; with
+ * WNOHANG it returns 0 instead of sleeping.
  */
-long sys_wait(long pid, uintptr_t status)
+long sys_wait(long pid, uintptr_t status, int options)
 {
-    process_t *child;
+    if ((options & ~(WNOHANG | WUNTRACED)) != 0)
+        return -EINVAL;
+
+    process_t *child = NULL;
+    int encoded = 0;
     process_t *parent = scheduler_current()->process;
-    long ret = process_wait_child(parent, pid, &child);
-    if (ret < 0)
+    long ret = process_wait_child(parent, pid, options, &child, &encoded);
+    if (ret <= 0)
         return ret;
 
-    int encoded = wait_status_encode(child);
-    process_release(child);
+    if (child != NULL)
+    {
+        encoded = wait_status_encode(child);
+        process_release(child);
+    }
 
     if (status != 0 && address_space_write(syscall_space(), status, &encoded, sizeof(encoded)) != 0)
         return -EFAULT;

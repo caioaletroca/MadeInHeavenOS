@@ -12,6 +12,16 @@
 struct address_space;
 
 /**
+ * @brief Makes the system call being returned from run again, if it ended with
+ * EINTR. Does nothing after anything else.
+ *
+ * @param stack The lowest address of the thread's kernel stack, whose top holds the trap frame.
+ * @param stack_size The size of the kernel stack.
+ * @param number The system call to run again, or SYSCALL_NOT_RESTARTABLE.
+ */
+void arch_syscall_restart(void *stack, size_t stack_size, long number);
+
+/**
  * @brief Saves the program's registers on its stack and makes the return to
  * ring 3 enter the handler.
  *
@@ -22,12 +32,10 @@ struct address_space;
  * @param handler The address of the signal handler.
  * @param restorer The address of the signal restorer function.
  * @param blocked The signal mask to save in the frame, restored when the handler ends.
- * @param restart_number The system call to run again if this return is one ending
- *        with EINTR, or SYSCALL_NOT_RESTARTABLE.
  * @return 0 on success, -1 if the stack cannot be written.
  */
 int arch_signal_frame_push(void *stack, size_t stack_size, struct address_space *space, int signal,
-                           uintptr_t handler, uintptr_t restorer, uint32_t blocked, long restart_number);
+                           uintptr_t handler, uintptr_t restorer, uint32_t blocked);
 
 /**
  * @brief Puts back what arch_signal_frame_push saved. Checks everything: the

@@ -56,4 +56,13 @@ bool signal_pending(process_t *p);
  */
 void signal_deliver(void);
 
+/**
+ * @brief Whether a process blocks or ignores a signal, so sending it would change nothing now.
+ *
+ * @param p The process.
+ * @param signal The signal.
+ * @return true if it is blocked or ignored.
+ */
+bool signal_refused(process_t *p, int signal);
+
 #endif // _SCHED_SIGNAL_H_

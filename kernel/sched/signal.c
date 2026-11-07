@@ -5,7 +5,8 @@
 #include <sched/scheduler.h>
 #include <sched/thread.h>
 
-// Stop signals do nothing until job control exists (C6)
+#define SIGNAL_STOPS ((1u << SIGSTOP) | (1u << SIGTSTP) | (1u << SIGTTIN) | (1u << SIGTTOU))
+
 static bool signal_ignored_by_default(int signal)
 {
     switch (signal)
@@ -14,10 +15,6 @@ static bool signal_ignored_by_default(int signal)
     case SIGCONT:
     case SIGURG:
     case SIGWINCH:
-    case SIGSTOP:
-    case SIGTSTP:
-    case SIGTTIN:
-    case SIGTTOU:
         return true;
     default:
         return false;
@@ -52,7 +49,19 @@ void signal_send(process_t *p, int signal)
     if (p->pid == PROCESS_INIT_PID && p->signal_actions[signal].sa_handler == SIG_DFL)
         return;
 
+    // These two act at once, whatever the signal's action: a stopped process runs nothing else
+    if (signal == SIGCONT || signal == SIGKILL)
+    {
+        p->stopped = false;
+        wait_queue_wake_all(&p->resume_waiters);
+    }
+
     uint32_t bit = 1u << signal;
+
+    if (signal == SIGCONT)
+        p->signals_pending &= ~SIGNAL_STOPS;
+    else if ((SIGNAL_STOPS & bit) != 0)
+        p->signals_pending &= ~(1u << SIGCONT);
 
     // A blocked signal stays: the action may change before it is unblocked
     if ((p->signals_blocked & bit) == 0 && signal_does_nothing(p, signal))
@@ -85,6 +94,11 @@ void signal_force(int signal)
 bool signal_pending(process_t *p)
 {
     return p != NULL && (p->signals_pending & ~p->signals_blocked) != 0;
+}
+
+bool signal_refused(process_t *p, int signal)
+{
+    return (p->signals_blocked & (1u << signal)) != 0 || p->signal_actions[signal].sa_handler == SIG_IGN;
 }
 
 void signal_action_set(process_t *p, int signal, const struct sigaction *action)
@@ -128,9 +142,18 @@ void signal_deliver(void)
             continue;
 
         if (action.sa_handler == SIG_DFL)
-            process_exit_signal(signal);
+        {
+            if ((SIGNAL_STOPS & (1u << signal)) == 0)
+                process_exit_signal(signal);
 
-        long restart_number = (action.sa_flags & SA_RESTART) != 0 ? thread->syscall_number : SYSCALL_NOT_RESTARTABLE;
+            // Nothing of the program runs, so it must not see EINTR
+            arch_syscall_restart(thread->stack, thread->stack_size, thread->syscall_number);
+            process_stop(signal);
+            continue;
+        }
+
+        if ((action.sa_flags & SA_RESTART) != 0)
+            arch_syscall_restart(thread->stack, thread->stack_size, thread->syscall_number);
 
         if (arch_signal_frame_push(
                 thread->stack,
@@ -139,8 +162,7 @@ void signal_deliver(void)
                 signal,
                 (uintptr_t)action.sa_handler,
                 (uintptr_t)action.sa_restorer,
-                p->signals_blocked,
-                restart_number) != 0)
+                p->signals_blocked) != 0)
             process_exit_signal(SIGSEGV);
 
         // Its own signal too, so a handler is not entered again while it runs

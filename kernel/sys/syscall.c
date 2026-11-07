@@ -25,7 +25,7 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
     case SYS_SPAWN:
         return sys_spawn(arg0, arg1, arg2);
     case SYS_WAIT:
-        return sys_wait((long)arg0, arg1);
+        return sys_wait((long)arg0, arg1, (int)arg2);
     case SYS_REBOOT:
         return sys_reboot((long)arg0);
     case SYS_GETPID:

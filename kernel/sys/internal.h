@@ -57,7 +57,7 @@ long sys_exit(long status);
 long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp);
 long sys_fork(void);
 long sys_exec(uintptr_t path, uintptr_t argv, uintptr_t envp);
-long sys_wait(long pid, uintptr_t status);
+long sys_wait(long pid, uintptr_t status, int options);
 long sys_getpid(void);
 long sys_getppid(void);
 long sys_setpgid(long pid, long group);

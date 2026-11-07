@@ -47,17 +47,21 @@ static bool syscall_interrupted(isr_context_t *context)
     return vector == VECTOR_SYSCALL && (long)context->rax == -EINTR;
 }
 
-int arch_signal_frame_push(void *stack, size_t stack_size, struct address_space *space, int signal,
-                           uintptr_t handler, uintptr_t restorer, uint32_t blocked, long restart_number)
+void arch_syscall_restart(void *stack, size_t stack_size, long number)
 {
     isr_context_t *context = user_frame(stack, stack_size);
 
-    // If the system call was interrupted and is restartable, set it up to restart.
-    if (restart_number != SYSCALL_NOT_RESTARTABLE && syscall_interrupted(context))
+    if (number != SYSCALL_NOT_RESTARTABLE && syscall_interrupted(context))
     {
-        context->rax = (uint64_t)restart_number;
+        context->rax = (uint64_t)number;
         context->rip -= SYSCALL_INSTRUCTION_SIZE;
     }
+}
+
+int arch_signal_frame_push(void *stack, size_t stack_size, struct address_space *space, int signal,
+                           uintptr_t handler, uintptr_t restorer, uint32_t blocked)
+{
+    isr_context_t *context = user_frame(stack, stack_size);
 
     // SysV ABI at a function's entry: rsp + 8 is 16-aligned, as `call` leaves it
     uintptr_t address = context->rsp - RED_ZONE_SIZE - sizeof(signal_frame_t);
