@@ -23,13 +23,17 @@ static int builtin_help(shell_t *shell, int argc, char *argv[]);
 static int builtin_history(shell_t *shell, int argc, char *argv[]);
 static int builtin_cd(shell_t *shell, int argc, char *argv[]);
 static int builtin_pwd(shell_t *shell, int argc, char *argv[]);
+static int builtin_fg(shell_t *shell, int argc, char *argv[]);
+static int builtin_jobs(shell_t *shell, int argc, char *argv[]);
 
 static const builtin_t builtins[] =
     {
         {"cd", builtin_cd, "cd [dir]: change the current directory (default: $HOME, else /)"},
         {"exit", builtin_exit, "exit [n]: leave the shell with status n (default: the last status)"},
+        {"fg", builtin_fg, "fg: resume the last stopped job"},
         {"help", builtin_help, "help: list the builtins"},
         {"history", builtin_history, "history: list the last commands"},
+        {"jobs", builtin_jobs, "jobs: list the stopped jobs"},
         {"pwd", builtin_pwd, "pwd: print the current directory"},
 };
 
@@ -132,6 +136,42 @@ static int builtin_pwd(shell_t *sh, int argc, char *argv[])
     }
 
     printf("%s\n", path);
+    return 0;
+}
+
+/**
+ * Builtin command: fg
+ * Usage: fg
+ * Resume the last stopped job
+ */
+static int builtin_fg(shell_t *sh, int argc, char *argv[])
+{
+    (void)argc; // unused parameter
+    (void)argv; // unused parameter
+
+    if (sh->job_count == 0)
+    {
+        fprintf(stderr, "fg: no stopped job\n");
+        return 1;
+    }
+
+    job_t job = sh->jobs[--sh->job_count];
+    return job_resume(sh, &job);
+}
+
+/**
+ * Builtin command: jobs
+ * Usage: jobs
+ * List the stopped jobs
+ */
+static int builtin_jobs(shell_t *sh, int argc, char *argv[])
+{
+    (void)argc; // unused parameter
+    (void)argv; // unused parameter
+
+    for (int i = 0; i < sh->job_count; i++)
+        printf("[%d]  Stopped  %s\n", i + 1, sh->jobs[i].command);
+
     return 0;
 }
 

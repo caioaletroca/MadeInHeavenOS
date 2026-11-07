@@ -8,17 +8,33 @@
 #define COMMAND_MAX 1024
 #define MAX_ARGS 64
 #define PIPELINE_MAX 8 // commands in one pipeline: a | b | ... (bash: no limit)
+#define JOBS_MAX 8     // stopped pipelines kept at once
+
+/**
+ * A pipeline being waited for, or stopped.
+ */
+typedef struct job
+{
+    pid_t group;
+    pid_t pids[PIPELINE_MAX];
+    int count;                 // pids started
+    int waited;                // pids already waited for, in order
+    int stages;                // commands asked for: the last one's status is the pipeline's
+    char command[COMMAND_MAX]; // as typed, for messages
+} job_t;
 
 /**
  * Structure representing the shell state.
  */
 typedef struct shell
 {
-    int status;        // exit status of the last command
-    int running;       // flag indicating if the shell is running
-    int interactive;   // stdin and stderr are terminals (POSIX): banner, prompt, history
-    pid_t group;       // the shell's own process group: the terminal comes back here
-    history_t history; // command history
+    int status;           // exit status of the last command
+    int running;          // flag indicating if the shell is running
+    int interactive;      // stdin and stderr are terminals (POSIX): banner, prompt, history
+    pid_t group;          // the shell's own process group: the terminal comes back here
+    history_t history;    // command history
+    job_t jobs[JOBS_MAX]; // stopped pipelines kept at once
+    int job_count;        // number of jobs currently in the jobs array
 } shell_t;
 
 /**
@@ -27,7 +43,7 @@ typedef struct shell
 typedef enum
 {
     READ_COMMAND, // cmd holds a command to run
-    READ_NOTHING, // empty line or an error already reported: prompt again
+    READ_NOTHING, // empty line, an error already reported or Ctrl+C: prompt again
     READ_EOF,     // end of input: leave the shell
 } read_result_t;
 
@@ -55,7 +71,8 @@ typedef struct command
  * Reads a command from the standard input.
  *
  * @param cmd The command structure to populate.
- * @return READ_COMMAND if a command was successfully read, READ_EOF on end of input.
+ * @return READ_COMMAND if a command was read, READ_NOTHING if a key interrupted the read,
+ *         READ_EOF on end of input.
  */
 read_result_t command_read(command_t *cmd);
 
@@ -85,5 +102,30 @@ int builtin_run(shell_t *sh, stage_t *stage);
  * @return 0 on success, -1 on error.
  */
 int command_run(shell_t *sh, command_t *cmd);
+
+/**
+ * Waits for a job, from where the last wait left off.
+ *
+ * @param sh The shell instance.
+ * @param job The job.
+ * @return 1 if it stopped, 0 if it ended. Either way sh->status is set.
+ */
+int job_wait(shell_t *sh, job_t *job);
+
+/**
+ * Resumes a stopped job in the foreground and waits for it.
+ *
+ * @param sh The shell instance.
+ * @param job The job, already off the list.
+ * @return The shell's new status.
+ */
+int job_resume(shell_t *sh, job_t *job);
+
+/**
+ * Ends the stopped jobs: nothing would ever resume them once the shell is gone.
+ *
+ * @param sh The shell instance.
+ */
+void jobs_hang_up(shell_t *sh);
 
 #endif // _SH_H_

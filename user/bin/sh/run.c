@@ -25,21 +25,14 @@ static int program_failed(const char *name, int error)
 }
 
 /**
- * @brief Waits for a program to finish and returns its exit status.
+ * @brief Determines the exit status of a program based on its wait status.
  *
  * @param name The name of the program.
- * @param pid The process ID of the program.
+ * @param status The wait status.
  * @return The exit status of the program.
  */
-static int program_wait(const char *name, pid_t pid)
+static int program_status(const char *name, int status)
 {
-    int status;
-    if (waitpid(pid, &status, 0) != pid)
-    {
-        fprintf(stderr, "sh: %s: waitpid failed\n", name);
-        return 1;
-    }
-
     if (WIFSIGNALED(status))
     {
         // A reader that left is normal in a pipeline, and whoever pressed Ctrl+C knows
@@ -49,6 +42,78 @@ static int program_wait(const char *name, pid_t pid)
     }
 
     return WEXITSTATUS(status);
+}
+
+int job_wait(shell_t *sh, job_t *job)
+{
+    int options = sh->interactive ? WUNTRACED : 0;
+
+    for (; job->waited < job->count; job->waited++)
+    {
+        int status;
+        int result = 1;
+        pid_t pid = job->pids[job->waited];
+
+        if (waitpid(pid, &status, options) != pid)
+            fprintf(stderr, "sh: %s: waitpid failed\n", job->command);
+        else if (WIFSTOPPED(status))
+        {
+            sh->status = 128 + WSTOPSIG(status);
+            return 1;
+        }
+        else
+            result = program_status(job->command, status);
+
+        if (job->waited == job->stages - 1)
+            sh->status = result;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Keeps a stopped job in the job list.
+ *
+ * @param sh The shell instance.
+ * @param job The job to keep.
+ */
+static void job_keep(shell_t *sh, job_t *job)
+{
+    if (sh->job_count == JOBS_MAX)
+    {
+        fprintf(stderr, "sh: too many stopped jobs, ending: %s\n", job->command);
+        kill(-job->group, SIGKILL);
+        job_wait(sh, job);
+        return;
+    }
+
+    sh->jobs[sh->job_count++] = *job;
+    fprintf(stderr, "[%d]  Stopped  %s\n", sh->job_count, job->command);
+}
+
+int job_resume(shell_t *sh, job_t *job)
+{
+    fprintf(stderr, "%s\n", job->command);
+
+    tcsetpgrp(0, job->group);
+    kill(-job->group, SIGCONT);
+
+    int stopped = job_wait(sh, job);
+    tcsetpgrp(0, sh->group);
+
+    if (stopped)
+        job_keep(sh, job);
+
+    return sh->status;
+}
+
+void jobs_hang_up(shell_t *sh)
+{
+    for (int i = 0; i < sh->job_count; i++)
+    {
+        kill(-sh->jobs[i].group, SIGHUP);
+        kill(-sh->jobs[i].group, SIGCONT);
+    }
 }
 
 /**
@@ -64,6 +129,8 @@ static void stage_job_setup(pid_t group)
     signal(SIGINT, SIG_DFL);
     signal(SIGQUIT, SIG_DFL);
     signal(SIGTTOU, SIG_DFL);
+    signal(SIGTSTP, SIG_DFL);
+    signal(SIGTTIN, SIG_DFL);
 }
 
 static void stage_run(shell_t *sh, stage_t *stage)
@@ -88,11 +155,9 @@ static void stage_run(shell_t *sh, stage_t *stage)
  */
 static void pipeline_run(shell_t *sh, command_t *cmd)
 {
-    pid_t pids[PIPELINE_MAX];
-    int started = 0;
-    int last = 1;
+    job_t job = {.stages = cmd->count};
+    strlcpy(job.command, cmd->command, sizeof(job.command));
     int input = -1;
-    pid_t group = 0;
 
     for (int i = 0; i < cmd->count; i++)
     {
@@ -117,8 +182,10 @@ static void pipeline_run(shell_t *sh, command_t *cmd)
 
         if (pid == 0)
         {
+            sh->job_count = 0;
+
             if (sh->interactive)
-                stage_job_setup(group);
+                stage_job_setup(job.group);
 
             if (input >= 0)
             {
@@ -138,16 +205,16 @@ static void pipeline_run(shell_t *sh, command_t *cmd)
             stage_run(sh, &cmd->stages[i]);
         }
 
-        pids[started++] = pid;
+        job.pids[job.count++] = pid;
 
         // Here too, whichever side runs first. A child already past exec answers EACCES, and it is done
         if (sh->interactive)
         {
-            if (group == 0)
-                group = pid;
+            if (job.group == 0)
+                job.group = pid;
 
-            setpgid(pid, group);
-            tcsetpgrp(0, group);
+            setpgid(pid, job.group);
+            tcsetpgrp(0, job.group);
         }
 
         // The shell keeps no end it handed over: a reader sees EOF only once every write end is closed
@@ -162,17 +229,15 @@ static void pipeline_run(shell_t *sh, command_t *cmd)
     if (input >= 0)
         close(input);
 
-    for (int i = 0; i < started; i++)
-    {
-        int status = program_wait(cmd->stages[i].argv[0], pids[i]);
-        if (i == cmd->count - 1)
-            last = status;
-    }
+    sh->status = 1;
+
+    int stopped = job_wait(sh, &job);
 
     if (sh->interactive)
         tcsetpgrp(0, sh->group);
 
-    sh->status = last;
+    if (stopped)
+        job_keep(sh, &job);
 }
 
 int command_run(shell_t *sh, command_t *cmd)
