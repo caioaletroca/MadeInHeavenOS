@@ -2,6 +2,7 @@
 #define _SH_H_
 
 #include "history.h"
+#include <sys/types.h>
 
 #define CWD_MAX 1024
 #define COMMAND_MAX 1024
@@ -16,6 +17,7 @@ typedef struct shell
     int status;        // exit status of the last command
     int running;       // flag indicating if the shell is running
     int interactive;   // stdin and stderr are terminals (POSIX): banner, prompt, history
+    pid_t group;       // the shell's own process group: the terminal comes back here
     history_t history; // command history
 } shell_t;
 

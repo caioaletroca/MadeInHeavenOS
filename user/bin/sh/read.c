@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include "sh.h"
 
 // Variable names (POSIX): a letter or '_', then letters, digits and '_'
@@ -205,7 +206,15 @@ static int expand(parser_t *p, shell_t *sh, const char **s)
 read_result_t command_read(command_t *cmd)
 {
     if (fgets(cmd->command, COMMAND_MAX, stdin) == NULL)
+    {
+        if (ferror(stdin) && errno == EINTR)
+        {
+            clearerr(stdin);
+            return READ_NOTHING;
+        }
+
         return READ_EOF;
+    }
 
     // Ends the string at the first '\n' (or leaves it if the line had none)
     cmd->command[strcspn(cmd->command, "\n")] = '\0';

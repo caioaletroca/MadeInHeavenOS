@@ -42,12 +42,28 @@ static int program_wait(const char *name, pid_t pid)
 
     if (WIFSIGNALED(status))
     {
-        // A reader that left is normal in a pipeline, not worth a line
-        if (WTERMSIG(status) != SIGPIPE)
+        // A reader that left is normal in a pipeline, and whoever pressed Ctrl+C knows
+        if (WTERMSIG(status) != SIGPIPE && WTERMSIG(status) != SIGINT)
             fprintf(stderr, "sh: %s: killed by signal %d\n", name, WTERMSIG(status));
         return 128 + WTERMSIG(status);
     }
+
     return WEXITSTATUS(status);
+}
+
+/**
+ * @brief Sets up a stage's process, in the child, before it runs: its pipeline's
+ * group, and the signals back to normal. SIG_IGN survives exec, and a builtin
+ * in a pipeline has no exec to reset the handler.
+ *
+ * @param group The pipeline's group, 0 for the first stage: it starts the group.
+ */
+static void stage_job_setup(pid_t group)
+{
+    setpgid(0, group);
+    signal(SIGINT, SIG_DFL);
+    signal(SIGQUIT, SIG_DFL);
+    signal(SIGTTOU, SIG_DFL);
 }
 
 static void stage_run(shell_t *sh, stage_t *stage)
@@ -76,6 +92,7 @@ static void pipeline_run(shell_t *sh, command_t *cmd)
     int started = 0;
     int last = 1;
     int input = -1;
+    pid_t group = 0;
 
     for (int i = 0; i < cmd->count; i++)
     {
@@ -100,6 +117,9 @@ static void pipeline_run(shell_t *sh, command_t *cmd)
 
         if (pid == 0)
         {
+            if (sh->interactive)
+                stage_job_setup(group);
+
             if (input >= 0)
             {
                 dup2(input, 0);
@@ -120,6 +140,16 @@ static void pipeline_run(shell_t *sh, command_t *cmd)
 
         pids[started++] = pid;
 
+        // Here too, whichever side runs first. A child already past exec answers EACCES, and it is done
+        if (sh->interactive)
+        {
+            if (group == 0)
+                group = pid;
+
+            setpgid(pid, group);
+            tcsetpgrp(0, group);
+        }
+
         // The shell keeps no end it handed over: a reader sees EOF only once every write end is closed
         if (input >= 0)
             close(input);
@@ -138,6 +168,9 @@ static void pipeline_run(shell_t *sh, command_t *cmd)
         if (i == cmd->count - 1)
             last = status;
     }
+
+    if (sh->interactive)
+        tcsetpgrp(0, sh->group);
 
     sh->status = last;
 }
