@@ -1,24 +1,38 @@
 #include <stdio.h>
 #include <string.h>
-#include <spawn.h>
+#include <unistd.h>
 #include <sys/reboot.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
 #include <errno.h>
 
-#define CRASHES_MAX 5 // a command killed this many times in a row is given up
+#define CRASHES_MAX 5         // a command killed this many times in a row is given up
+#define EXIT_CANNOT_START 127 // exec failed in the child, the shell's "command not found"
 
 /*
- * Start a new process with the given arguments and environment.
+ * Start a command in a session of its own, owning the console: what getty does
+ * for a login. Fork and exec, not spawn, since both must happen in the child.
  * Returns the PID of the new process, or -1 on error.
  */
 static pid_t start(char *argv[], char *envp[])
 {
-    pid_t pid;
-    int error = posix_spawn(&pid, argv[0], NULL, NULL, argv, envp);
-    if (error != 0)
+    fflush(stdout);
+
+    pid_t pid = fork();
+    if (pid < 0)
     {
-        printf("init: cannot start %s: error %d\n", argv[0], error);
+        printf("init: cannot start %s: error %d\n", argv[0], errno);
         return -1;
+    }
+    if (pid == 0)
+    {
+        setsid();
+        ioctl(0, TIOCSCTTY, NULL); // set controlling terminal
+        execve(argv[0], argv, envp);
+
+        printf("init: cannot start %s: error %d\n", argv[0], errno);
+        fflush(stdout);
+        _exit(EXIT_CANNOT_START);
     }
 
     return pid;
@@ -87,8 +101,11 @@ __attribute__((noreturn)) static void run_respawn(char *command[], char *envp[])
         }
 
         if (WIFSIGNALED(status))
-        {
             printf("init: %s killed by signal %d\n", command[0], WTERMSIG(status));
+
+        // A program that cannot start would otherwise be started again forever
+        if (WIFSIGNALED(status) || WEXITSTATUS(status) == EXIT_CANNOT_START)
+        {
             if (++crashes == CRASHES_MAX)
             {
                 printf("init: %s keeps crashing, giving up\n", command[0]);
