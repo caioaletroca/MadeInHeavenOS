@@ -181,6 +181,11 @@ run_boot() {
         fail "FAIL lines in the output"
     fi
 
+    # The termios test types this with echo off: a program cannot see the screen, the log can
+    if grep -q 'not on screen' "$log"; then
+        fail "typed text was echoed with ECHO off"
+    fi
+
     case "$summary" in
     *", 0 failed") ;;
     *) fail "$summary" ;;

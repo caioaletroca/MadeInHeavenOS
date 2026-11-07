@@ -208,10 +208,15 @@ static void test_handler_ends_read(void)
         close(ready[0]);
         close(ready[1]); // the handler is in place: a key would not kill it now
 
-        // Reading before the foreground is ours would stop us
+        // Reading before the foreground is ours would stop us. The parent presses
+        // as soon as it has said go, so a key can land here too
         char byte;
+        long got;
         close(go[1]);
-        CHECK(read(go[0], &byte, 1) == 0);
+        do
+            got = read(go[0], &byte, 1);
+        while (got == -1 && errno == EINTR);
+        CHECK(got == 0);
         close(go[0]);
 
         errno = 0;
