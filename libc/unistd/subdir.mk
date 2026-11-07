@@ -26,6 +26,8 @@ getpgid.c \
 getpgrp.c \
 setsid.c \
 getsid.c \
+tcgetpgrp.c \
+tcsetpgrp.c \
 isatty.c \
 ftruncate.c \
 truncate.c \

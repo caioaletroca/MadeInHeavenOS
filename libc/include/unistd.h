@@ -233,6 +233,23 @@ pid_t setsid(void);
 pid_t getsid(pid_t pid);
 
 /**
+ * Get a terminal's foreground group.
+ *
+ * @param fd A file descriptor of the terminal.
+ * @return The group, or -1 on error with errno set appropriately.
+ */
+pid_t tcgetpgrp(int fd);
+
+/**
+ * Set a terminal's foreground group.
+ *
+ * @param fd A file descriptor of the terminal.
+ * @param group A group of the caller's session.
+ * @return 0 on success, -1 on error with errno set appropriately.
+ */
+int tcsetpgrp(int fd, pid_t group);
+
+/**
  * Check if a file descriptor refers to a terminal.
  *
  * @param fd The file descriptor to check.
