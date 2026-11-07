@@ -14,6 +14,7 @@
 #include <mihos/stat.h>
 #include <mihos/fcntl.h>
 #include <mihos/ioctl.h>
+#include <mihos/termios.h>
 #include <mihos/errno.h>
 #include <mihos/signal.h>
 #include <stdbool.h>
@@ -44,11 +45,40 @@ static mutex_t input_lock;
 static uint32_t console_session;    // the session that owns the terminal, 0 for nobody
 static uint32_t console_foreground; // the group keyboard signals reach, 0 for nobody
 
+// Written with input_lock and console_lock both held, so reading needs either one
+static struct termios settings = {
+    .c_iflag = ICRNL,
+    .c_oflag = OPOST | ONLCR,
+    .c_cflag = CS8 | CREAD,
+    .c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK | IEXTEN,
+    .c_cc = {
+        [VINTR] = CTRL('C'),
+        [VQUIT] = CTRL('\\'),
+        [VERASE] = 0x7F,
+        [VKILL] = CTRL('U'),
+        [VEOF] = CTRL('D'),
+        [VMIN] = 1,
+        [VSUSP] = CTRL('Z'),
+    },
+};
+
 static const keymap_t *keymap;
 static bool down[KEY_COUNT];
 static bool caps_lock;
 static bool num_lock = true;
 static uint32_t pending_accent;
+
+// What a terminal sends for the keys with no character. Only in raw mode: a line
+// being typed has no use for them, and Linux's ^[[A on screen helps nobody
+static const char *const key_sequences[KEY_COUNT] = {
+    [KEY_UP] = "\x1b[A",
+    [KEY_DOWN] = "\x1b[B",
+    [KEY_RIGHT] = "\x1b[C",
+    [KEY_LEFT] = "\x1b[D",
+    [KEY_HOME] = "\x1b[H",
+    [KEY_END] = "\x1b[F",
+    [KEY_DELETE] = "\x1b[3~",
+};
 
 static spinlock_t console_lock = SPINLOCK_INIT;
 static file_t *console;
@@ -119,6 +149,18 @@ static void console_commit(void)
 }
 
 /**
+ * @brief Echo the given bytes to the console if ECHO is enabled.
+ *
+ * @param bytes The bytes to echo.
+ * @param n The number of bytes to echo.
+ */
+static void console_echo(const char *bytes, size_t n)
+{
+    if (settings.c_lflag & ECHO)
+        tty_write(bytes, n);
+}
+
+/**
  * Erase the last character of the line being edited.
  *
  * @return false if the line was already empty.
@@ -132,7 +174,7 @@ static bool console_erase(void)
         edit_index--;
     while (edit_index != write_index && ((unsigned char)buffer[edit_index % CONSOLE_BUFFER_SIZE] & 0xC0) == 0x80);
 
-    tty_write("\b \b", 3);
+    console_echo("\b \b", 3);
     return true;
 }
 
@@ -156,6 +198,25 @@ static void console_signal(int signal)
 }
 
 /**
+ * Hand a byte to readers right away: no line, and nothing is a key with a meaning.
+ *
+ * @param codepoint The Unicode code point received from the keyboard.
+ */
+static void console_input_raw(uint32_t codepoint)
+{
+    char bytes[4];
+    size_t n = utf8_encode(codepoint, bytes);
+
+    if (!console_store(bytes, n, true))
+        return;
+
+    if (codepoint == '\n' || (codepoint >= 0x20 && codepoint != 0x7F))
+        console_echo(bytes, n);
+
+    console_commit();
+}
+
+/**
  * Handle a code point input from the keyboard.
  *
  * @param codepoint The Unicode code point received from the keyboard.
@@ -163,6 +224,34 @@ static void console_signal(int signal)
 static void console_input(uint32_t codepoint)
 {
     char bytes[4];
+
+    if (codepoint == '\r' && (settings.c_iflag & ICRNL))
+        codepoint = '\n';
+
+    if (settings.c_lflag & ISIG)
+    {
+        switch (codepoint)
+        {
+        case CTRL('C'):
+            console_echo("^C\n", 3);
+            console_signal(SIGINT);
+            return;
+        case CTRL('\\'):
+            console_echo("^\\\n", 3);
+            console_signal(SIGQUIT);
+            return;
+        case CTRL('Z'):
+            console_echo("^Z\n", 3);
+            console_signal(SIGTSTP);
+            return;
+        }
+    }
+
+    if (!(settings.c_lflag & ICANON))
+    {
+        console_input_raw(codepoint);
+        return;
+    }
 
     switch (codepoint)
     {
@@ -174,22 +263,10 @@ static void console_input(uint32_t codepoint)
         while (console_erase())
             ;
         return;
-    case CTRL('C'):
-        tty_write("^C\n", 3);
-        console_signal(SIGINT);
-        return;
-    case CTRL('\\'):
-        tty_write("^\\\n", 3);
-        console_signal(SIGQUIT);
-        return;
-    case CTRL('Z'):
-        tty_write("^Z\n", 3);
-        console_signal(SIGTSTP);
-        return;
     case '\n':
         if (console_store("\n", 1, true))
         {
-            tty_write("\n", 1);
+            console_echo("\n", 1);
             console_commit();
         }
         return;
@@ -206,7 +283,7 @@ static void console_input(uint32_t codepoint)
     size_t n = utf8_encode(codepoint, bytes);
 
     if (console_store(bytes, n, false))
-        tty_write(bytes, n);
+        console_echo(bytes, n);
 }
 
 /**
@@ -251,9 +328,25 @@ static void console_key(input_event_t event)
     if (!repeat && event.key == KEY_NUM_LOCK)
         num_lock = !num_lock;
 
+    const char *sequence = key_sequences[event.key];
+
+    if (sequence != NULL)
+    {
+        if (!(settings.c_lflag & ICANON))
+            for (; *sequence != '\0'; sequence++)
+                console_input(*sequence);
+        return;
+    }
+
     uint32_t c = keymap_translate(keymap, event.key, console_modifiers());
     if (c == 0)
         return;
+
+    // The bytes a terminal sends for these keys. ICRNL makes Enter a newline again
+    if (c == '\n')
+        c = '\r';
+    else if (c == '\b')
+        c = 0x7F;
 
     if (c & KEYMAP_DEAD)
     {
@@ -431,6 +524,41 @@ static long console_foreground_set(process_t *p, int32_t group)
 }
 
 /**
+ * Set the terminal settings for the console.
+ *
+ * @param p The process attempting to set the terminal settings.
+ * @param wanted The desired terminal settings.
+ * @param flush Whether to flush the input buffer.
+ * @return 0 on success, or a negative error code on failure.
+ */
+static long console_settings_set(process_t *p, const struct termios *wanted, bool flush)
+{
+    long allowed = console_background_check(p, SIGTTOU);
+    if (allowed < 0)
+        return allowed;
+
+    guard(spinlock, &console_lock);
+
+    bool leaves_canonical = (settings.c_lflag & ICANON) && !(wanted->c_lflag & ICANON);
+    settings = *wanted;
+
+    if (flush)
+    {
+        edit_index = write_index;
+        read_index = write_index;
+    }
+    else if (leaves_canonical)
+    {
+        // Nothing would ever end the line being typed: it is input like any other now
+        write_index = edit_index;
+    }
+
+    // A sleeping read may have enough now, whatever changed
+    wait_queue_wake_all(&readers);
+    return 0;
+}
+
+/**
  * Handles ioctl requests for the console device.
  *
  * @param file The file representing the console device.
@@ -473,6 +601,14 @@ static long console_file_ioctl(file_t *file, unsigned long request, void *arg)
             return -EPERM;
         console_input(*(unsigned char *)arg);
         return 0;
+    case MIHOS_TCGETS:
+        *(struct termios *)arg = settings;
+        return 0;
+    case MIHOS_TCSETS:
+    case MIHOS_TCSETSW: // written output never waits in a queue here
+        return console_settings_set(p, arg, false);
+    case MIHOS_TCSETSF:
+        return console_settings_set(p, arg, true);
     default:
         return -ENOTTY;
     }
@@ -512,6 +648,19 @@ void console_set_keymap(const keymap_t *map)
     keymap = map;
 }
 
+/**
+ * Returns the minimum number of bytes that can be read from the console.
+ * In canonical mode, this is always 1.
+ * In non-canonical mode, this is the lesser of the requested number of bytes and VMIN.
+ */
+static size_t console_read_minimum(size_t n)
+{
+    if (settings.c_lflag & ICANON)
+        return 1;
+
+    return n < settings.c_cc[VMIN] ? n : settings.c_cc[VMIN];
+}
+
 long console_read(char *buf, size_t n)
 {
     size_t count = 0;
@@ -521,18 +670,21 @@ long console_read(char *buf, size_t n)
 
     guard(spinlock, &console_lock);
 
-    while (read_index == write_index)
+    // Asked again on each wake-up: the settings can change during the sleep
+    while (write_index - read_index < console_read_minimum(n))
     {
         int interrupted = wait_queue_sleep_interruptible(&readers, &console_lock);
         if (interrupted < 0)
             return interrupted;
     }
 
+    bool canonical = settings.c_lflag & ICANON;
+
     while (count < n && read_index != write_index)
     {
         char c = buffer[read_index % CONSOLE_BUFFER_SIZE];
 
-        if (c == CTRL('D'))
+        if (canonical && c == CTRL('D'))
         {
             // EOF flushes the pending bytes and is discarded; on an empty line read returns 0
             read_index++;
@@ -542,8 +694,7 @@ long console_read(char *buf, size_t n)
         read_index++;
         buf[count++] = c;
 
-        // Canonical mode: one line per read
-        if (c == '\n')
+        if (canonical && c == '\n')
             break;
     }
 

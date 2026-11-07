@@ -2,6 +2,7 @@
 #define _UAPI_MIHOS_IOCTL_H_
 
 #include <stdint.h>
+#include <mihos/termios.h>
 
 /*
  * A request number carries what the syscall layer needs to copy its argument
@@ -33,5 +34,9 @@ struct mihos_winsize
 #define MIHOS_TIOCGPGRP MIHOS_IOR('T', 0x0F, int32_t)               // get the foreground group
 #define MIHOS_TIOCSPGRP MIHOS_IOW('T', 0x10, int32_t)               // set the foreground group
 #define MIHOS_TIOCSTI MIHOS_IOW('T', 0x12, char)                    // push a byte into the input
+#define MIHOS_TCGETS MIHOS_IOR('T', 0x01, struct termios)           // get the settings
+#define MIHOS_TCSETS MIHOS_IOW('T', 0x02, struct termios)           // set them now
+#define MIHOS_TCSETSW MIHOS_IOW('T', 0x03, struct termios)          // set them once output is written
+#define MIHOS_TCSETSF MIHOS_IOW('T', 0x04, struct termios)          // same, dropping input
 
 #endif /* _UAPI_MIHOS_IOCTL_H_ */
