@@ -237,13 +237,13 @@ static void test_wait_any(void)
     CHECK(waitpid(second, &status, 0) == second && WEXITSTATUS(status) == 2);
     CHECK(wait(&status) == first && WEXITSTATUS(status) == 1);
 
-    // Process groups (0, < -1) do not exist yet: ECHILD even with a child alive
+    // A group nobody is in: ECHILD even with a child alive. Then our own group, which it is in
     pid = child_spawn("exit", "0", NULL);
     errno = 0;
-    CHECK(waitpid(0, &status, 0) == -1 && errno == ECHILD);
+    CHECK(waitpid(-999999, &status, 0) == -1 && errno == ECHILD);
     errno = 0;
-    CHECK(waitpid(-2, &status, 0) == -1 && errno == ECHILD);
-    CHECK(waitpid(pid, NULL, 0) == pid);
+    CHECK(waitpid(0, &status, 0) == pid);
+    CHECK(waitpid(pid, NULL, 0) == -1 && errno == ECHILD);
 }
 
 static void test_many(void)

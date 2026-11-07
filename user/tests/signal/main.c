@@ -321,13 +321,13 @@ static void test_errors(void)
     errno = 0;
     CHECK(kill(getpid(), NSIG) == -1 && errno == EINVAL);
 
-    // Process groups and "everyone" do not exist yet (C6)
+    // Our group, everyone (signal 0: a real one would end this run) and a group nobody is in
     errno = 0;
-    CHECK(kill(0, SIGTERM) == -1 && errno == ESRCH);
+    CHECK(kill(0, 0) == 0);
     errno = 0;
-    CHECK(kill(-1, SIGTERM) == -1 && errno == ESRCH);
+    CHECK(kill(-1, 0) == 0);
     errno = 0;
-    CHECK(kill(-5, SIGTERM) == -1 && errno == ESRCH);
+    CHECK(kill(-NO_SUCH_PID, SIGTERM) == -1 && errno == ESRCH);
 }
 
 // An exited child still exists until it is waited for, and it is too late to change how it ended
