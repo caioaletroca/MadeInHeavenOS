@@ -194,6 +194,45 @@ pid_t getpid(void);
 pid_t getppid(void);
 
 /**
+ * Move a process to a process group.
+ *
+ * @param pid The process, 0 for the caller.
+ * @param group The group, 0 for the one named after the process.
+ * @return 0 on success, -1 on error with errno set appropriately.
+ */
+int setpgid(pid_t pid, pid_t group);
+
+/**
+ * Get a process's group.
+ *
+ * @param pid The process, 0 for the caller.
+ * @return The group, or -1 on error with errno set appropriately.
+ */
+pid_t getpgid(pid_t pid);
+
+/**
+ * Get the calling process's group.
+ *
+ * @return The group.
+ */
+pid_t getpgrp(void);
+
+/**
+ * Make the caller the leader of a new session and of a new group inside it.
+ *
+ * @return The new session, or -1 on error with errno set appropriately.
+ */
+pid_t setsid(void);
+
+/**
+ * Get a process's session.
+ *
+ * @param pid The process, 0 for the caller.
+ * @return The session, or -1 on error with errno set appropriately.
+ */
+pid_t getsid(pid_t pid);
+
+/**
  * Check if a file descriptor refers to a terminal.
  *
  * @param fd The file descriptor to check.

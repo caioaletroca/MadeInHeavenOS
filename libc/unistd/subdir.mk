@@ -21,6 +21,11 @@ lseek.c \
 reboot.c \
 getpid.c \
 getppid.c \
+setpgid.c \
+getpgid.c \
+getpgrp.c \
+setsid.c \
+getsid.c \
 isatty.c \
 ftruncate.c \
 truncate.c \
