@@ -19,6 +19,7 @@
 #define MEMBERS 3
 #define CTRL_C 0x03
 #define CTRL_BACKSLASH 0x1C
+#define CTRL_Z 0x1A
 
 static volatile sig_atomic_t interrupted;
 
@@ -191,8 +192,9 @@ static void on_interrupt(int signal)
 // A program that catches it: read ends with EINTR, the way a shell's prompt comes back
 static void test_handler_ends_read(void)
 {
-    int ready[2];
+    int ready[2], go[2];
     CHECK(pipe(ready) == 0);
+    CHECK(pipe(go) == 0);
 
     pid_t child = fork_flushed();
     CHECK(child >= 0);
@@ -202,11 +204,16 @@ static void test_handler_ends_read(void)
         memset(&action, 0, sizeof(action));
         action.sa_handler = on_interrupt;
         CHECK(sigaction(SIGINT, &action, NULL) == 0);
-        CHECK(setpgid(0, 0) == 0);
-        close(ready[0]);
-        close(ready[1]); // tells the test: group joined, handler in place
 
+        close(ready[0]);
+        close(ready[1]); // the handler is in place: a key would not kill it now
+
+        // Reading before the foreground is ours would stop us
         char byte;
+        close(go[1]);
+        CHECK(read(go[0], &byte, 1) == 0);
+        close(go[0]);
+
         errno = 0;
         CHECK(read(0, &byte, 1) == -1 && errno == EINTR);
         CHECK(interrupted);
@@ -218,10 +225,21 @@ static void test_handler_ends_read(void)
     CHECK(read(ready[0], &byte, 1) == 0);
     close(ready[0]);
 
+    CHECK(setpgid(child, child) == 0);
     CHECK(tcsetpgrp(0, child) == 0);
-    spin();
-    press_byte(CTRL_C);
-    child_passed(child);
+    close(go[0]);
+    close(go[1]);
+
+    // A key that lands before its read is spent on the handler alone: press until it is over
+    int status = -1;
+    pid_t ended;
+    while ((ended = waitpid(child, &status, WNOHANG)) == 0)
+    {
+        spin();
+        press_byte(CTRL_C);
+    }
+    CHECK(ended == child);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
     take_foreground_back();
 }
 
@@ -245,8 +263,118 @@ static void test_input_dropped(void)
     CHECK(memcmp(line, "kept\n", 5) == 0);
 }
 
+// Ctrl+Z stops the whole foreground group, which is reported and can be resumed
+static void test_ctrl_z(void)
+{
+    pid_t members[MEMBERS];
+    for (int i = 0; i < MEMBERS; i++)
+    {
+        members[i] = child_sleeping();
+        CHECK(members[i] >= 0);
+        CHECK(setpgid(members[i], members[0]) == 0);
+    }
+
+    CHECK(tcsetpgrp(0, members[0]) == 0);
+    press_byte(CTRL_Z);
+    for (int i = 0; i < MEMBERS; i++)
+    {
+        int status = 0;
+        CHECK(waitpid(members[i], &status, WUNTRACED) == members[i]);
+        CHECK(WIFSTOPPED(status) && WSTOPSIG(status) == SIGTSTP);
+    }
+    take_foreground_back();
+
+    CHECK(kill(-members[0], SIGKILL) == 0);
+    for (int i = 0; i < MEMBERS; i++)
+        child_killed_by(members[i], SIGKILL);
+}
+
+// Reading from the background stops the group; in the foreground again, the read goes on
+static void test_background_read(void)
+{
+    pid_t child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+    {
+        char line[8];
+        setpgid(0, 0);
+        CHECK(read(0, line, sizeof(line)) == 3);
+        CHECK(memcmp(line, "go\n", 3) == 0);
+        child_done();
+    }
+    setpgid(child, child);
+
+    int status = 0;
+    CHECK(waitpid(child, &status, WUNTRACED) == child);
+    CHECK(WIFSTOPPED(status) && WSTOPSIG(status) == SIGTTIN);
+
+    CHECK(tcsetpgrp(0, child) == 0);
+    press("go\n");
+    CHECK(kill(child, SIGCONT) == 0);
+    child_passed(child);
+    take_foreground_back();
+}
+
+// Nobody would resume a read that ignores the signal: it fails instead
+static void test_background_read_refused(void)
+{
+    pid_t child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+    {
+        char byte;
+        signal(SIGTTIN, SIG_IGN);
+        setpgid(0, 0);
+        errno = 0;
+        CHECK(read(0, &byte, 1) == -1 && errno == EIO);
+        child_done();
+    }
+    setpgid(child, child);
+    child_passed(child);
+}
+
+// Changing the foreground from the background stops the group, unless it ignores the
+// signal: a shell taking the terminal back
+static void test_background_foreground_change(void)
+{
+    pid_t child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+    {
+        signal(SIGTTOU, SIG_DFL); // this test ignores it, and fork passes that on
+        setpgid(0, 0);
+        tcsetpgrp(0, getpgrp());
+        _exit(1); // not reached: it is killed while stopped
+    }
+    setpgid(child, child);
+
+    int status = 0;
+    CHECK(waitpid(child, &status, WUNTRACED) == child);
+    CHECK(WIFSTOPPED(status) && WSTOPSIG(status) == SIGTTOU);
+    CHECK(tcgetpgrp(0) == getpgrp());
+    CHECK(kill(child, SIGKILL) == 0);
+    child_killed_by(child, SIGKILL);
+
+    child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+    {
+        signal(SIGTTOU, SIG_IGN);
+        setpgid(0, 0);
+        CHECK(tcsetpgrp(0, getpgrp()) == 0);
+        CHECK(tcgetpgrp(0) == getpgrp());
+        child_done();
+    }
+    setpgid(child, child);
+    child_passed(child);
+    take_foreground_back();
+}
+
 int main(void)
 {
+    // This test hands the foreground out, so it asks for it back from the background
+    signal(SIGTTOU, SIG_IGN);
+
     test_take();
     test_foreground_errors();
     test_key_signals(CTRL_C, SIGINT);
@@ -254,6 +382,10 @@ int main(void)
     test_no_foreground_left();
     test_handler_ends_read();
     test_input_dropped();
+    test_ctrl_z();
+    test_background_read();
+    test_background_read_refused();
+    test_background_foreground_change();
 
     // Every pipe is closed again: the next free fd is 3
     int fd = dup(0);

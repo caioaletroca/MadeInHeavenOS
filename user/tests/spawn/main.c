@@ -300,7 +300,7 @@ static void test_errors(void)
     errno = 0;
     CHECK(waitpid(-1, &status, 0) == -1 && errno == ECHILD); // no children left
     errno = 0;
-    CHECK(waitpid(1, &status, 1) == -1 && errno == EINVAL); // WNOHANG: not yet
+    CHECK(waitpid(1, &status, 0x100) == -1 && errno == EINVAL); // no such option
 }
 
 static void test_orphan(void)
