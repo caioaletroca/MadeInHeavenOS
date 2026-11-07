@@ -2,6 +2,7 @@
 #define _SCHED_PROCESS_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <sched/wait.h>
 #include <sched/spinlock.h>
 #include <mihos/signal.h>
@@ -35,6 +36,9 @@ typedef struct process
     list_t children;                       // spawned or adopted, not yet waited for; one reference each. Protected by process_tree_lock.
     list_t sibling;                        // link in parent->children. Protected by process_tree_lock.
     list_t all_link;                       // link in the list of all processes. Protected by process_tree_lock.
+    uint32_t group;                        // process group: the pid of its first member. Protected by process_tree_lock.
+    uint32_t session;                      // session: the pid of its leader. Protected by process_tree_lock.
+    bool exec_done;                        // ran exec: its parent may no longer move it to another group
     uint32_t signals_pending;              // one bit per signal sent and not yet acted on. Protected by lock.
     uint32_t signals_blocked;              // waits in signals_pending while set here. Protected by lock.
     struct sigaction signal_actions[NSIG]; // zeroed: every signal starts as SIG_DFL. Protected by lock.
@@ -155,9 +159,9 @@ void process_child_remove(process_t *child);
  * Wait for a child of parent to exit and take it off the children list.
  *
  * @param parent The waiting process (the caller).
- * @param pid The child's pid, or -1 for any child.
+ * @param pid The child's pid, -1 for any child, 0 for a child in the caller's group, < -1 for a child in group -pid.
  * @param out Set to the exited child; the caller now owns its reference and releases it.
- * @return The child's pid, or -ECHILD if no child matches (0 and < -1: no process groups yet).
+ * @return The child's pid, or -ECHILD if no child matches.
  */
 long process_wait_child(process_t *parent, long pid, process_t **out);
 
@@ -204,5 +208,63 @@ void process_release(process_t *p);
  * @return The process, or NULL if no such process exists.
  */
 process_t *process_find(uint32_t pid);
+
+/**
+ * Give the child the parent's group and session, as fork and spawn do.
+ *
+ * @param child The child process.
+ * @param parent The parent process.
+ */
+void process_group_inherit(process_t *child, process_t *parent);
+
+/**
+ * setpgid: move a process to a group.
+ *
+ * @param caller The calling process.
+ * @param pid The process to move, 0 for the caller.
+ * @param group The group to join, 0 for the one named after the process.
+ * @return 0 on success, or a negative error code on failure.
+ */
+long process_group_set(process_t *caller, uint32_t pid, uint32_t group);
+
+/**
+ * @param caller The calling process.
+ * @param pid The process, 0 for the caller.
+ * @return Its group, or -ESRCH.
+ */
+long process_group_get(process_t *caller, uint32_t pid);
+
+/**
+ * setsid: make p the leader of a new session and of a new group inside it.
+ *
+ * @param p The calling process.
+ * @return The new session, or -EPERM if a group already carries p's pid.
+ */
+long process_session_create(process_t *p);
+
+/**
+ * @param caller The calling process.
+ * @param pid The process, 0 for the caller.
+ * @return Its session, or -ESRCH.
+ */
+long process_session_get(process_t *caller, uint32_t pid);
+
+/**
+ * Send a signal to every member of a group.
+ *
+ * @param group The group.
+ * @param signal The signal, 0 only checks that the group exists.
+ * @return 0 on success, or -ESRCH if the group has no members.
+ */
+long process_signal_group(uint32_t group, int signal);
+
+/**
+ * Send a signal to every process except init and the caller.
+ *
+ * @param caller The calling process.
+ * @param signal The signal, 0 only checks that someone exists.
+ * @return 0 on success, or -ESRCH if nobody was found.
+ */
+long process_signal_everyone(process_t *caller, int signal);
 
 #endif // _SCHED_PROCESS_H

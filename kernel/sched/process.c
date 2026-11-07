@@ -82,6 +82,8 @@ process_t *process_create(address_space_t *space)
     p->refs = 1;
     p->space = space;
     p->parent = NULL;
+    p->group = p->pid;
+    p->session = p->pid;
     list_init(&p->children);
     list_init(&p->sibling);
     wait_queue_init(&p->waiters);
@@ -103,32 +105,185 @@ process_t *process_create_init(address_space_t *space)
     if (p != NULL)
     {
         p->pid = PROCESS_INIT_PID;
+        p->group = PROCESS_INIT_PID;
+        p->session = PROCESS_INIT_PID;
         init_process = p;
     }
 
     return p;
 }
 
+/**
+ * @brief Looks up a process by its PID without taking a reference.
+ *
+ * @param pid The PID of the process to look up.
+ * @return The process with the given PID, or NULL if not found.
+ */
+static process_t *process_lookup(uint32_t pid)
+{
+    list_t *pos;
+    list_for_each(pos, &all_processes)
+    {
+        process_t *p = list_container(pos, process_t, all_link);
+        if (p->pid == pid)
+            return p;
+    }
+
+    return NULL;
+}
+
 process_t *process_find(uint32_t pid)
 {
     scoped_guard(spinlock, &process_tree_lock)
     {
-        list_t *pos;
-        list_for_each(pos, &all_processes)
+        process_t *p = process_lookup(pid);
+        if (p != NULL)
         {
-            process_t *p = list_container(pos, process_t, all_link);
-            if (p->pid != pid)
-                continue;
-
             scoped_guard(spinlock, &p->lock)
             {
                 p->refs++;
             }
-            return p;
         }
+
+        return p;
     }
 
     return NULL;
+}
+
+/**
+ * @brief Checks if a process group exists within a session.
+ *
+ * @param group The process group ID to check.
+ * @param session The session ID to check within.
+ * @return true if the process group exists, false otherwise.
+ */
+static bool process_group_exists(uint32_t group, uint32_t session)
+{
+    list_t *pos;
+    list_for_each(pos, &all_processes)
+    {
+        process_t *p = list_container(pos, process_t, all_link);
+        if (p->group == group && p->session == session)
+            return true;
+    }
+
+    return false;
+}
+
+void process_group_inherit(process_t *child, process_t *parent)
+{
+    guard(spinlock, &process_tree_lock);
+    child->group = parent->group;
+    child->session = parent->session;
+}
+
+long process_group_set(process_t *caller, uint32_t pid, uint32_t group)
+{
+    guard(spinlock, &process_tree_lock);
+
+    process_t *target = pid == 0 ? caller : process_lookup(pid);
+
+    // Only yourself or your own child
+    if (target == NULL || (target != caller && target->parent != caller))
+        return -ESRCH;
+
+    if (target->session != caller->session)
+        return -EPERM;
+
+    // A running program cannot have its group changed under it
+    if (target != caller && target->exec_done)
+        return -EACCES;
+
+    // A leader stays in its own group: the session's name depends on it
+    if (target->pid == target->session)
+        return -EPERM;
+
+    if (group == 0)
+        group = target->pid;
+
+    // Joining needs an existing group of this session; only its own name can be new
+    if (group != target->pid && !process_group_exists(group, caller->session))
+        return -EPERM;
+
+    target->group = group;
+    return 0;
+}
+
+long process_group_get(process_t *caller, uint32_t pid)
+{
+    guard(spinlock, &process_tree_lock);
+
+    process_t *p = pid == 0 ? caller : process_lookup(pid);
+    if (p == NULL)
+        return -ESRCH;
+
+    return p->group;
+}
+
+long process_session_create(process_t *p)
+{
+    guard(spinlock, &process_tree_lock);
+
+    if (process_group_exists(p->pid, p->session))
+        return -EPERM;
+
+    p->session = p->pid;
+    p->group = p->pid;
+    return p->pid;
+}
+
+long process_session_get(process_t *caller, uint32_t pid)
+{
+    guard(spinlock, &process_tree_lock);
+
+    process_t *p = pid == 0 ? caller : process_lookup(pid);
+    if (p == NULL)
+        return -ESRCH;
+
+    return p->session;
+}
+
+long process_signal_group(uint32_t group, int signal)
+{
+    long result = -ESRCH;
+
+    guard(spinlock, &process_tree_lock);
+
+    list_t *pos;
+    list_for_each(pos, &all_processes)
+    {
+        process_t *p = list_container(pos, process_t, all_link);
+        if (p->group != group)
+            continue;
+
+        result = 0;
+        if (signal != 0)
+            signal_send(p, signal);
+    }
+
+    return result;
+}
+
+long process_signal_everyone(process_t *caller, int signal)
+{
+    long result = -ESRCH;
+
+    guard(spinlock, &process_tree_lock);
+
+    list_t *pos;
+    list_for_each(pos, &all_processes)
+    {
+        process_t *p = list_container(pos, process_t, all_link);
+        if (p == caller || p->pid == PROCESS_INIT_PID)
+            continue;
+
+        result = 0;
+        if (signal != 0)
+            signal_send(p, signal);
+    }
+
+    return result;
 }
 
 int process_fd_install(process_t *p, file_t *file)
@@ -226,6 +381,7 @@ void process_exec(address_space_t *space, uintptr_t entry, uintptr_t user_stack)
     address_space_destroy(old);
 
     process_files_close_on_exec(p);
+    p->exec_done = true;
     signal_exec_reset(p);
 
     // A trap from ring 3 starts at the top of the kernel stack, so this
@@ -266,12 +422,27 @@ void process_child_remove(process_t *child)
     }
 }
 
+/**
+ * Checks if a child process matches the given wait criteria.
+ *
+ * @param parent The parent process.
+ * @param child The child process to check.
+ * @param pid The PID or process group to match against.
+ * @return true if the child matches the criteria, false otherwise.
+ */
+static bool process_wait_matches(process_t *parent, process_t *child, long pid)
+{
+    if (pid == -1)
+        return true;
+    if (pid > 0)
+        return (long)child->pid == pid;
+
+    uint32_t group = pid == 0 ? parent->group : (uint32_t)-pid;
+    return child->group == group;
+}
+
 long process_wait_child(process_t *parent, long pid, process_t **out)
 {
-    // pid 0 and pid < -1 name process groups, which do not exist yet
-    if (pid == 0 || pid < -1)
-        return -ECHILD;
-
     scoped_guard(spinlock, &process_tree_lock)
     {
         int interrupted = 0;
@@ -283,7 +454,7 @@ long process_wait_child(process_t *parent, long pid, process_t **out)
             list_for_each(pos, &parent->children)
             {
                 process_t *p = list_container(pos, process_t, sibling);
-                if (pid != -1 && (long)p->pid != pid)
+                if (!process_wait_matches(parent, p, pid))
                     continue;
 
                 found = true;

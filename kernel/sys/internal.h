@@ -60,6 +60,10 @@ long sys_exec(uintptr_t path, uintptr_t argv, uintptr_t envp);
 long sys_wait(long pid, uintptr_t status);
 long sys_getpid(void);
 long sys_getppid(void);
+long sys_setpgid(long pid, long group);
+long sys_getpgid(long pid);
+long sys_setsid(void);
+long sys_getsid(long pid);
 
 // signals.c
 long sys_kill(long pid, int signal);

@@ -39,6 +39,10 @@
 #define SYS_SIGRETURN 34
 #define SYS_SIGPENDING 35
 #define SYS_PAUSE 36
+#define SYS_SETPGID 37
+#define SYS_GETPGID 38
+#define SYS_SETSID 39
+#define SYS_GETSID 40
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)

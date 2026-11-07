@@ -4,17 +4,25 @@
 #include "internal.h"
 
 /**
- * kill(pid, signal): sends a signal to a process. Signal 0 sends nothing and
- * only checks that the process exists. pid 0 and negative pids name process
- * groups or everyone, which do not exist yet: no such process.
+ * kill(pid, signal): sends a signal to a process, to the caller's group (pid 0),
+ * to group -pid (pid < -1), or to everyone but init and the caller (pid -1).
+ * Signal 0 sends nothing and only checks that the target exists.
  */
 long sys_kill(long pid, int signal)
 {
     if (signal < 0 || signal >= NSIG)
         return -EINVAL;
 
-    if (pid <= 0)
-        return -ESRCH;
+    process_t *caller = scheduler_current()->process;
+
+    if (pid == -1)
+        return process_signal_everyone(caller, signal);
+
+    if (pid == 0)
+        return process_signal_group((uint32_t)process_group_get(caller, 0), signal);
+
+    if (pid < 0)
+        return process_signal_group((uint32_t)-pid, signal);
 
     process_t *p = process_find((uint32_t)pid);
     if (p == NULL)

@@ -80,6 +80,14 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_sigpending(arg0);
     case SYS_PAUSE:
         return sys_pause();
+    case SYS_SETPGID:
+        return sys_setpgid((long)arg0, (long)arg1);
+    case SYS_GETPGID:
+        return sys_getpgid((long)arg0);
+    case SYS_SETSID:
+        return sys_setsid();
+    case SYS_GETSID:
+        return sys_getsid((long)arg0);
     default:
         return -ENOSYS;
     }

@@ -74,6 +74,7 @@ static process_t *child_create(process_t *parent, address_space_t *space)
     process_files_inherit(child, parent);
     process_cwd_inherit(child, parent);
     signal_inherit(child, parent);
+    process_group_inherit(child, parent);
 
     // The handle from process_create is the parent's reference, held until wait
     process_child_add(parent, child);
@@ -147,6 +148,7 @@ long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
     // spawn is a fork and an exec in one
     process_files_close_on_exec(child);
     signal_exec_reset(child);
+    child->exec_done = true;
 
     if (process_start(child, entry, stack) < 0)
     {
@@ -258,4 +260,57 @@ long sys_getppid(void)
 {
     process_t *current = scheduler_current()->process;
     return process_parent_pid(current);
+}
+
+/**
+ * setpgid(pid, group): sets the process group ID of the specified process.
+ *
+ * @param pid The process ID of the target process.
+ * @param group The process group ID to set.
+ * @return 0 on success, or a negative error code on failure.
+ */
+long sys_setpgid(long pid, long group)
+{
+    if (pid < 0 || group < 0)
+        return -EINVAL;
+
+    return process_group_set(scheduler_current()->process, (uint32_t)pid, (uint32_t)group);
+}
+
+/**
+ * getpgid(pid): retrieves the process group ID of the specified process.
+ *
+ * @param pid The process ID of the target process.
+ * @return The process group ID on success, or a negative error code on failure.
+ */
+long sys_getpgid(long pid)
+{
+    if (pid < 0)
+        return -ESRCH;
+
+    return process_group_get(scheduler_current()->process, (uint32_t)pid);
+}
+
+/**
+ * setsid(): creates a new session and sets the calling process as the session leader.
+ *
+ * @return The session ID on success, or a negative error code on failure.
+ */
+long sys_setsid(void)
+{
+    return process_session_create(scheduler_current()->process);
+}
+
+/**
+ * getsid(pid): retrieves the session ID of the specified process.
+ *
+ * @param pid The process ID of the target process.
+ * @return The session ID on success, or a negative error code on failure.
+ */
+long sys_getsid(long pid)
+{
+    if (pid < 0)
+        return -ESRCH;
+
+    return process_session_get(scheduler_current()->process, (uint32_t)pid);
 }
