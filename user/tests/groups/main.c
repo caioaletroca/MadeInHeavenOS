@@ -8,10 +8,9 @@
 /*
  * Process groups and sessions. A process is born in its parent's group and
  * session; setpgid moves it, setsid opens a new session; kill and wait then
- * address a whole group. This test itself sits in init's group and session, so
- * nothing here signals its own group: every target is a group made for the
- * case. Children count their own failures and report them through their exit
- * status.
+ * address a whole group. This test sits in the runner's group, so nothing here
+ * signals its own group: every target is a group made for the case. Children
+ * count their own failures and report them through their exit status.
  */
 
 #define NO_SUCH_PID 999999
