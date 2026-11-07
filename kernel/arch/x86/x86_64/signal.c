@@ -23,10 +23,10 @@ typedef struct signal_frame
 } signal_frame_t;
 
 /**
- * @brief Returns a pointer to the user frame at the top of the stack.
+ * @brief Returns a pointer to the frame of the trap from ring 3, at the top of the kernel stack.
  *
- * @param stack The base of the user stack.
- * @param stack_size The size of the user stack.
+ * @param stack The lowest address of the thread's kernel stack.
+ * @param stack_size The size of the kernel stack.
  * @return A pointer to the isr_context_t at the top of the stack.
  */
 static isr_context_t *user_frame(void *stack, size_t stack_size)
