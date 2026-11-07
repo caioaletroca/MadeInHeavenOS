@@ -14,4 +14,5 @@ stat \
 ioctl \
 cxx \
 signal \
+termios \
 arch/$(ARCH)
