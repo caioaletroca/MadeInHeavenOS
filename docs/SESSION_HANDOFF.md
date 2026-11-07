@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -86,6 +86,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+e55e9d2 test: cover terminal settings and the keys with no character
+6db44c9 feat(libc): add tcgetattr, tcsetattr and cfmakeraw
+ab1761e feat(driver): add terminal settings with raw mode
+4bc28a3 docs(architecture): document stops, background groups and jobs in handoff
 eacd7f5 test: cover stopping, resuming and background groups
 6da1b1a feat(sh): keep stopped pipelines as jobs, add fg and jobs
 0f16f48 feat(driver): add Ctrl+Z and keep background groups off the terminal
@@ -2493,21 +2497,37 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
   only; keypad digits and `KP_DOT` type nothing with Num Lock off. `keymap_compose(accent, base)`
   looks up dead key compositions (`´a → á`, `~a → ã`, `´c → ç`).
 - **Console** (`driver/console.c`): one thread handles all key state (`down[]`, Caps/Num Lock toggled on
-  the press edge so typematic repeat is ignored, pending accent). The line discipline handles echo,
-  backspace (removes a whole UTF-8 sequence, erases one cell with `"\b \b"`), Ctrl+U, Ctrl+C and
-  Ctrl+\ (`SIGINT` and `SIGQUIT` to the foreground group, dropping all waiting input, as Linux
-  without `NOFLSH`) and Ctrl+D (EOF). Tab, Esc and arrows are ignored.
+  the press edge so typematic repeat is ignored, pending accent). Keys send what a terminal sends:
+  Enter is `\r`, Backspace `0x7F`, and the keys with no character are escape sequences
+  (`key_sequences`: `ESC [ A` for Up, `ESC [ 3 ~` for Delete), in raw mode only, since a line has no
+  use for them. The line discipline handles echo, backspace (removes a whole UTF-8 sequence, erases
+  one cell with `"\b \b"`), Ctrl+U, Ctrl+C, Ctrl+\ and Ctrl+Z (`SIGINT`, `SIGQUIT` and `SIGTSTP` to
+  the foreground group, dropping all waiting input, as Linux without `NOFLSH`) and Ctrl+D (EOF). Tab
+  and Esc are ignored on a line.
+- **Settings (`termios`):** `struct termios` in `uapi/mihos/termios.h`, Linux's values, one `settings`
+  in the console, written with `input_lock` and `console_lock` both held, so reading needs either.
+  `TCGETS`, `TCSETS`, `TCSETSW` (the same: output never waits in a queue here), `TCSETSF` (drops all
+  input); libc has `tcgetattr`, `tcsetattr`, `cfmakeraw`. Honoured: `ICRNL` (`\r` becomes `\n` first
+  thing in `console_input`), `ISIG`, `ICANON`, `ECHO`, `VMIN`. The rest is stored and given back.
+  Without `ICANON`, `console_input_raw` commits each character at once, control bytes included, and
+  echoes only printable ones and `\n`. `console_read` sleeps for `console_read_minimum`: 1 on a line,
+  else the lesser of `VMIN` and what was asked for, so `VMIN` 0 never sleeps; it is asked again on
+  each wake-up, since the settings can change during the sleep. Leaving `ICANON` commits the line
+  being typed, or nothing would ever end it, and every change wakes the readers. Setting from the
+  background stops the group with `SIGTTOU` (`console_background_check`), reading the settings never.
 - **Console ring** (xv6 / Linux `n_tty` style): `read_index ≤ write_index ≤ edit_index`, free-running
   indices over a power-of-two buffer. Readers consume `[read, write)`, the console thread edits
-  `[write, edit)`. Ordinary input leaves one byte free so `\n`/EOF can always commit. `console_read`
-  is canonical: at most one line per call. EOF follows POSIX: it hands over the pending bytes and is
+  `[write, edit)`. Ordinary input leaves one byte free so `\n`/EOF can always commit. With `ICANON`,
+  `console_read` returns at most one line per call. EOF follows POSIX: it hands over the pending bytes and is
   always discarded, so a read returns 0 only when EOF starts an empty line (`abc^D` returns `abc`,
   the next read blocks). `console_lock` protects `read_index`/`write_index`; readers sleep with
   `wait_queue_sleep_locked`, the console thread commits and wakes under it. `edit_index` and
   `[write, edit)` belong to whoever holds `input_lock`, a mutex taken for each key by the console
   thread and by the `ioctl`s, since `TIOCSTI` types from a system call.
 - **Console self-test** (`selftest/console.c`): a feeder thread injects `h i Enter` and `Ctrl+D`
-  through `input_report_key` while the reader is asleep; it must read `"hi\n"`, then 0 (EOF).
+  through `input_report_key` while the reader is asleep; it must read `"hi\n"`, then 0 (EOF). Then
+  the keys with no character, which `TIOCSTI` has no byte for: escape sequences in raw mode, nothing
+  on a line.
 - **Output:** `tty_write` decodes UTF-8 (U+FFFD for malformed/overlong) and runs under `irq_save`,
   so each `kprintf` is atomic and callable from IRQs, panic and early boot. Inside that section it
   first passes the raw bytes (UTF-8, before decoding) to `platform_debug_write`, so the host log
@@ -2841,8 +2861,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     `terminal` test. Verified by hand too, in the interactive shell: `cat`, a pipeline, the prompt,
     `exit` and a new shell, a nested `sh`. C6c (done): stop signals, `WUNTRACED`, `WNOHANG`, Ctrl+Z,
     `SIGTTIN` and `SIGTTOU`, jobs with `fg` and `jobs`, the `stop` test; the shell verified by hand
-    again. Next, C6d: `termios` with raw mode. C6e: the shell's line editing, arrow keys and
-    history.
+    again. C6d (done): `termios` with `tcgetattr`, `tcsetattr` and `cfmakeraw`, raw mode, `VMIN`,
+    the keys with no character as escape sequences, the `termios` test. Next, C6e: the shell's
+    line editing, arrow keys and history.
   - **C7, graduation**: port Lua (needs `fopen`/`fread`, `setjmp`, math); maybe dash.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
 
@@ -3146,10 +3167,18 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   `SIGCONT`; matters from C6c). `kill(-1)` is tested only with signal 0: a real signal would end
   the test run. `exec_done` is written without `process_tree_lock`, fine on one CPU.
 - Terminal: no `SIGHUP` when a session leader exits, and the rest of its session keeps the
-  terminal until a new leader takes it. No `TIOCNOTTY`. Background groups may write (`TOSTOP`
-  waits for `termios`, C6d). `TIOCSTI` takes each byte as a
+  terminal until a new leader takes it. No `TIOCNOTTY`. Background groups may write. `TIOCSTI` takes each byte as a
   whole character, so UTF-8 through it comes out wrong. No automatic test of the interactive
   shell: it needs a pseudo-terminal, or a test that runs `/bin/sh` on the console.
+- `termios`: `VINTR` and the other special characters are stored but the keys are fixed; `VTIME`
+  is ignored; `OPOST`, `ONLCR`, `ECHOE`, `ECHOK`, `ECHONL` and `IEXTEN` do nothing, `TOSTOP` does not exist
+  (`tty_write` always does its own newline). No line speeds (`cfgetospeed`). On a line,
+  other control bytes are dropped (Tab too), where Linux stores them, and `ECHOCTL` does not exist.
+  Settings stay when a program dies, so a crashed raw program leaves the terminal raw (C6e's shell
+  should restore them at each prompt). A `^D` byte read in raw mode stays a byte if it was typed on
+  a line first: the mode at read time decides. An escape sequence is pushed byte by byte, so a read
+  can get half of one, and a full ring drops its tail.
+- The screen has no ANSI escape parsing: a program can only move left with `\b` (C6e may need more).
 - `spawn` and `exec` copy user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
   `ENAMETOOLONG`); programs come from the initrd only; no `posix_spawnp` (`PATH` search).
 - Power off works only on Bochs and QEMU (fixed ports); real hardware halts (needs the ACPI FADT).
