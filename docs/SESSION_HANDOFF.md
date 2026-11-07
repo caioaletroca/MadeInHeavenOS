@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`help`/`history`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -86,6 +86,12 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+9342cfa test: cover the foreground group and keyboard signals
+9527412 feat(sh): run each pipeline in a foreground group of its own
+2358a74 feat(init): start commands in a session owning the console
+9e6ce65 feat(libc): add tcgetpgrp and tcsetpgrp
+2c3f945 feat(driver): send keyboard signals to the foreground group
+76a2ef3 docs(architecture): document process groups and sessions in handoff
 6847548 test: cover process groups and sessions
 8abce1f feat(libc): add setpgid, getpgid, getpgrp, setsid and getsid
 b64432c feat(sched): add process groups and sessions
@@ -867,8 +873,7 @@ session 12 (the shell, pid 12, is its leader)
 
 - **Start:** `process_create` gives a process its own pid as both; init is set to 1 after its pid
   is overwritten. `child_create` copies the parent's (`process_group_inherit`), for fork and spawn.
-  exec keeps them. Nothing calls `setsid` yet, so today everything sits in init's group and session
-  (C6b changes that for the shell).
+  exec keeps them. init starts each command in a session of its own (see "Foreground group").
 - **`setpgid(pid, group)`** (`SYS_SETPGID` 37; 0 means the caller, 0 for `group` the one named after
   the process): negative → `-EINVAL`; neither the caller nor its child → `-ESRCH`; another session
   → `-EPERM`; a child that ran exec → `-EACCES` (`exec_done`, set by `process_exec` and `sys_spawn`:
@@ -884,6 +889,25 @@ session 12 (the shell, pid 12, is its leader)
   `process_signal_group` and `process_signal_everyone` call `signal_send` under the tree lock, as
   `process_exit` does: the order is that lock, then `p->lock`.
 - **`wait`:** `process_wait_matches` decides, under the tree lock, on each scan.
+- **Foreground group** (`driver/console.c`): the console keeps `console_session`, the session that
+  owns it, and `console_foreground`, the group keyboard signals reach; 0 is nobody. Requests:
+  `TIOCSCTTY` (a session leader takes the terminal, `-EPERM` otherwise or while another living
+  leader holds it; the caller's group becomes the foreground; there is no hook at exit, the check
+  asks `process_session_leader_alive`), `TIOCGPGRP`, `TIOCSPGRP` (`tcgetpgrp`/`tcsetpgrp`, `-ENOTTY`
+  from another session, `-EINVAL` for a group `<= 0`, `-EPERM` for one outside the session) and
+  `TIOCSTI` (pushes a byte through `console_input`, as if typed; `-EPERM` from another session; how
+  the `terminal` test presses keys).
+- **Who owns it:** init's `start` is fork, `setsid`, `TIOCSCTTY`, exec: what getty does for a login.
+  So each command init starts, the shell or the test runner, leads a session of its own. It is
+  fork and exec, not spawn, since both calls belong in the child; a failed exec exits with 127,
+  which `run_respawn` counts as a crash.
+- **The shell:** only when interactive (POSIX: a script leaves groups alone). `terminal_setup` takes
+  the foreground, catches `SIGINT` with an empty handler and no `SA_RESTART`, so `read` ends with
+  `EINTR` and the prompt comes back with status 130, and ignores `SIGQUIT` and `SIGTTOU`. Each
+  pipeline is a group named after its first stage. Parent and child both call `setpgid`, whichever
+  runs first (a child past exec answers `EACCES`, and it is already done). The parent then calls
+  `tcsetpgrp`, and takes the terminal back after the waits. A stage resets the three signals:
+  `SIG_IGN` survives exec, and a builtin in a pipeline has no exec. `SIGINT`'s end prints no line.
 
 ### Signals (`sched/signal.c`, `sys/signals.c`)
 
@@ -1121,7 +1145,7 @@ user/tests/hello ─build─▶ <build/x86_64-pc/>sysroot/usr/tests/hello ─gru
   ─▶ vfs_lookup("/usr/tests/hello") / vfs_read_file (kmalloc'd copy)
 init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init's words} ─▶ exec_load
            ─▶ process_create_init (pid 1) + console fds 0-2 + start ─▶ process_wait ─▶ halt
-/sbin/init ─spawn─▶ /usr/tests/run ─spawn─▶ each test ─waitpid─▶ compare with its table
+/sbin/init ─fork, exec─▶ /usr/tests/run ─spawn─▶ each test ─waitpid─▶ compare with its table
 ```
 
 - **User build** (`user/Makefile`): every directory under `bin/`, `sbin/` and `tests/` is a program
@@ -1290,9 +1314,9 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
   - `once`: start, `wait(-1)` until the command's pid comes back (other pids are reaped orphans),
     print `init: <command> exited with status N` (or `killed by signal N`), halt.
   - `respawn`: the same wait loop, then start again: quietly after an exit (`exit`, Ctrl+D: a new
-    shell, like a new login), with a message after a kill; `CRASHES_MAX` (5) kills in a row
-    (reset by a clean exit) → `keeps crashing, giving up` and halt.
-  - Unknown mode or no command → usage line and halt. Failing `start` or `wait` → halt.
+    shell, like a new login), with a message after a kill; `CRASHES_MAX` (5) kills or failed
+    starts (status 127) in a row (reset by a clean exit) → `keeps crashing, giving up` and halt.
+  - Unknown mode or no command → usage line and halt. A failing `fork` or `wait` → halt.
   - Orphans the kernel hands to init come back through the same `wait(-1)` loops and are reaped.
 - **`/usr/tests/run`** (`user/tests/run`): the automatic set is every regular file in
   `/usr/tests` (found with `readdir`, sorted by name with an insertion sort) except `.`-names,
@@ -2438,10 +2462,11 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
   AltGr → Shift → normal, each falling back when empty. Caps Lock flips Shift on lowercase letters
   only; keypad digits and `KP_DOT` type nothing with Num Lock off. `keymap_compose(accent, base)`
   looks up dead key compositions (`´a → á`, `~a → ã`, `´c → ç`).
-- **Console** (`driver/console.c`): one thread owns all key state (`down[]`, Caps/Num Lock toggled on
+- **Console** (`driver/console.c`): one thread handles all key state (`down[]`, Caps/Num Lock toggled on
   the press edge so typematic repeat is ignored, pending accent). The line discipline handles echo,
-  backspace (removes a whole UTF-8 sequence, erases one cell with `"\b \b"`), Ctrl+U, Ctrl+C (drops
-  the line, no signals yet) and Ctrl+D (EOF). Tab, Esc and arrows are ignored.
+  backspace (removes a whole UTF-8 sequence, erases one cell with `"\b \b"`), Ctrl+U, Ctrl+C and
+  Ctrl+\ (`SIGINT` and `SIGQUIT` to the foreground group, dropping all waiting input, as Linux
+  without `NOFLSH`) and Ctrl+D (EOF). Tab, Esc and arrows are ignored.
 - **Console ring** (xv6 / Linux `n_tty` style): `read_index ≤ write_index ≤ edit_index`, free-running
   indices over a power-of-two buffer. Readers consume `[read, write)`, the console thread edits
   `[write, edit)`. Ordinary input leaves one byte free so `\n`/EOF can always commit. `console_read`
@@ -2449,7 +2474,8 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
   always discarded, so a read returns 0 only when EOF starts an empty line (`abc^D` returns `abc`,
   the next read blocks). `console_lock` protects `read_index`/`write_index`; readers sleep with
   `wait_queue_sleep_locked`, the console thread commits and wakes under it. `edit_index` and
-  `[write, edit)` belong to the console thread alone (erase and Ctrl+C touch them without the lock).
+  `[write, edit)` belong to whoever holds `input_lock`, a mutex taken for each key by the console
+  thread and by the `ioctl`s, since `TIOCSTI` types from a system call.
 - **Console self-test** (`selftest/console.c`): a feeder thread injects `h i Enter` and `Ctrl+D`
   through `input_report_key` while the reader is asleep; it must read `"hi\n"`, then 0 (EOF).
 - **Output:** `tty_write` decodes UTF-8 (U+FFFD for malformed/overlong) and runs under `irq_save`,
@@ -2780,11 +2806,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     `SA_NODEFER`/`SA_RESETHAND`, `pause`, `signal`, `sigpending`, a full `abort`, the shell silent
     on `SIGPIPE` (see "Signals"). Next: C6.
   - **C6, terminal control.** C6a (done): process groups and sessions, `kill` and `wait` on groups,
-    the `groups` test (see "Process groups and sessions"). C6b (next): the foreground group, the
-    shell in a session of its own with each pipeline in a group, Ctrl+C → `SIGINT` to that group.
-    A test needs a way to press a key: Linux's `TIOCSTI`, an `ioctl` that pushes a byte into the
-    input, is the candidate. C6c: stop signals, Ctrl+Z, `fg`. C6d: `termios` with raw mode. C6e:
-    the shell's line editing, arrow keys and history.
+    the `groups` test (see "Process groups and sessions"). C6b (done): the foreground group, init
+    starting commands in their own session, each pipeline in a group, Ctrl+C and Ctrl+\, the
+    `terminal` test. Verified by hand too, in the interactive shell: `cat`, a pipeline, the prompt,
+    `exit` and a new shell, a nested `sh`. Next, C6c: stop signals, Ctrl+Z, `fg`, `SIGTTIN` and
+    `SIGTTOU` for background groups. C6d: `termios` with raw mode. C6e: the shell's line editing,
+    arrow keys and history.
   - **C7, graduation**: port Lua (needs `fopen`/`fread`, `setjmp`, math); maybe dash.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
 
@@ -2961,7 +2988,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - devfs: devices register at boot only (no lock, no unregister, nodes never freed); one flat
   directory; `devfs_readdir` walks the list from the start per index (O(n²) listing).
   Character devices refuse `lseek` (`ESPIPE`) where Linux lets `/dev/null` succeed.
-- `ioctl`: one request (`TIOCGWINSZ`); integer arguments (requests whose third argument is no
+- `ioctl`: the console's requests only; integer arguments (requests whose third argument is no
   pointer, e.g. `FIONBIO`) would need the syscall layer to skip the copy (`MIHOS_IOC_NONE`
   passes the buffer, unused). Our request numbers differ from Linux's (`0x5413`), fine since
   only libc sees them. The console's size is the VGA text size, fixed.
@@ -3081,6 +3108,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - Process groups: orphaned groups are not handled (Linux sends a stopped one `SIGHUP` and
   `SIGCONT`; matters from C6c). `kill(-1)` is tested only with signal 0: a real signal would end
   the test run. `exec_done` is written without `process_tree_lock`, fine on one CPU.
+- Terminal: no `SIGHUP` when a session leader exits, and the rest of its session keeps the
+  terminal until a new leader takes it. No `TIOCNOTTY`. A background group can still read the
+  terminal and set the foreground (`SIGTTIN`, `SIGTTOU`: C6c). `TIOCSTI` takes each byte as a
+  whole character, so UTF-8 through it comes out wrong. No automatic test of the interactive
+  shell: it needs a pseudo-terminal, or a test that runs `/bin/sh` on the console.
 - `spawn` and `exec` copy user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
   `ENAMETOOLONG`); programs come from the initrd only; no `posix_spawnp` (`PATH` search).
 - Power off works only on Bochs and QEMU (fixed ports); real hardware halts (needs the ACPI FADT).
