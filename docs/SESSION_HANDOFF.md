@@ -38,8 +38,8 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
-- **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`help`/`history`/`pwd`, the
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+- **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
   pipelines of programs (`a | b | c`); `/bin/cat` (files, stdin, `-`);
@@ -86,6 +86,11 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+eacd7f5 test: cover stopping, resuming and background groups
+6da1b1a feat(sh): keep stopped pipelines as jobs, add fg and jobs
+0f16f48 feat(driver): add Ctrl+Z and keep background groups off the terminal
+dfd9e23 feat(sched): add stop signals and wait's options
+d935ec9 docs(architecture): document the foreground group in handoff
 9342cfa test: cover the foreground group and keyboard signals
 9527412 feat(sh): run each pipeline in a foreground group of its own
 2358a74 feat(init): start commands in a session owning the console
@@ -743,8 +748,10 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   libc `execve`, `execv` (`environ`) and `execvp` in `<unistd.h>`; `execvp` searches `PATH` like
   the shell, a name with `'/'` is used as given, no `PATH` is `ENOENT`, and `EACCES` from any
   entry beats "not found" (glibc). Any other error stops the search.
-- **`wait(pid, status)`** → the reaped child's pid, or `-ECHILD` (no matching child: not a child,
-  already waited for, no children).
+- **`wait(pid, status, options)`** → the reaped child's pid, or `-ECHILD` (no matching child: not a
+  child, already waited for, no children). `WUNTRACED` reports a child that stopped, once per stop
+  (status `(signal << 8) | 0x7F`, the child stays); `WNOHANG` returns 0 instead of sleeping, leaving
+  `status` alone; anything else is `-EINVAL`.
   `pid` -1 is any child, 0 a child in the caller's group, `< -1` a child in group `-pid`.
   `process_wait_child` returns the child unlinked; `sys_wait` stores the POSIX
   status (`signal`, or `(exit_status & 0xFF) << 8`) if `status != 0` (`-EFAULT` after reaping on a
@@ -908,6 +915,20 @@ session 12 (the shell, pid 12, is its leader)
   runs first (a child past exec answers `EACCES`, and it is already done). The parent then calls
   `tcsetpgrp`, and takes the terminal back after the waits. A stage resets the three signals:
   `SIG_IGN` survives exec, and a builtin in a pipeline has no exec. `SIGINT`'s end prints no line.
+- **Background groups:** `console_background_check`, for a caller in the owning session and outside
+  the foreground. A `read` sends the caller's group `SIGTTIN`, a `TIOCSPGRP` sends `SIGTTOU`, and
+  either returns `-EINTR`, so a stop reruns the call once resumed. If the signal is refused
+  (`signal_refused`: blocked or ignored), `read` fails with `-EIO`, since nothing would resume it,
+  and `TIOCSPGRP` goes on: that is how a shell takes the terminal back. Ctrl+Z sends `SIGTSTP`,
+  dropping input as Ctrl+C does.
+- **Jobs (`user/bin/sh/run.c`):** a `job_t` is a pipeline with what is needed to go on waiting for
+  it: its group, pids, how many were waited for, the command as typed. `job_wait` waits with
+  `WUNTRACED` when interactive and returns 1 at the first stop. `job_keep` puts a stopped job on
+  `sh->jobs` (`JOBS_MAX` 8; past that the job is killed). `fg` takes the last one (`job_resume`:
+  `tcsetpgrp`, `SIGCONT` to the group, `job_wait` again from where it left off); `jobs` lists them.
+  `jobs_hang_up` sends `SIGHUP` and `SIGCONT` when the shell leaves, since nothing else would
+  resume them. A stage's copy of the shell empties its list. `SIGTSTP` at the prompt uses the same
+  handler as `SIGINT`, so the read ends and the prompt comes back, with `$?` unchanged.
 
 ### Signals (`sched/signal.c`, `sys/signals.c`)
 
@@ -927,7 +948,7 @@ it itself, on its own stack, on its way back to ring 3. Linux numbers (`uapi/mih
 - **`signal_send(p, signal)`** drops the signal for an exited process (`p->thread` is gone;
   `state` is set under `p->lock`), for init without a handler for it (its exit panics) and, unless
   it is blocked, for anything that would do nothing: `SIG_IGN`, or a default action of nothing
-  (`SIGCHLD`, `SIGCONT`, `SIGURG`, `SIGWINCH`, and the stop signals until C6). A blocked signal
+  (`SIGCHLD`, `SIGCONT`, `SIGURG`, `SIGWINCH`). A blocked signal
   stays, since its action may change. Otherwise it sets the bit and, if unblocked, wakes the
   thread when `thread->interruptible`.
 - **Delivery:** `isr_common` calls `isr_return(ctx)` right after `movq %rax, %rsp`, on the stack
@@ -972,10 +993,19 @@ it itself, on its own stack, on its way back to ring 3. Linux numbers (`uapi/mih
 - **Restart:** `SA_RESTART` makes the kernel do a program's retry loop. `syscall_handler` keeps the
   number in `thread->syscall_number`, since the result overwrites `rax`. When a handler with the flag
   is entered on a return from a system call (the vector, since a tick can land with -4 in `rax`)
-  ending in `-EINTR`, `arch_signal_frame_push` puts the number back in `rax` and takes 2 off `rip`,
-  before saving the frame: after the handler, `int $0x80` simply runs again. Two calls set
+  ending in `-EINTR`, `arch_syscall_restart` puts the number back in `rax` and takes 2 off `rip`,
+  before the frame is saved: after the handler, `int $0x80` simply runs again. Two calls set
   `SYSCALL_NOT_RESTARTABLE`: `pause`, whose purpose is to end at a signal, and `sigreturn`, where
   a restored `-EINTR` and a second signal would otherwise run `sigreturn` again.
+- **Stops:** `SIGSTOP`, `SIGTSTP`, `SIGTTIN` and `SIGTTOU` stop by default (`SIGNAL_STOPS`).
+  `signal_deliver` calls `process_stop`, which marks the process (`stopped`, `stop_signal`,
+  `stop_reported`), wakes the parent's `child_exits`, sends it `SIGCHLD`, and sleeps on
+  `resume_waiters`, uninterruptibly, so no other signal wakes it. Sleeping there is safe: the `int`
+  that switches threads comes from ring 0, so the nested `isr_return` delivers nothing. `signal_send`
+  resumes on `SIGCONT` and `SIGKILL`, before looking at the action, so a blocked or ignored `SIGCONT`
+  still resumes. Anything else stays pending until the process runs. The newest of a stop and a
+  resume wins: `SIGCONT` drops pending stops, a stop drops a pending `SIGCONT`. A stop runs nothing
+  of the program, so `arch_syscall_restart` rewinds the interrupted system call first: no `EINTR`.
 - **`SIGPIPE`:** `pipe_write` sends it to the writer when no reader is left, also after a partial
   write, then returns as before: `EPIPE` for a program that ignores or catches it. **`SIGCHLD`:**
   `process_exit` sends it to the parent under `process_tree_lock`. `process_wait_child` returns
@@ -2809,9 +2839,10 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     the `groups` test (see "Process groups and sessions"). C6b (done): the foreground group, init
     starting commands in their own session, each pipeline in a group, Ctrl+C and Ctrl+\, the
     `terminal` test. Verified by hand too, in the interactive shell: `cat`, a pipeline, the prompt,
-    `exit` and a new shell, a nested `sh`. Next, C6c: stop signals, Ctrl+Z, `fg`, `SIGTTIN` and
-    `SIGTTOU` for background groups. C6d: `termios` with raw mode. C6e: the shell's line editing,
-    arrow keys and history.
+    `exit` and a new shell, a nested `sh`. C6c (done): stop signals, `WUNTRACED`, `WNOHANG`, Ctrl+Z,
+    `SIGTTIN` and `SIGTTOU`, jobs with `fg` and `jobs`, the `stop` test; the shell verified by hand
+    again. Next, C6d: `termios` with raw mode. C6e: the shell's line editing, arrow keys and
+    history.
   - **C7, graduation**: port Lua (needs `fopen`/`fread`, `setjmp`, math); maybe dash.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
 
@@ -3048,7 +3079,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   `#!` scripts, no `ENOEXEC` test. `exec` must stop other threads when threads exist. Stdio buffers die with the old program, as on POSIX.
 - Pipelines: at most `PIPELINE_MAX` (8) commands (bash: no limit), no `pipefail` or `PIPESTATUS`.
   A syntax error does not set `$?` (bash: 2). A failed `dup2` in a stage's child is not checked.
-- Signals: stop signals do nothing until C6c. init takes only signals it has a handler for. Several pending signals: the
+- Signals: init takes only signals it has a handler for. Several pending signals: the
   lowest number wins, so a fault can lose its turn to one below it. No `pthread_kill`; the mask
   and pending set are per process until threads exist. No `sigaltstack`, so a stack overflow
   cannot reach a handler and ends the process. `SIG_IGN` on `SIGCHLD` does not reap children on
@@ -3103,14 +3134,20 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   place that destroys it, so a parent that never waits holds every child's memory (Linux frees
   it at exit and keeps only the small struct). A running thread cannot destroy the space it is
   on, so the reaper is the natural place, once the thread is gone.
-- `wait` has no `WNOHANG`; waking every waiter on any child's exit is fine with one thread per
-  process.
+- `wait` has no `WCONTINUED`; waking every waiter on any child's exit or stop is fine with one
+  thread per process.
+- Stops: no `SA_NOCLDSTOP`. `pause` returns `EINTR` after a stop and a resume, where Linux keeps
+  sleeping: it is not restartable, so that `SA_RESTART` cannot restart it. A stopped process whose
+  parent is gone stays stopped, except the shell's own jobs when it leaves. A process already
+  asleep in `read` is not checked again if its group moves to the background.
+- Shell jobs: no `&`, `bg` or `fg %n`; `fg` takes the last job. No "There are stopped jobs"
+  warning at `exit` (bash has one). "killed by signal" names the whole command as typed.
 - Process groups: orphaned groups are not handled (Linux sends a stopped one `SIGHUP` and
   `SIGCONT`; matters from C6c). `kill(-1)` is tested only with signal 0: a real signal would end
   the test run. `exec_done` is written without `process_tree_lock`, fine on one CPU.
 - Terminal: no `SIGHUP` when a session leader exits, and the rest of its session keeps the
-  terminal until a new leader takes it. No `TIOCNOTTY`. A background group can still read the
-  terminal and set the foreground (`SIGTTIN`, `SIGTTOU`: C6c). `TIOCSTI` takes each byte as a
+  terminal until a new leader takes it. No `TIOCNOTTY`. Background groups may write (`TOSTOP`
+  waits for `termios`, C6d). `TIOCSTI` takes each byte as a
   whole character, so UTF-8 through it comes out wrong. No automatic test of the interactive
   shell: it needs a pseudo-terminal, or a test that runs `/bin/sh` on the console.
 - `spawn` and `exec` copy user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
