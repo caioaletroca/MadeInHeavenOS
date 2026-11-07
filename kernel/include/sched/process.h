@@ -267,4 +267,17 @@ long process_signal_group(uint32_t group, int signal);
  */
 long process_signal_everyone(process_t *caller, int signal);
 
+/**
+ * @param group The group.
+ * @param session The session.
+ * @return true if the group has a member in the session.
+ */
+bool process_group_in_session(uint32_t group, uint32_t session);
+
+/**
+ * @param session The session.
+ * @return true if its leader has not exited.
+ */
+bool process_session_leader_alive(uint32_t session);
+
 #endif // _SCHED_PROCESS_H

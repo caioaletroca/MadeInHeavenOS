@@ -244,6 +244,20 @@ long process_session_get(process_t *caller, uint32_t pid)
     return p->session;
 }
 
+bool process_group_in_session(uint32_t group, uint32_t session)
+{
+    guard(spinlock, &process_tree_lock);
+    return process_group_exists(group, session);
+}
+
+bool process_session_leader_alive(uint32_t session)
+{
+    guard(spinlock, &process_tree_lock);
+
+    process_t *leader = process_lookup(session);
+    return leader != NULL && leader->state != PROCESS_EXITED;
+}
+
 long process_signal_group(uint32_t group, int signal)
 {
     long result = -ESRCH;

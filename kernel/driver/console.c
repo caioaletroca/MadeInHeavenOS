@@ -7,10 +7,14 @@
 #include <sched/thread.h>
 #include <sched/wait.h>
 #include <sched/spinlock.h>
+#include <sched/process.h>
+#include <sched/scheduler.h>
+#include <sched/sync.h>
 #include <mihos/stat.h>
 #include <mihos/fcntl.h>
 #include <mihos/ioctl.h>
 #include <mihos/errno.h>
+#include <mihos/signal.h>
 #include <stdbool.h>
 #include <panic.h>
 
@@ -25,12 +29,19 @@ _Static_assert((CONSOLE_BUFFER_SIZE & (CONSOLE_BUFFER_SIZE - 1)) == 0, "CONSOLE_
 static char buffer[CONSOLE_BUFFER_SIZE];
 
 // read_index and write_index are shared with readers: console_lock.
-// edit_index and [write, edit) belong to the console thread alone.
+// edit_index and [write, edit) belong to whoever holds input_lock.
 static unsigned int read_index;
 static unsigned int write_index;
 static unsigned int edit_index;
 
 static wait_queue_t readers;
+
+// Taken by the console thread for each key and by the ioctls: TIOCSTI types from a system call
+static mutex_t input_lock;
+
+// Protected by input_lock
+static uint32_t console_session;    // the session that owns the terminal, 0 for nobody
+static uint32_t console_foreground; // the group keyboard signals reach, 0 for nobody
 
 static const keymap_t *keymap;
 static bool down[KEY_COUNT];
@@ -124,6 +135,18 @@ static bool console_erase(void)
     return true;
 }
 
+static void console_signal(int signal)
+{
+    scoped_guard(spinlock, &console_lock)
+    {
+        edit_index = write_index;
+        read_index = write_index;
+    }
+
+    if (console_foreground != 0)
+        process_signal_group(console_foreground, signal);
+}
+
 /**
  * Handle a code point input from the keyboard.
  *
@@ -144,8 +167,12 @@ static void console_input(uint32_t codepoint)
             ;
         return;
     case CTRL('C'):
-        edit_index = write_index;
         tty_write("^C\n", 3);
+        console_signal(SIGINT);
+        return;
+    case CTRL('\\'):
+        tty_write("^\\\n", 3);
+        console_signal(SIGQUIT);
         return;
     case '\n':
         if (console_store("\n", 1, true))
@@ -235,7 +262,7 @@ static void console_key(input_event_t event)
     }
 
     // Before composing, so Ctrl+C with a pending accent still cancels
-    if ((down[KEY_LEFT_CTRL] || down[KEY_RIGHT_CTRL]) && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')))
+    if ((down[KEY_LEFT_CTRL] || down[KEY_RIGHT_CTRL]) && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '\\'))
         c = CTRL(c);
 
     if (pending_accent != 0)
@@ -269,7 +296,12 @@ static void console_thread(void *arg)
     (void)arg;
 
     for (;;)
-        console_key(input_get_event());
+    {
+        input_event_t event = input_get_event();
+
+        guard(mutex, &input_lock);
+        console_key(event);
+    }
 }
 
 /**
@@ -301,6 +333,54 @@ static long console_file_write(file_t *file, const char *buf, size_t n)
 }
 
 /**
+ * Attempt to take control of the console session for the given process.
+ *
+ * @param p The process attempting to take the console session.
+ * @return 0 on success, or a negative error code on failure.
+ */
+static long console_session_take(process_t *p)
+{
+    uint32_t session = (uint32_t)process_session_get(p, 0);
+
+    if (session != p->pid)
+        return -EPERM;
+
+    if (console_session == session)
+        return 0;
+
+    if (console_session != 0 && process_session_leader_alive(console_session))
+        return -EPERM;
+
+    console_session = session;
+    console_foreground = (uint32_t)process_group_get(p, 0);
+    return 0;
+}
+
+/**
+ * Set the foreground process group for the console session.
+ *
+ * @param p The process attempting to set the foreground group.
+ * @param group The process group ID to set as the foreground.
+ * @return 0 on success, or a negative error code on failure.
+ */
+static long console_foreground_set(process_t *p, int32_t group)
+{
+    uint32_t session = (uint32_t)process_session_get(p, 0);
+
+    if (session != console_session)
+        return -ENOTTY;
+
+    if (group <= 0)
+        return -EINVAL;
+
+    if (!process_group_in_session((uint32_t)group, session))
+        return -EPERM;
+
+    console_foreground = (uint32_t)group;
+    return 0;
+}
+
+/**
  * Handles ioctl requests for the console device.
  *
  * @param file The file representing the console device.
@@ -311,6 +391,11 @@ static long console_file_write(file_t *file, const char *buf, size_t n)
 static long console_file_ioctl(file_t *file, unsigned long request, void *arg)
 {
     (void)file;
+
+    process_t *p = scheduler_current()->process;
+    uint32_t session = (uint32_t)process_session_get(p, 0);
+
+    guard(mutex, &input_lock);
 
     switch (request)
     {
@@ -324,6 +409,20 @@ static long console_file_ioctl(file_t *file, unsigned long request, void *arg)
         }
         return 0;
     }
+    case MIHOS_TIOCSCTTY:
+        return console_session_take(p);
+    case MIHOS_TIOCGPGRP:
+        if (session != console_session)
+            return -ENOTTY;
+        *(int32_t *)arg = (int32_t)console_foreground;
+        return 0;
+    case MIHOS_TIOCSPGRP:
+        return console_foreground_set(p, *(int32_t *)arg);
+    case MIHOS_TIOCSTI:
+        if (session != console_session)
+            return -EPERM;
+        console_input(*(unsigned char *)arg);
+        return 0;
     default:
         return -ENOTTY;
     }
@@ -343,6 +442,7 @@ void console_init(const keymap_t *map)
 
     keymap = map;
     wait_queue_init(&readers);
+    mutex_init(&input_lock);
 
     if (thread_create(console_thread, NULL) == NULL)
         panic("console: failed to create the console thread\n");

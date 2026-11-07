@@ -29,5 +29,9 @@ struct mihos_winsize
 };
 
 #define MIHOS_TIOCGWINSZ MIHOS_IOR('T', 0x13, struct mihos_winsize) // get the window size
+#define MIHOS_TIOCSCTTY MIHOS_IOC(MIHOS_IOC_NONE, 'T', 0x0E, 0)     // make this terminal the session's
+#define MIHOS_TIOCGPGRP MIHOS_IOR('T', 0x0F, int32_t)               // get the foreground group
+#define MIHOS_TIOCSPGRP MIHOS_IOW('T', 0x10, int32_t)               // set the foreground group
+#define MIHOS_TIOCSTI MIHOS_IOW('T', 0x12, char)                    // push a byte into the input
 
 #endif /* _UAPI_MIHOS_IOCTL_H_ */
