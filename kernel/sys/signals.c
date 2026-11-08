@@ -52,7 +52,7 @@ long sys_sigaction(int signal, uintptr_t action, uintptr_t old)
     if (action != 0 && address_space_read(syscall_space(), action, &incoming, sizeof(incoming)) != 0)
         return -EFAULT;
 
-    if (old != 0 && address_space_write(syscall_space(), old, &p->signal_actions[signal], sizeof(struct sigaction)) != 0)
+    if (old != 0 && address_space_write(syscall_space(), old, &p->signals.actions[signal], sizeof(struct sigaction)) != 0)
         return -EFAULT;
 
     if (action != 0)
@@ -67,7 +67,7 @@ long sys_sigaction(int signal, uintptr_t action, uintptr_t old)
 long sys_sigprocmask(int how, uintptr_t set, uintptr_t old)
 {
     process_t *p = scheduler_current()->process;
-    sigset_t blocked = p->signals_blocked;
+    sigset_t blocked = p->signals.blocked;
 
     if (set != 0)
     {
@@ -93,12 +93,12 @@ long sys_sigprocmask(int how, uintptr_t set, uintptr_t old)
 
     if (old != 0)
     {
-        sigset_t current = p->signals_blocked;
+        sigset_t current = p->signals.blocked;
         if (address_space_write(syscall_space(), old, &current, sizeof(current)) != 0)
             return -EFAULT;
     }
 
-    p->signals_blocked = blocked & ~SIGNAL_UNBLOCKABLE;
+    p->signals.blocked = blocked & ~SIGNAL_UNBLOCKABLE;
     return 0;
 }
 
@@ -126,7 +126,7 @@ long sys_sigreturn(void)
         return 0;
     }
 
-    p->signals_blocked = blocked & ~SIGNAL_UNBLOCKABLE;
+    p->signals.blocked = blocked & ~SIGNAL_UNBLOCKABLE;
     return result;
 }
 
@@ -136,7 +136,7 @@ long sys_sigreturn(void)
 long sys_sigpending(uintptr_t set)
 {
     process_t *p = scheduler_current()->process;
-    sigset_t waiting = p->signals_pending & p->signals_blocked;
+    sigset_t waiting = p->signals.pending & p->signals.blocked;
 
     if (address_space_write(syscall_space(), set, &waiting, sizeof(waiting)) != 0)
         return -EFAULT;

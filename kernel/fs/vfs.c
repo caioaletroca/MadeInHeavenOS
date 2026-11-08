@@ -164,8 +164,8 @@ static vfs_node_t *vfs_lookup_start(const char *path)
     vfs_node_t *start = vfs_root;
 
     thread_t *thread = scheduler_current();
-    if (path[0] != '/' && thread != NULL && thread->process != NULL && thread->process->cwd != NULL)
-        start = thread->process->cwd;
+    if (path[0] != '/' && thread != NULL && thread->process != NULL && thread->process->files.cwd != NULL)
+        start = thread->process->files.cwd;
 
     vfs_node_get(start);
     return start;

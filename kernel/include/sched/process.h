@@ -21,40 +21,72 @@ typedef enum
 } process_state_t;
 
 /**
+ * Where a process sits among the others: its family, group and session.
+ * Protected by process_tree_lock, except exec_done.
+ */
+typedef struct
+{
+    struct process *parent; // NULL for processes the kernel started; init for orphans
+    list_t children;        // spawned or adopted, not yet waited for; one reference each
+    list_t sibling;         // link in parent->tree.children
+    list_t all_link;        // link in the list of all processes
+    uint32_t group;         // process group: the pid of its first member
+    uint32_t session;       // session: the pid of its leader
+    bool exec_done;         // ran exec: its parent may no longer move it to another group
+} process_tree_t;
+
+/**
+ * A process stopped by SIGSTOP, SIGTSTP, SIGTTIN or SIGTTOU.
+ */
+typedef struct
+{
+    bool stopped;                // asleep on resume_waiters until SIGCONT or SIGKILL. Protected by lock.
+    bool reported;               // wait already told the parent about this stop
+    int signal;                  // the signal that stopped it
+    wait_queue_t resume_waiters; // a stopped process sleeps here
+} process_stop_t;
+
+/**
+ * Signals sent to the process and what it does with each. Protected by lock.
+ */
+typedef struct
+{
+    uint32_t pending;                // one bit per signal sent and not yet acted on
+    uint32_t blocked;                // waits in pending while set here
+    struct sigaction actions[NSIG];  // zeroed: every signal starts as SIG_DFL
+} process_signals_t;
+
+/**
+ * The process's open files and current directory.
+ */
+typedef struct
+{
+    struct file *open[PROCESS_MAX_FILES]; // indexed by fd
+    uint32_t close_on_exec;               // bit n: close fd n at exec. Only meaningful for an open fd
+    struct vfs_node *cwd;                 // where relative paths start (one reference); NULL: the root
+} process_files_t;
+
+/**
  * Represents a process in the system.
  */
 typedef struct process
 {
     uint32_t pid;
-    process_state_t state;
-    int exit_status;
-    int signal; // signal that killed it, 0 if it exited (set before EXITED)
     unsigned int refs;
+    spinlock_t lock;
     struct address_space *space;
     struct thread *thread;
-    struct process *parent;                // NULL for processes the kernel started; init for orphans. Protected by process_tree_lock.
-    list_t children;                       // spawned or adopted, not yet waited for; one reference each. Protected by process_tree_lock.
-    list_t sibling;                        // link in parent->children. Protected by process_tree_lock.
-    list_t all_link;                       // link in the list of all processes. Protected by process_tree_lock.
-    uint32_t group;                        // process group: the pid of its first member. Protected by process_tree_lock.
-    uint32_t session;                      // session: the pid of its leader. Protected by process_tree_lock.
-    bool exec_done;                        // ran exec: its parent may no longer move it to another group
-    bool stopped;                          // asleep on resume_waiters until SIGCONT or SIGKILL. Protected by lock.
-    bool stop_reported;                    // wait already told the parent about this stop
-    int stop_signal;                       // the signal that stopped it
-    wait_queue_t resume_waiters;           // a stopped process sleeps here
-    uint32_t signals_pending;              // one bit per signal sent and not yet acted on. Protected by lock.
-    uint32_t signals_blocked;              // waits in signals_pending while set here. Protected by lock.
-    struct sigaction signal_actions[NSIG]; // zeroed: every signal starts as SIG_DFL. Protected by lock.
 
-    wait_queue_t waiters;
+    process_state_t state;
+    int exit_status;
+    int killed_by;            // the signal that killed it, 0 if it exited (set before EXITED)
+    wait_queue_t waiters;     // process_wait sleeps here until it exits
     wait_queue_t child_exits; // the parent sleeps here in wait; every child's exit or stop wakes it
 
-    struct file *files[PROCESS_MAX_FILES];
-    uint32_t close_on_exec; // bit n: close fd n at exec. Only meaningful for an open fd
-    struct vfs_node *cwd;   // the current directory, where relative paths start (one reference); NULL: the root
-
-    spinlock_t lock;
+    process_tree_t tree;
+    process_stop_t stop;
+    process_signals_t signals;
+    process_files_t files;
 } process_t;
 
 /**

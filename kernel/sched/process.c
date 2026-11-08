@@ -50,10 +50,10 @@ static void process_close_files(process_t *p)
 
     for (int i = 0; i < PROCESS_MAX_FILES; i++)
     {
-        if (p->files[i] != NULL)
+        if (p->files.open[i] != NULL)
         {
-            file_put(p->files[i]);
-            p->files[i] = NULL;
+            file_put(p->files.open[i]);
+            p->files.open[i] = NULL;
         }
     }
 }
@@ -65,10 +65,10 @@ static void process_close_files(process_t *p)
  */
 static void process_cwd_put(process_t *p)
 {
-    if (p->cwd != NULL)
+    if (p->files.cwd != NULL)
     {
-        vfs_node_put(p->cwd);
-        p->cwd = NULL;
+        vfs_node_put(p->files.cwd);
+        p->files.cwd = NULL;
     }
 }
 
@@ -81,23 +81,23 @@ process_t *process_create(address_space_t *space)
     p->pid = process_alloc_pid();
     p->state = PROCESS_RUNNING;
     p->exit_status = 0;
-    p->signal = 0;
+    p->killed_by = 0;
     p->refs = 1;
     p->space = space;
-    p->parent = NULL;
-    p->group = p->pid;
-    p->session = p->pid;
-    list_init(&p->children);
-    list_init(&p->sibling);
+    p->tree.parent = NULL;
+    p->tree.group = p->pid;
+    p->tree.session = p->pid;
+    list_init(&p->tree.children);
+    list_init(&p->tree.sibling);
     wait_queue_init(&p->waiters);
     wait_queue_init(&p->child_exits);
-    wait_queue_init(&p->resume_waiters);
+    wait_queue_init(&p->stop.resume_waiters);
     spinlock_init(&p->lock);
 
-    list_init(&p->all_link);
+    list_init(&p->tree.all_link);
     scoped_guard(spinlock, &process_tree_lock)
     {
-        list_insert_before(&all_processes, &p->all_link);
+        list_insert_before(&all_processes, &p->tree.all_link);
     }
 
     return p;
@@ -109,8 +109,8 @@ process_t *process_create_init(address_space_t *space)
     if (p != NULL)
     {
         p->pid = PROCESS_INIT_PID;
-        p->group = PROCESS_INIT_PID;
-        p->session = PROCESS_INIT_PID;
+        p->tree.group = PROCESS_INIT_PID;
+        p->tree.session = PROCESS_INIT_PID;
         init_process = p;
     }
 
@@ -128,7 +128,7 @@ static process_t *process_lookup(uint32_t pid)
     list_t *pos;
     list_for_each(pos, &all_processes)
     {
-        process_t *p = list_container(pos, process_t, all_link);
+        process_t *p = list_container(pos, process_t, tree.all_link);
         if (p->pid == pid)
             return p;
     }
@@ -167,8 +167,8 @@ static bool process_group_exists(uint32_t group, uint32_t session)
     list_t *pos;
     list_for_each(pos, &all_processes)
     {
-        process_t *p = list_container(pos, process_t, all_link);
-        if (p->group == group && p->session == session)
+        process_t *p = list_container(pos, process_t, tree.all_link);
+        if (p->tree.group == group && p->tree.session == session)
             return true;
     }
 
@@ -178,8 +178,8 @@ static bool process_group_exists(uint32_t group, uint32_t session)
 void process_group_inherit(process_t *child, process_t *parent)
 {
     guard(spinlock, &process_tree_lock);
-    child->group = parent->group;
-    child->session = parent->session;
+    child->tree.group = parent->tree.group;
+    child->tree.session = parent->tree.session;
 }
 
 long process_group_set(process_t *caller, uint32_t pid, uint32_t group)
@@ -189,28 +189,28 @@ long process_group_set(process_t *caller, uint32_t pid, uint32_t group)
     process_t *target = pid == 0 ? caller : process_lookup(pid);
 
     // Only yourself or your own child
-    if (target == NULL || (target != caller && target->parent != caller))
+    if (target == NULL || (target != caller && target->tree.parent != caller))
         return -ESRCH;
 
-    if (target->session != caller->session)
+    if (target->tree.session != caller->tree.session)
         return -EPERM;
 
     // A running program cannot have its group changed under it
-    if (target != caller && target->exec_done)
+    if (target != caller && target->tree.exec_done)
         return -EACCES;
 
     // A leader stays in its own group: the session's name depends on it
-    if (target->pid == target->session)
+    if (target->pid == target->tree.session)
         return -EPERM;
 
     if (group == 0)
         group = target->pid;
 
     // Joining needs an existing group of this session; only its own name can be new
-    if (group != target->pid && !process_group_exists(group, caller->session))
+    if (group != target->pid && !process_group_exists(group, caller->tree.session))
         return -EPERM;
 
-    target->group = group;
+    target->tree.group = group;
     return 0;
 }
 
@@ -222,18 +222,18 @@ long process_group_get(process_t *caller, uint32_t pid)
     if (p == NULL)
         return -ESRCH;
 
-    return p->group;
+    return p->tree.group;
 }
 
 long process_session_create(process_t *p)
 {
     guard(spinlock, &process_tree_lock);
 
-    if (process_group_exists(p->pid, p->session))
+    if (process_group_exists(p->pid, p->tree.session))
         return -EPERM;
 
-    p->session = p->pid;
-    p->group = p->pid;
+    p->tree.session = p->pid;
+    p->tree.group = p->pid;
     return p->pid;
 }
 
@@ -245,7 +245,7 @@ long process_session_get(process_t *caller, uint32_t pid)
     if (p == NULL)
         return -ESRCH;
 
-    return p->session;
+    return p->tree.session;
 }
 
 bool process_group_in_session(uint32_t group, uint32_t session)
@@ -271,8 +271,8 @@ long process_signal_group(uint32_t group, int signal)
     list_t *pos;
     list_for_each(pos, &all_processes)
     {
-        process_t *p = list_container(pos, process_t, all_link);
-        if (p->group != group)
+        process_t *p = list_container(pos, process_t, tree.all_link);
+        if (p->tree.group != group)
             continue;
 
         result = 0;
@@ -292,7 +292,7 @@ long process_signal_everyone(process_t *caller, int signal)
     list_t *pos;
     list_for_each(pos, &all_processes)
     {
-        process_t *p = list_container(pos, process_t, all_link);
+        process_t *p = list_container(pos, process_t, tree.all_link);
         if (p == caller || p->pid == PROCESS_INIT_PID)
             continue;
 
@@ -311,10 +311,10 @@ int process_fd_install(process_t *p, file_t *file)
 
     for (int i = 0; i < PROCESS_MAX_FILES; i++)
     {
-        if (p->files[i] == NULL)
+        if (p->files.open[i] == NULL)
         {
-            p->files[i] = file;
-            p->close_on_exec &= ~(1u << i);
+            p->files.open[i] = file;
+            p->files.close_on_exec &= ~(1u << i);
             return i;
         }
     }
@@ -365,24 +365,24 @@ int process_start_fork(process_t *p, thread_t *parent)
 void process_files_inherit(process_t *child, process_t *parent)
 {
     for (int fd = 0; fd < PROCESS_MAX_FILES; fd++)
-        if (parent->files[fd] != NULL)
-            child->files[fd] = file_get(parent->files[fd]);
+        if (parent->files.open[fd] != NULL)
+            child->files.open[fd] = file_get(parent->files.open[fd]);
 
-    child->close_on_exec = parent->close_on_exec;
+    child->files.close_on_exec = parent->files.close_on_exec;
 }
 
 void process_files_close_on_exec(process_t *p)
 {
     for (int fd = 0; fd < PROCESS_MAX_FILES; fd++)
     {
-        if ((p->close_on_exec & (1u << fd)) != 0 && p->files[fd] != NULL)
+        if ((p->files.close_on_exec & (1u << fd)) != 0 && p->files.open[fd] != NULL)
         {
-            file_put(p->files[fd]);
-            p->files[fd] = NULL;
+            file_put(p->files.open[fd]);
+            p->files.open[fd] = NULL;
         }
     }
 
-    p->close_on_exec = 0;
+    p->files.close_on_exec = 0;
 }
 
 void process_exec(address_space_t *space, uintptr_t entry, uintptr_t user_stack)
@@ -399,7 +399,7 @@ void process_exec(address_space_t *space, uintptr_t entry, uintptr_t user_stack)
     address_space_destroy(old);
 
     process_files_close_on_exec(p);
-    p->exec_done = true;
+    p->tree.exec_done = true;
     signal_exec_reset(p);
 
     // A trap from ring 3 starts at the top of the kernel stack, so this
@@ -409,15 +409,15 @@ void process_exec(address_space_t *space, uintptr_t entry, uintptr_t user_stack)
 
 void process_cwd_inherit(process_t *child, process_t *parent)
 {
-    child->cwd = parent->cwd;
-    if (child->cwd != NULL)
-        vfs_node_get(child->cwd);
+    child->files.cwd = parent->files.cwd;
+    if (child->files.cwd != NULL)
+        vfs_node_get(child->files.cwd);
 }
 
 void process_cwd_set(process_t *p, vfs_node_t *dir)
 {
-    vfs_node_t *old = p->cwd;
-    p->cwd = dir;
+    vfs_node_t *old = p->files.cwd;
+    p->files.cwd = dir;
     if (old != NULL)
         vfs_node_put(old);
 }
@@ -426,8 +426,8 @@ void process_child_add(process_t *parent, process_t *child)
 {
     scoped_guard(spinlock, &process_tree_lock)
     {
-        list_insert_before(&parent->children, &child->sibling);
-        child->parent = parent;
+        list_insert_before(&parent->tree.children, &child->tree.sibling);
+        child->tree.parent = parent;
     }
 }
 
@@ -435,8 +435,8 @@ void process_child_remove(process_t *child)
 {
     scoped_guard(spinlock, &process_tree_lock)
     {
-        list_remove(&child->sibling);
-        child->parent = NULL;
+        list_remove(&child->tree.sibling);
+        child->tree.parent = NULL;
     }
 }
 
@@ -455,8 +455,8 @@ static bool process_wait_matches(process_t *parent, process_t *child, long pid)
     if (pid > 0)
         return (long)child->pid == pid;
 
-    uint32_t group = pid == 0 ? parent->group : (uint32_t)-pid;
-    return child->group == group;
+    uint32_t group = pid == 0 ? parent->tree.group : (uint32_t)-pid;
+    return child->tree.group == group;
 }
 
 long process_wait_child(process_t *parent, long pid, int options, process_t **out, int *stop_status)
@@ -469,9 +469,9 @@ long process_wait_child(process_t *parent, long pid, int options, process_t **ou
             bool found = false;
 
             list_t *pos;
-            list_for_each(pos, &parent->children)
+            list_for_each(pos, &parent->tree.children)
             {
-                process_t *p = list_container(pos, process_t, sibling);
+                process_t *p = list_container(pos, process_t, tree.sibling);
                 if (!process_wait_matches(parent, p, pid))
                     continue;
 
@@ -479,17 +479,17 @@ long process_wait_child(process_t *parent, long pid, int options, process_t **ou
 
                 if (p->state == PROCESS_EXITED)
                 {
-                    list_remove(&p->sibling);
-                    list_remove(&p->all_link);
-                    p->parent = NULL;
+                    list_remove(&p->tree.sibling);
+                    list_remove(&p->tree.all_link);
+                    p->tree.parent = NULL;
                     *out = p;
                     return p->pid;
                 }
 
-                if ((options & WUNTRACED) != 0 && p->stopped && !p->stop_reported)
+                if ((options & WUNTRACED) != 0 && p->stop.stopped && !p->stop.reported)
                 {
-                    p->stop_reported = true;
-                    *stop_status = (p->stop_signal << 8) | WAIT_STATUS_STOPPED;
+                    p->stop.reported = true;
+                    *stop_status = (p->stop.signal << 8) | WAIT_STATUS_STOPPED;
                     return p->pid;
                 }
             }
@@ -516,7 +516,7 @@ uint32_t process_parent_pid(process_t *p)
 {
     scoped_guard(spinlock, &process_tree_lock)
     {
-        return p->parent ? p->parent->pid : 0;
+        return p->tree.parent ? p->tree.parent->pid : 0;
     }
 
     return 0; // Unreachable, but required to satisfy the compiler
@@ -538,10 +538,10 @@ __attribute__((noreturn)) void process_exit(int status)
     scoped_guard(spinlock, &process_tree_lock)
     {
         // The parent may be asleep in wait for this child (or any child)
-        if (current->parent != NULL)
+        if (current->tree.parent != NULL)
         {
-            wait_queue_wake_all(&current->parent->child_exits);
-            signal_send(current->parent, SIGCHLD);
+            wait_queue_wake_all(&current->tree.parent->child_exits);
+            signal_send(current->tree.parent, SIGCHLD);
         }
 
         // Remaining children go to init with their reference; init reaps them with wait(-1).
@@ -550,22 +550,22 @@ __attribute__((noreturn)) void process_exit(int status)
         process_t *adopter = (init_process != NULL && current != init_process) ? init_process : NULL;
         bool wake_adopter = false;
 
-        list_for_each_safe(pos, next, &current->children)
+        list_for_each_safe(pos, next, &current->tree.children)
         {
-            process_t *child = list_container(pos, process_t, sibling);
-            list_remove(&child->sibling);
+            process_t *child = list_container(pos, process_t, tree.sibling);
+            list_remove(&child->tree.sibling);
             if (adopter != NULL)
             {
-                child->parent = adopter;
-                list_insert_before(&adopter->children, &child->sibling);
+                child->tree.parent = adopter;
+                list_insert_before(&adopter->tree.children, &child->tree.sibling);
                 // A zombie already exited: no later exit will wake init for it
                 if (child->state == PROCESS_EXITED)
                     wake_adopter = true;
             }
             else
             {
-                child->parent = NULL;
-                list_insert_before(&orphans, &child->sibling);
+                child->tree.parent = NULL;
+                list_insert_before(&orphans, &child->tree.sibling);
             }
         }
 
@@ -582,7 +582,7 @@ __attribute__((noreturn)) void process_exit(int status)
     // Dropped children: release our reference after the lock; each is freed once it exits too
     list_for_each_safe(pos, next, &orphans)
     {
-        process_t *child = list_container(pos, process_t, sibling);
+        process_t *child = list_container(pos, process_t, tree.sibling);
         process_release(child);
     }
 
@@ -592,7 +592,7 @@ __attribute__((noreturn)) void process_exit(int status)
 __attribute__((noreturn)) void process_exit_signal(int signal)
 {
     process_t *current = scheduler_current()->process;
-    current->signal = signal;
+    current->killed_by = signal;
     process_exit(SIGNAL_EXIT_STATUS(signal));
 }
 
@@ -604,21 +604,21 @@ void process_stop(int signal)
     {
         scoped_guard(spinlock, &current->lock)
         {
-            current->stopped = true;
-            current->stop_reported = false;
-            current->stop_signal = signal;
+            current->stop.stopped = true;
+            current->stop.reported = false;
+            current->stop.signal = signal;
         }
 
-        if (current->parent != NULL)
+        if (current->tree.parent != NULL)
         {
-            wait_queue_wake_all(&current->parent->child_exits);
-            signal_send(current->parent, SIGCHLD);
+            wait_queue_wake_all(&current->tree.parent->child_exits);
+            signal_send(current->tree.parent, SIGCHLD);
         }
     }
 
     guard(spinlock, &current->lock);
-    while (current->stopped)
-        wait_queue_sleep_locked(&current->resume_waiters, &current->lock);
+    while (current->stop.stopped)
+        wait_queue_sleep_locked(&current->stop.resume_waiters, &current->lock);
 }
 
 int process_wait(process_t *p)
@@ -650,7 +650,7 @@ void process_release(process_t *p)
             last = (--p->refs == 0);
         }
         if (last)
-            list_remove(&p->all_link);
+            list_remove(&p->tree.all_link);
     }
 
     if (last)

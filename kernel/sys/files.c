@@ -14,7 +14,7 @@
 file_t *sys_file(unsigned long fd)
 {
     process_t *p = scheduler_current()->process;
-    return fd < PROCESS_MAX_FILES ? p->files[fd] : NULL;
+    return fd < PROCESS_MAX_FILES ? p->files.open[fd] : NULL;
 }
 
 /**
@@ -86,7 +86,7 @@ long sys_close(unsigned long fd)
     if (file == NULL)
         return -EBADF;
 
-    p->files[fd] = NULL;
+    p->files.open[fd] = NULL;
     file_put(file);
     return 0;
 }
@@ -123,9 +123,9 @@ long sys_dup2(unsigned long oldfd, unsigned long newfd)
     if (oldfd == newfd)
         return (long)newfd;
 
-    file_t *old = p->files[newfd];
-    p->files[newfd] = file_get(file);
-    p->close_on_exec &= ~(1u << newfd);
+    file_t *old = p->files.open[newfd];
+    p->files.open[newfd] = file_get(file);
+    p->files.close_on_exec &= ~(1u << newfd);
     if (old != NULL)
         file_put(old);
 
@@ -359,12 +359,12 @@ long sys_fcntl(unsigned long fd, int command, long arg)
     switch (command)
     {
     case F_GETFD:
-        return (p->close_on_exec & bit) != 0 ? FD_CLOEXEC : 0;
+        return (p->files.close_on_exec & bit) != 0 ? FD_CLOEXEC : 0;
     case F_SETFD:
         if (arg & FD_CLOEXEC)
-            p->close_on_exec |= bit;
+            p->files.close_on_exec |= bit;
         else
-            p->close_on_exec &= ~bit;
+            p->files.close_on_exec &= ~bit;
         return 0;
     default:
         return -EINVAL;

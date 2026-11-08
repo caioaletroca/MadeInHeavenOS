@@ -149,7 +149,7 @@ long sys_spawn(uintptr_t path, uintptr_t argv, uintptr_t envp)
     // spawn is a fork and an exec in one
     process_files_close_on_exec(child);
     signal_exec_reset(child);
-    child->exec_done = true;
+    child->tree.exec_done = true;
 
     if (process_start(child, entry, stack) < 0)
     {
@@ -218,7 +218,7 @@ long sys_exec(uintptr_t path, uintptr_t argv, uintptr_t envp)
  */
 static int wait_status_encode(const process_t *p)
 {
-    return p->signal != 0 ? p->signal : (p->exit_status & 0xFF) << 8;
+    return p->killed_by != 0 ? p->killed_by : (p->exit_status & 0xFF) << 8;
 }
 
 /**
