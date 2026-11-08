@@ -86,6 +86,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+0d72a6a refactor(sched): group process_t fields by what they belong to
+4e49c8f docs(architecture): document user libraries and line editing in handoff
 bcd6df7 test: cover line editing, the history and memmove
 827463a feat(sh): edit lines with arrows, Home, End and history
 727f60b feat(lib): add a line editing library with history
@@ -818,9 +820,16 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
      refs = 1 (handle)                                          refs++ (thread), then the thread runs
 ```
 
-- `process_t`: pid, state (`RUNNING`/`EXITED`), `exit_status`, `signal`, `refs`, `space`, `thread`
-  (one per process), `parent`, `children`/`sibling`, `waiters`, `child_exits`, `files[16]`,
-  `cwd`. Allocated with `kzalloc`.
+- `process_t`: `pid`, `refs`, `lock`, `space`, `thread` (one per process), `state`
+  (`RUNNING`/`EXITED`), `exit_status`, `killed_by` (the signal that killed it, 0 if it exited),
+  `waiters`, `child_exits`, and four groups embedded by value (one struct each, no pointer):
+  `tree` (`process_tree_t`: `parent`, `children`, `sibling`, `all_link`, `group`, `session`,
+  `exec_done`; under `process_tree_lock`), `stop` (`process_stop_t`: `stopped`, `reported`,
+  `signal`, `resume_waiters`), `signals` (`process_signals_t`: `pending`, `blocked`,
+  `actions[NSIG]`; under `lock`) and `files` (`process_files_t`: `open[16]`, `close_on_exec`,
+  `cwd`). So `p->tree.parent`, `p->signals.blocked`, `p->files.open[fd]`, and
+  `list_container(pos, process_t, tree.sibling)`. The text below names fields without their
+  group. Allocated with `kzalloc`.
 - **Current directory:** `cwd` is a `vfs_node_t` with one reference, NULL meaning the root (so
   kernel-started processes and init need nothing set). `process_cwd_inherit` (spawn, next to
   `process_files_inherit`) gets the parent's; `process_cwd_set` installs the new directory
@@ -2876,8 +2885,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     the keys with no character as escape sequences, the `termios` test. C6e (done): user
     libraries (`user/lib/`), the `ring` and `line` libraries, the shell's prompt through
     `line_read`, `memmove` fixed, the `editing`, `history` and `string` tests; verified by hand
-    (`ã` and `õ` show as `a` and `o`: the screen font). C6 is done. Next: save the xmm registers
-    on a switch, which C7 needs.
+    (`ã` and `õ` show as `a` and `o`: the screen font). C6 is done. After it, `process_t`'s fields
+    grouped into `tree`, `stop`, `signals` and `files` (no behaviour change). Next: save the xmm
+    registers on a switch, which C7 needs.
   - **C7, graduation**: port Lua (needs `fopen`/`fread`, `setjmp`, math); maybe dash.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
 
