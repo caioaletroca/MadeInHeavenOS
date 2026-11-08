@@ -2905,8 +2905,19 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     (`ã` and `õ` show as `a` and `o`: the screen font). C6 is done. After it, `process_t`'s fields
     grouped into `tree`, `stop`, `signals` and `files` (no behaviour change), and the vector
     registers saved on a switch, at fork, exec and in the signal frame (the `vectors` test).
-    Next: C7.
-  - **C7, graduation**: port Lua (needs `fopen`/`fread`, `setjmp`, math); maybe dash.
+    Next: C7a.
+  - **C7, time and files** (reshaped: Lua would have needed a full `<math.h>`, exact float
+    printing and parsing and locales, not worth writing before mlibc; it is now mlibc's first
+    port at phase D, through `ports/lua/` with a pinned, hashed tarball):
+    - **C7a, time:** read the CMOS real-time clock at boot; a wall clock and a monotonic clock
+      (since boot) advanced by the timer; `clock_gettime` and `nanosleep` syscalls (mlibc's
+      sysdeps need them); ext2 timestamps (new inodes take the parent's `mtime`, `dtime` comes
+      from `s_wtime`, writes leave `mtime`, `stat` reports `mtime` three times); libc `time`,
+      `clock_gettime`, `clock`, `gmtime`, `strftime` (UTC only). The first prerequisite of
+      packages too (see the roadmap's "Packages": TLS checks dates).
+    - **C7b, files in stdio:** `fopen`, `fclose`, `fread`, `fwrite`, `fseek`/`ftell`,
+      `setvbuf`, streams in a list (`__stdio_head` stops being `const`); maybe
+      `setjmp`/`longjmp`. Ours until mlibc replaces it.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
 
 ### User libraries (`user/lib/`)

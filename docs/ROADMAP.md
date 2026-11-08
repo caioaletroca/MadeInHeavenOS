@@ -15,6 +15,7 @@ rebuilt for it. Concretely, in rough order:
 - a framebuffer GUI with windows, written in C++
 - modern runtimes: QuickJS first, Node.js as the final boss
 - installation onto a hard drive, real hardware
+- installing software with a package manager, from packages published on GitHub (see "Packages")
 
 ## Where the line is
 
@@ -75,7 +76,10 @@ revisiting the microkernel question once user space existed).
 
 1. **Phases A–C: our own libc.** The point is to learn how stdio, `malloc` and process startup work.
    It grows with each phase (stdio and `malloc` now, files in B, the process model in C).
-   **Graduation test:** Lua (pure ISO C) builds and runs, then QuickJS.
+   It ends with phase C's own needs: a clock and the time functions, files in stdio. A full
+   `<math.h>`, exact float printing and parsing and locales are not worth writing ourselves:
+   they wait for mlibc. So Lua is not our libc's graduation test but mlibc's first port
+   (decided at C7).
 2. **Start of phase D: switch to mlibc**, a portable libc made for hobby OSes. We write its *sysdeps*
    (`sys_open`, `sys_read`, `sys_vm_map`, … on top of our syscalls; our numbering stays). This is
    also a **toolchain milestone**: GCC's `x86_64-mihos` target is rebuilt against mlibc and gains
@@ -100,14 +104,53 @@ badly is a reason to move the switch earlier.
 |---|---|---|---|
 | **A** | Programs that do things | libc stdio + `malloc`/`brk`, more stack pages, spawn/exec + wait, `argv`/`envp` | `init` and a first shell with builtins |
 | **B** | Files | VFS (inodes, path lookup, mounts), **initramfs** (tar from GRUB), `/dev`, block driver (AHCI or virtio-blk), GPT, **ext2 → ext4** | programs by path, persistent storage |
-| **C** | POSIX process model | `fork` (copy-on-write), `execve`, `waitpid`, signals, pipes, `dup2`, ~~`chdir`~~ (done early, with `getcwd` and the shell's `cd`), TTY/termios (raw mode), process groups | real shells (dash), busybox, editors; **Lua** as the libc test |
-| **D** | Porting platform | **mlibc + toolchain rebuild (libstdc++)**, `mmap`/`mprotect`, pthreads + futex, TLS, clocks, SMP | **self-hosting** GCC/binutils/make, Python, QuickJS |
+| **C** | POSIX process model | `fork` (copy-on-write), `execve`, `waitpid`, signals, pipes, `dup2`, ~~`chdir`~~ (done early, with `getcwd` and the shell's `cd`), TTY/termios (raw mode), process groups | real shells (dash), busybox, editors; a clock and time; files in stdio |
+| **D** | Porting platform | **mlibc + toolchain rebuild (libstdc++)**, `mmap`/`mprotect`, pthreads + futex, TLS, clocks, SMP | **Lua** (the first port, `ports/lua/`), **self-hosting** GCC/binutils/make, Python, QuickJS |
 | **E** | Network | NIC driver (virtio-net/e1000), TCP/IP (own or lwIP), sockets, `poll` | networked software; with D, Node.js |
 | **F** | Graphics | framebuffer (Multiboot2 tag), mouse, user-space compositor/window server (C++), FreeType, GUI toolkit | windows, GUI apps, an IDE inside MiHOS |
 | **G** | Real installation | installer, bootloader on disk, UEFI | MiHOS on real hardware |
 
 Sizing: A–C is the classic hobby-OS arc. D (self-hosting) is the big milestone. Node.js needs D and E
 together (C++17 libstdc++, pthreads, executable `mmap` for V8's JIT, signals, sockets, libuv).
+
+## Packages (end goal)
+
+Installing software the way `apt install` does, with no server of our own: a package repository
+is only static files, and GitHub hosts those for free (Homebrew keeps its built packages there too).
+Designed now so each stage reuses the previous one's format and nothing is thrown away.
+
+**How apt does it:** `sources.list` names repositories (plain web folders). `apt update` fetches
+the index (`Packages.gz`: name, version, dependencies, size, sha256 per package) and `InRelease`,
+which holds the index's hash signed with Debian's key (shipped with apt). `apt install` resolves
+dependencies, downloads each `.deb`, checks its sha256 against the index, unpacks `data.tar` into
+`/` and keeps `control.tar` (metadata, scripts), and records every file it installed
+(`/var/lib/dpkg/info/<name>.list`) so `apt remove` knows what to delete. The trust is a chain:
+key → signed index → hash of each package, so any mirror is safe.
+
+**MiHOS's version:**
+
+| apt | MiHOS |
+|---|---|
+| Debian's build servers | GitHub Actions (free for public repositories), building inside the `mihos-compiler` image |
+| source packages, build recipes | a `mihos/ports` repository (a GitHub organization, free): one recipe per port, `ports/<name>/` grown up |
+| `.deb` | a release asset: `<name>-<version>-<revision>-x86_64.tar.gz`, the files plus a small manifest |
+| `Packages.gz` + `InRelease` | `index.json` (name, version, dependencies, size, sha256, URL), signed with an ed25519 key (minisign style, simpler than GPG); on GitHub Pages or as a release asset |
+| `apt` / `dpkg` | `pkg` (FreeBSD's name): `pkg update`, `pkg install`, `pkg remove`; installed file lists in `/var/lib/pkg/` |
+
+GPL software: the published recipe plus a link to the pinned source tarball provide the source.
+
+**Needed first:** a clock (C7a: TLS refuses a certificate unless "now" is inside its dates); the
+network (phase E: a NIC driver, TCP/IP, DNS); TLS, since GitHub is HTTPS only (ported: BearSSL or
+mbedTLS, plus root certificates); a stable ABI, so a package built today runs after the next
+kernel (phase D's switch to mlibc and frozen syscall numbers).
+
+**Stages:**
+
+1. **Offline, with the first port (Lua, at D):** `ports/lua/` fetches a pinned tarball, checks
+   its sha256, builds a package tarball in the format above, and the image build installs it.
+2. **Published:** the recipes move to `mihos/ports`; GitHub Actions builds and signs the packages
+   and the index.
+3. **Online (after E and TLS):** `pkg` downloads the same tarballs over HTTPS.
 
 ### Debt that blocks later phases
 
@@ -197,7 +240,10 @@ docs/                     # handoff, roadmap
 8. Phase C (the process model) in progress, before phase B's hardware path (PCI, then
    AHCI/NVMe; GPT). Order: C1 `dup`/`dup2`, pipes and the shell's `|` (done), C2 `fork` as a plain copy (done), C3
    `execve` (done, the shell runs on `fork` + `execvp`), C4 copy-on-write and stack growth (done), C5 signals (done), C6 terminal control (process
-   groups, the foreground group, stop signals, termios and the shell's line editing done; vector registers saved), C7 Lua. Steps in `SESSION_HANDOFF.md`.
+   groups, the foreground group, stop signals, termios and the shell's line editing done; vector registers saved), C7 time (C7a: the RTC, a
+   wall and a monotonic clock, `clock_gettime`/`nanosleep`, ext2 timestamps, libc's time
+   functions) and files in stdio (C7b: `fopen` and its family, maybe `setjmp`). Lua moved to
+   phase D as mlibc's first port. Steps in `SESSION_HANDOFF.md`.
 
 ## Reference projects
 
