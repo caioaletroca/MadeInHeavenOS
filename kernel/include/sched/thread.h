@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/list.h>
+#include <asm/fpu.h>
 
 typedef void (*thread_entry_t)(void *arg);
 
@@ -44,12 +45,13 @@ typedef struct thread
     thread_entry_t entry;
     void *arg; // Argument to pass to the thread entry function
     thread_state_t state;
-    uint64_t wake_tick;  // sleeping: the tick to wake at; a timed wait: its deadline
-    bool timed_out;      // a timed wait ended by its deadline, not by a wake (scheduler state)
-    bool interruptible;  // asleep in a sleep that a signal may end
-    long syscall_number; // the last one, or SYSCALL_NOT_RESTARTABLE. Its result overwrites the saved rax
-    struct address_space *space;
-    struct process *process;
+    uint64_t wake_tick;          // sleeping: the tick to wake at; a timed wait: its deadline
+    bool timed_out;              // a timed wait ended by its deadline, not by a wake (scheduler state)
+    bool interruptible;          // asleep in a sleep that a signal may end
+    long syscall_number;         // the last one, or SYSCALL_NOT_RESTARTABLE. Its result overwrites the saved rax
+    struct address_space *space; // The address space this thread belongs to. The thread does not take ownership of it.
+    struct process *process;     // The process this thread belongs to. The thread does not take ownership of it.
+    fpu_state_t fpu;             // user threads: their vector registers while off the CPU
 
     list_t run_link;
     list_t timeout_link; // in the timeout queue during a timed wait; else points at itself

@@ -394,6 +394,10 @@ void process_exec(address_space_t *space, uintptr_t entry, uintptr_t user_stack)
     p->space = space;
     thread->space = space;
 
+    // The new program starts clean, not with the old one's registers
+    fpu_init(&thread->fpu);
+    fpu_restore(&thread->fpu);
+
     // The old space must not be active when it is destroyed
     address_space_activate(space);
     address_space_destroy(old);

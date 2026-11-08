@@ -11,6 +11,7 @@
 #include <mm/address_space.h>
 #include <sys/list.h>
 #include <arch/context.h>
+#include <asm/fpu.h>
 #include <asm/irq_flags.h>
 #include <asm/cpu.h>
 #include <assert.h>
@@ -146,7 +147,18 @@ void *scheduler_on_interrupt(void *context)
     current_thread->context = context;
 
     // Determine the next thread to run.
+    thread_t *previous_thread = current_thread;
     thread_t *next_thread = scheduler_next_thread();
+
+    // The kernel never uses these registers (-mgeneral-regs-only), so they
+    // still hold the last user thread's values: store them with their thread
+    if (next_thread != previous_thread)
+    {
+        if (previous_thread->space != NULL)
+            fpu_save(&previous_thread->fpu);
+        if (next_thread->space != NULL)
+            fpu_restore(&next_thread->fpu);
+    }
 
     // Kernel stack for traps from ring 3, then the thread's address space
     // (kernel threads run on the kernel root). Both are cheap when unchanged.

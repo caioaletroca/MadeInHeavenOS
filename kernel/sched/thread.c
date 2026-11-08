@@ -104,6 +104,7 @@ int thread_init(thread_t *thread, void *stack, size_t stack_size, thread_entry_t
         return -1;
 
     thread_setup(thread, stack, stack_size, context);
+    fpu_init(&thread->fpu);
     thread->entry = entry;
     thread->arg = arg;
 
@@ -169,7 +170,10 @@ thread_t *thread_create_user(process_t *process, uintptr_t entry, uintptr_t user
     void *context = NULL;
 
     if (process != NULL && thread != NULL && stack != NULL)
+    {
+        fpu_init(&thread->fpu);
         context = arch_user_context_init(stack, THREAD_STACK_SIZE, entry, user_stack);
+    }
 
     return thread_user_add(process, thread, stack, context);
 }
@@ -181,7 +185,11 @@ thread_t *thread_create_fork(process_t *process, thread_t *parent)
     void *context = NULL;
 
     if (parent != NULL && thread != NULL && stack != NULL)
+    {
+        // The parent is in its fork call, so the registers are its own right now
+        fpu_save(&thread->fpu);
         context = arch_user_context_fork(stack, THREAD_STACK_SIZE, parent->stack, THREAD_STACK_SIZE);
+    }
 
     return thread_user_add(process, thread, stack, context);
 }

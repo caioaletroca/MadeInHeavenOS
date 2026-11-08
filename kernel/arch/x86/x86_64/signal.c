@@ -1,4 +1,5 @@
 #include <arch/signal.h>
+#include <asm/fpu.h>
 #include <asm/memory.h>
 #include <mm/address_space.h>
 #include <x86/cpu.h>
@@ -20,6 +21,7 @@ typedef struct signal_frame
     uint64_t return_address;
     uint64_t blocked;
     isr_context_t registers;
+    fpu_state_t fpu;
 } signal_frame_t;
 
 /**
@@ -73,6 +75,8 @@ int arch_signal_frame_push(void *stack, size_t stack_size, struct address_space 
         .registers = *context,
     };
 
+    fpu_save(&frame.fpu);
+
     if (address_space_write(space, address, &frame, sizeof(frame)) != 0)
         return -1;
 
@@ -80,6 +84,11 @@ int arch_signal_frame_push(void *stack, size_t stack_size, struct address_space 
     context->rsp = address;
     context->rdi = (uint64_t)signal;
     context->rflags &= ~RFLAGS_DF;
+
+    // The handler starts clean, as on Linux; sigreturn brings these back
+    fpu_state_t clean;
+    fpu_init(&clean);
+    fpu_restore(&clean);
 
     return 0;
 }
@@ -96,10 +105,16 @@ int arch_signal_frame_pop(void *stack, size_t stack_size, struct address_space *
     if (frame.registers.rip >= USER_TOP || frame.registers.rsp >= USER_TOP)
         return -1;
 
+    // The frame is in user memory: a bad MXCSR would make fxrstor fault in the kernel
+    if ((frame.fpu.mxcsr & ~FPU_MXCSR_VALID) != 0)
+        return -1;
+
     frame.registers.cs = context->cs;
     frame.registers.ss = context->ss;
     frame.registers.info = context->info;
     frame.registers.rflags = (frame.registers.rflags & RFLAGS_USER_RESTORED) | RFLAGS_USER_THREAD;
+
+    fpu_restore(&frame.fpu);
 
     *context = frame.registers;
     *blocked = (uint32_t)frame.blocked;
