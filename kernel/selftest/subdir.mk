@@ -1,5 +1,6 @@
 local_sources := \
 block.c \
+clock.c \
 console.c \
 elf.c \
 ext2.c \

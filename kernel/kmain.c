@@ -25,6 +25,7 @@
 #include <init.h>
 
 #include "selftest/block.h"
+#include "selftest/clock.h"
 #include "selftest/console.h"
 #include "selftest/elf.h"
 #include "selftest/ext2.h"
@@ -84,6 +85,7 @@ void kmain(uintptr_t boot_handoff)
     console_open();
     ext2_init(root_device);
 
+    clock_selftest();
     guard_selftest();
     hashtable_selftest();
     mm_selftest();
