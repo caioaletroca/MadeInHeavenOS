@@ -197,7 +197,7 @@ docs/                     # handoff, roadmap
 8. Phase C (the process model) in progress, before phase B's hardware path (PCI, then
    AHCI/NVMe; GPT). Order: C1 `dup`/`dup2`, pipes and the shell's `|` (done), C2 `fork` as a plain copy (done), C3
    `execve` (done, the shell runs on `fork` + `execvp`), C4 copy-on-write and stack growth (done), C5 signals (done), C6 terminal control (process
-   groups, the foreground group, stop signals, termios and the shell's line editing done), C7 Lua. Steps in `SESSION_HANDOFF.md`.
+   groups, the foreground group, stop signals, termios and the shell's line editing done; vector registers saved), C7 Lua. Steps in `SESSION_HANDOFF.md`.
 
 ## Reference projects
 

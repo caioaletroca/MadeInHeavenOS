@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -86,6 +86,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+9229503 test: cover the vector registers across switches, fork, signals and exec
+db4715b feat(sched): save the vector registers of user threads
+c02889f docs(architecture): describe the grouped process_t in handoff
 0d72a6a refactor(sched): group process_t fields by what they belong to
 4e49c8f docs(architecture): document user libraries and line editing in handoff
 bcd6df7 test: cover line editing, the history and memmove
@@ -489,7 +492,8 @@ headers (kernel uapi → sysroot) → libc (libk.a, libc.a, crt0.o) → kernel �
 The kernel includes its uapi headers through `-Iinclude/uapi`; `install-headers` copies only
 `include/uapi/`, so user code and libc see `<mihos/...>` and never kernel internals. Kernel code uses
 `CFLAGS` (`ARCH_CFLAGS`: `-mcmodel=kernel -mno-red-zone -mgeneral-regs-only`: no SSE/x87 in the
-kernel, since a context switch saves only the general registers); ring-3 code (libc.a, `user/`) uses
+kernel, so the vector registers always hold the last user thread's values and are saved only
+when threads switch: see "Vector registers"); ring-3 code (libc.a, `user/`) uses
 `USER_CFLAGS` from `common.mk` (freestanding, no PIE, small code model, no unwind tables).
 C++ (`.cpp` in programs and in `libc/cxx/`) is compiled with `$(CXX)` and `USER_CXXFLAGS`: the
 same shared `USER_COMMON_FLAGS` plus `-std=gnu++20 -fno-exceptions -fno-rtti
@@ -684,6 +688,16 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
 - On every switch `scheduler_on_interrupt` calls `arch_thread_switch` (RSP0 = top of the kernel stack,
   user threads only) and `address_space_activate(next->space)` (kernel threads run on the kernel root,
   so a dead process's root is never active when it is destroyed).
+- **Vector registers** (`asm/fpu.h`): `fpu_state_t` is the 512 bytes `fxsave64` writes (x87,
+  MXCSR, xmm0-xmm15; 16-byte aligned), one per thread in `thread_t.fpu`. The kernel never uses
+  them, so they hold the last user thread's values: when the thread changes,
+  `scheduler_on_interrupt` saves the previous one's (`fpu_save`) and loads the next one's
+  (`fpu_restore`), user threads only (`space != NULL`); kernel threads skip both ways. Eager, as
+  Linux since 2018 (lazy saving through `CR0.TS` leaked values: LazyFP). `fpu_init` is the reset
+  state (x87 control `0x037F`, MXCSR `0x1F80`: every exception masked, so `1.0 / 0.0` is `inf`;
+  all zeros would unmask them): `thread_init`, `thread_create_user`, and `process_exec` (which
+  also loads it). `thread_create_fork` saves the live registers into the child (the parent is
+  in its fork call), before `scheduler_add`. Signals: see "Handlers".
 - **Syscall ABI** (`include/syscall.h`, shared with assembly via `__ASSEMBLER__`): `int $0x80`
   (DPL 3 interrupt gate, IRQs off on entry), `rax` = number, `rdi rsi rdx r10 r8 r9` = arguments,
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
@@ -992,7 +1006,8 @@ it itself, on its own stack, on its way back to ring 3. Linux numbers (`uapi/mih
   (`SYS_SIGRETURN` 34). `signal_deliver` takes the lowest unblocked signal, skips what does
   nothing, exits for a default action, or pushes a frame: below the user `rsp` and the 128-byte
   red zone, aligned as `call` leaves it, holding the return address (the restorer), the mask and
-  the whole `isr_context_t`. Then it sets `rip` to the handler, `rsp` to the frame, `rdi` to the
+  the whole `isr_context_t`, then the vector registers (`fpu_save`, so about 700 bytes). The
+  handler starts with the reset ones (`fpu_init` loaded, as Linux). Then it sets `rip` to the handler, `rsp` to the frame, `rdi` to the
   signal, clears DF, and blocks `sa_mask` plus the signal itself. One frame per return to ring 3;
   the next signal waits for the next way out. A frame that cannot be written ends the process
   with `SIGSEGV`. A handler may nest under a signal it does not block.
@@ -1000,7 +1015,9 @@ it itself, on its own stack, on its way back to ring 3. Linux numbers (`uapi/mih
   The frame is user memory and any program can call this with no signal: `rip` or `rsp` at or past
   `USER_TOP` is refused (`iretq` to a bad `rip` faults in the kernel, which would panic), `cs`, `ss`
   and `info` stay the kernel's, only CF PF AF ZF SF DF OF are taken from the saved flags, and
-  `SIGKILL`/`SIGSTOP` cannot enter the mask. A refused frame is `signal_force(SIGSEGV)`.
+  `SIGKILL`/`SIGSTOP` cannot enter the mask. An MXCSR with a bit outside `FPU_MXCSR_VALID` is
+  refused too (`fxrstor` would fault in the kernel); else `fpu_restore` loads the saved
+  registers. A refused frame is `signal_force(SIGSEGV)`.
   `sys_sigreturn` returns the saved `rax`, since the dispatch writes its result over `rax`.
 - **`sigprocmask`** (`SYS_SIGPROCMASK` 33): a blocked signal waits in `signals_pending` and runs on
   the way out of the call that unblocks it. Bits, not a queue: two sent while blocked run once.
@@ -2886,8 +2903,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     libraries (`user/lib/`), the `ring` and `line` libraries, the shell's prompt through
     `line_read`, `memmove` fixed, the `editing`, `history` and `string` tests; verified by hand
     (`ã` and `õ` show as `a` and `o`: the screen font). C6 is done. After it, `process_t`'s fields
-    grouped into `tree`, `stop`, `signals` and `files` (no behaviour change). Next: save the xmm
-    registers on a switch, which C7 needs.
+    grouped into `tree`, `stop`, `signals` and `files` (no behaviour change), and the vector
+    registers saved on a switch, at fork, exec and in the signal frame (the `vectors` test).
+    Next: C7.
   - **C7, graduation**: port Lua (needs `fopen`/`fread`, `setjmp`, math); maybe dash.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
 
@@ -3150,11 +3168,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   checks first). `frame_share` and the fault path take no lock beyond IRQs off: fine on one CPU.
   Nothing reads a free-frame count, so only `mm_selftest` sees a leaked frame.
 - No `vfork`, `pthread_atfork` or `clone`.
-- **Blocks C7:** user vector registers (`xmm`) are in no saved frame. `boot.S` enables SSE and
-  `USER_CFLAGS` does not turn it off, so the compiler may use them, but a context switch does not
-  save them, a child does not get them, and a signal frame does not hold them (not yet checked
-  whether current programs use them). Lua's numbers are doubles, which live there: save them
-  in the context switch and in the signal frame before C7.
+- Vector registers: `fxsave` only (no `xsave`), so no AVX (ymm) state is kept; `boot.S` does not
+  enable AVX, so nothing can use it yet. `sigreturn` accepts only the MXCSR bits every SSE CPU has
+  (`FPU_MXCSR_VALID` 0xFFBF): DAZ (bit 6) is refused even where the CPU has it (Linux reads the
+  real mask with `fxsave` at boot). Saved on every switch between user threads, even when the
+  same user thread comes back after a kernel thread.
 - `exec`: `SYS_SPAWN` stays a system call (`posix_spawn` could become `fork` + `exec` in libc, with
   file actions). `fcntl` has only `F_GETFD` and `F_SETFD`; no `O_CLOEXEC` or `pipe2`, so setting
   the flag after `open` or `pipe` leaves a gap once threads exist. No `execl` family, no
