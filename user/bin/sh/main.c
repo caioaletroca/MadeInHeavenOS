@@ -4,40 +4,21 @@
 #include <signal.h>
 #include "sh.h"
 
-static volatile sig_atomic_t interrupted;
-
 static void print_header(void)
 {
     printf("Welcome to MiHos Shell\n");
     printf("=====================\n\n");
 }
 
-static void print_prompt(void)
-{
-    char cwd[CWD_MAX];
-    if (getcwd(cwd, sizeof(cwd)) == NULL)
-        strlcpy(cwd, "?", sizeof(cwd));
-
-    fprintf(stderr, "mihos:%s> ", cwd);
-}
-
-// Being called is what ends the read, so the prompt comes back
-static void on_prompt_key(int signal)
-{
-    if (signal == SIGINT)
-        interrupted = 1;
-}
-
 static void terminal_setup(shell_t *sh)
 {
     sh->group = getpgrp();
     tcsetpgrp(0, sh->group);
+    line_editor_init(&sh->editor, 0, 2);
 
-    // No SA_RESTART: read must end. Ctrl+Z too: the shell itself never stops
-    struct sigaction keys = {.sa_handler = on_prompt_key};
-    sigaction(SIGINT, &keys, NULL);
-    sigaction(SIGTSTP, &keys, NULL);
-
+    // The keys reach only the foreground group, and at a prompt they send no signal at all
+    signal(SIGINT, SIG_IGN);
+    signal(SIGTSTP, SIG_IGN);
     signal(SIGQUIT, SIG_IGN);
     signal(SIGTTIN, SIG_IGN);
 
@@ -58,10 +39,7 @@ int main(void)
 
     while (sh.running)
     {
-        if (sh.interactive)
-            print_prompt();
-
-        read_result_t input = command_read(&cmd);
+        read_result_t input = command_read(&sh, &cmd);
         if (input == READ_EOF)
         {
             if (sh.interactive)
@@ -69,21 +47,14 @@ int main(void)
             break;
         }
 
-        // Ctrl+C at the prompt: 128 + SIGINT, as bash. Ctrl+Z changes nothing
         if (input == READ_NOTHING)
-        {
-            if (interrupted)
-                sh.status = 130;
-
-            interrupted = 0;
             continue;
-        }
 
         // History only for someone typing (bash: off in scripts)
         if (sh.interactive)
         {
             char expanded[COMMAND_MAX];
-            int ret = history_expand(&sh.history, cmd.command, expanded, sizeof(expanded));
+            int ret = history_expand(&sh.editor.history, cmd.command, expanded, sizeof(expanded));
             if (ret < 0)
                 continue;
 
@@ -93,7 +64,7 @@ int main(void)
                 printf("%s\n", cmd.command);
             }
 
-            history_add(&sh.history, expanded);
+            line_history_add(&sh.editor.history, expanded);
         }
 
         if (command_parse(&sh, &cmd) == READ_NOTHING)

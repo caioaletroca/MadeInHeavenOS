@@ -32,7 +32,7 @@ typedef struct shell
     int running;          // flag indicating if the shell is running
     int interactive;      // stdin and stderr are terminals (POSIX): banner, prompt, history
     pid_t group;          // the shell's own process group: the terminal comes back here
-    history_t history;    // command history
+    line_editor_t editor; // the prompt's line editor, with the command history
     job_t jobs[JOBS_MAX]; // stopped pipelines kept at once
     int job_count;        // number of jobs currently in the jobs array
 } shell_t;
@@ -68,13 +68,14 @@ typedef struct command
 } command_t;
 
 /**
- * Reads a command from the standard input.
+ * Reads a command: through the line editor when interactive, else a line of stdin.
  *
+ * @param sh The shell instance.
  * @param cmd The command structure to populate.
- * @return READ_COMMAND if a command was read, READ_NOTHING if a key interrupted the read,
+ * @return READ_COMMAND if a command was read, READ_NOTHING if Ctrl+C dropped the line,
  *         READ_EOF on end of input.
  */
-read_result_t command_read(command_t *cmd);
+read_result_t command_read(shell_t *sh, command_t *cmd);
 
 /**
  * Parses a command.

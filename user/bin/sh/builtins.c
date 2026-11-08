@@ -84,7 +84,7 @@ static int builtin_history(shell_t *sh, int argc, char *argv[])
     (void)argc; // unused parameter
     (void)argv; // unused parameter
 
-    history_show(&sh->history);
+    history_show(&sh->editor.history);
 
     return 0;
 }

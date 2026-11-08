@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <errno.h>
 #include "sh.h"
 
 // Variable names (POSIX): a letter or '_', then letters, digits and '_'
@@ -203,18 +202,42 @@ static int expand(parser_t *p, shell_t *sh, const char **s)
     return 0;
 }
 
-read_result_t command_read(command_t *cmd)
+/**
+ * Constructs the shell prompt string.
+ *
+ * @param prompt The buffer to store the prompt.
+ * @param size The size of the prompt buffer.
+ */
+static void prompt_make(char *prompt, size_t size)
 {
-    if (fgets(cmd->command, COMMAND_MAX, stdin) == NULL)
-    {
-        if (ferror(stdin) && errno == EINTR)
-        {
-            clearerr(stdin);
-            return READ_NOTHING;
-        }
+    char cwd[CWD_MAX];
+    if (getcwd(cwd, sizeof(cwd)) == NULL)
+        strlcpy(cwd, "?", sizeof(cwd));
 
-        return READ_EOF;
+    snprintf(prompt, size, "mihos:%s> ", cwd);
+}
+
+read_result_t command_read(shell_t *sh, command_t *cmd)
+{
+    if (sh->interactive)
+    {
+        char prompt[CWD_MAX + 16];
+        prompt_make(prompt, sizeof(prompt));
+
+        switch (line_read(&sh->editor, prompt, cmd->command, COMMAND_MAX))
+        {
+        case LINE_READ:
+            return READ_COMMAND;
+        case LINE_INTERRUPTED:
+            sh->status = 130; // 128 + SIGINT, as bash
+            return READ_NOTHING;
+        default:
+            return READ_EOF;
+        }
     }
+
+    if (fgets(cmd->command, COMMAND_MAX, stdin) == NULL)
+        return READ_EOF;
 
     // Ends the string at the first '\n' (or leaves it if the line had none)
     cmd->command[strcspn(cmd->command, "\n")] = '\0';
