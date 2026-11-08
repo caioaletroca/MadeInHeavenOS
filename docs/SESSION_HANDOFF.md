@@ -70,7 +70,8 @@ Working x86-64 PC kernel with:
   directories), deleted (`unlink`, freed at the last close), appended to (`O_APPEND`),
   directories made and removed (`mkdir`/`rmdir`), checked by `e2fsck` after every `./run-tests.sh`
 - Intrusive `list.h` and an hlist `hashtable.h` (multiplicative `hash_64`) shared by kernel and libc
-- PIC/PIT timer at 100 Hz, generic IRQ registration layer
+- PIC/PIT timer at 100 Hz, generic IRQ registration layer; a wall clock from the CMOS RTC and a
+  monotonic clock, both advanced by the timer
 - **Preemptive** round-robin scheduler (timer-driven), voluntary yield via software interrupt
 - Dynamic kernel threads (`thread_create`), idle thread, reaper for exited threads
 - Blocking primitives: wait queues (also with a timeout), `thread_sleep`, semaphores, mutexes
@@ -86,6 +87,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+20fee50 test: cover the clocks with a kernel self-test
+b7e2f74 feat(driver): add a wall clock and a monotonic clock
+fc766e3 docs(roadmap): plan packages on GitHub and reshape C7 as time and files
+c23faed docs(architecture): document the saved vector registers in handoff
 9229503 test: cover the vector registers across switches, fork, signals and exec
 db4715b feat(sched): save the vector registers of user threads
 c02889f docs(architecture): describe the grouped process_t in handoff
@@ -549,7 +554,8 @@ from the same directory.
 
 ### Platform contract
 
-`platform_boot_info_init(handoff, info)`, `platform_init()`, `platform_timer_init(hz)`,
+`platform_boot_info_init(handoff, info)`, `platform_init()`, `platform_timer_init(hz)` (returns
+the real tick length in ns), `platform_date_read(date)` (the battery-backed clock, UTC),
 `platform_irq_enable(irq)`, `platform_irq_eoi(irq)`, `platform_debug_write(s, n)`,
 `platform_power_off()` (returns if it could not), plus a `screen` backend.
 
@@ -569,12 +575,13 @@ tty_init → platform_boot_info_init → kernel_args_parse [root=; init's words]
 → devfs_init [its root, not mounted yet: devices can register] → mem_devices_init [/dev/null, /dev/zero]
 → scheduler_init [idle thread]
 → threads_init [reaper] → console_init(&keymap_abnt2) [registers /dev/console, console thread]
-→ block_cache_init [64 buffers] → timer_init(TIMER_FREQUENCY_HZ) → irq_enable
+→ block_cache_init [64 buffers] → timer_init(TIMER_FREQUENCY_HZ) → clock_init [reads the RTC]
+→ irq_enable
 → partition_init [hdb1…: reads each disk's MBR, so after irq_enable]
 → block_devfs_init [/dev/hda…, /dev/hdb1…: the disks platform_init found and their partitions]
 → root_init [/: ext2 on root=, or the initrd; a disk needs irq_enable, so here] → devfs_mount [/dev]
 → console_open [/dev/console: init's fds 0-2] → ext2_init(root_device) [first other ext2 disk on /mnt]
-→ guard_selftest → hashtable_selftest → mm_selftest
+→ clock_selftest → guard_selftest → hashtable_selftest → mm_selftest
 → scheduler_selftest [+ sync tests] → console_selftest → user_selftest → vfs_selftest(root_device)
 → block_selftest → partition_selftest → ext2_selftest(root_device) → elf_selftest
 → init_start(init_args) [starts /sbin/init, waits; init exiting = panic; init halts via SYS_REBOOT]
@@ -2435,6 +2442,24 @@ link.next == MALLOC_MAGIC while allocated; size in UNITs (sizeof(block_t)), head
   gates (IF cleared).
 - EOI is sent before switching threads.
 
+### Clocks (`driver/clock.c`, `driver/timer.c`, `platform/pc/rtc.c`)
+
+- **The tick:** the PIT divides 1 193 182 Hz by a whole number (`1193182 / 100` = 11931), so
+  `platform_timer_init` returns the real tick length, 9 999 312 ns, and `timer_nanoseconds()` is
+  ticks × that. Counting 10 ms would run 6 seconds a day fast.
+- **The RTC** (`platform_date_read`): CMOS registers through ports `0x70` (index) and `0x71`
+  (data): seconds `0x00`, minutes `0x02`, hours `0x04`, day `0x07`, month `0x08`, year `0x09`
+  (two digits: 70-99 → 19xx, else 20xx, as Linux; the century register is not standard). Status A
+  bit 7: an update is in progress (wait); status B bit 2: binary, else BCD (`0x59` = 59); bit 1:
+  24-hour, else 12-hour with bit 7 of the hours meaning PM. Read until two readings agree. Index
+  bit 7 masks NMIs until the next index write, so it stays clear, as Linux. Assumed UTC, as Linux
+  (Windows keeps local time there; QEMU keeps UTC; Bochs needs `clock: time0=utc`).
+- **The clocks** (`clock_init` after `timer_init`, read once): `clock_monotonic()` (ns since boot,
+  never jumps), `clock_realtime()` (ns since 1970 UTC: the boot date plus monotonic, so both move
+  together), `clock_seconds()` (whole seconds, for file timestamps). `clock_days_from_civil` is
+  Howard Hinnant's `days_from_civil`: the year starts in March, so the leap day comes last. One
+  tick of resolution.
+
 ### Threads
 
 - `thread_create(entry, arg)`: `kzalloc`'d `thread_t` + 16 KiB `kmalloc`'d stack, flagged
@@ -2909,11 +2934,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **C7, time and files** (reshaped: Lua would have needed a full `<math.h>`, exact float
     printing and parsing and locales, not worth writing before mlibc; it is now mlibc's first
     port at phase D, through `ports/lua/` with a pinned, hashed tarball):
-    - **C7a, time:** read the CMOS real-time clock at boot; a wall clock and a monotonic clock
-      (since boot) advanced by the timer; `clock_gettime` and `nanosleep` syscalls (mlibc's
+    - **C7a, time:** step 1 (done): the CMOS real-time clock read at boot, a wall clock and a
+      monotonic clock advanced by the timer, the real tick length, `clock_selftest`. Next, step
+      2: `clock_gettime` and `nanosleep` syscalls (mlibc's
       sysdeps need them); ext2 timestamps (new inodes take the parent's `mtime`, `dtime` comes
       from `s_wtime`, writes leave `mtime`, `stat` reports `mtime` three times); libc `time`,
-      `clock_gettime`, `clock`, `gmtime`, `strftime` (UTC only). The first prerequisite of
+      `clock_gettime`, `clock`, `gmtime`, `strftime` (UTC only), a `date` program. The first prerequisite of
       packages too (see the roadmap's "Packages": TLS checks dates).
     - **C7b, files in stdio:** `fopen`, `fclose`, `fread`, `fwrite`, `fseek`/`ftell`,
       `setvbuf`, streams in a list (`__stdio_head` stops being `const`); maybe
@@ -3052,6 +3078,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 **Debt:**
 
+- Clocks: one tick of resolution (about 10 ms; the TSC or HPET would give finer); the RTC is read
+  once and never written back or corrected (no `clock_settime`, no NTP); it is assumed UTC; years
+  2070 and later read as 1970-1999 (the century register is not used). `.bochsrc` still has
+  `time0=local`, so under Bochs the clock is off by the local time zone.
 - `page_unmap` does not reclaim empty intermediate tables.
 - Direct map covers only the first 1 GiB; RAM above it is ignored (clamped in `mmap_init`).
 - `MMU_EXEC` ignored: NX not enabled (`EFER.NXE`), every mapping is executable.
