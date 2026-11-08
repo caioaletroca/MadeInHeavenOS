@@ -8,5 +8,6 @@ console.c \
 mem.c \
 block.c \
 block_cache.c \
-partition.c
+partition.c \
+clock.c
 

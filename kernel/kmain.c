@@ -6,6 +6,7 @@
 #include <driver/input.h>
 #include <driver/tty.h>
 #include <driver/timer.h>
+#include <driver/clock.h>
 #include <driver/console.h>
 #include <driver/mem.h>
 #include <driver/block.h>
@@ -72,6 +73,7 @@ void kmain(uintptr_t boot_handoff)
     block_cache_init();
 
     timer_init(TIMER_FREQUENCY_HZ);
+    clock_init();
 
     irq_enable();
     partition_init();

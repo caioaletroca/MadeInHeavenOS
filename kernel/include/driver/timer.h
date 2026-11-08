@@ -26,4 +26,11 @@ void timer_init(uint32_t frequency);
  */
 uint64_t timer_ticks(void);
 
+/**
+ * @brief Retrieves the current time in nanoseconds since the system started.
+ *
+ * @return The current time in nanoseconds.
+ */
+uint64_t timer_nanoseconds(void);
+
 #endif // _TIMER_H_

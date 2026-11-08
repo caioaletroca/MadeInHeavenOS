@@ -27,8 +27,26 @@ void platform_init(void);
  * @brief Program the system timer and route its IRQ to timer_tick().
  *
  * @param frequency Tick frequency in Hz.
+ * @return The real length of a tick in nanoseconds (the hardware divides by a whole number).
  */
-void platform_timer_init(uint32_t frequency);
+uint64_t platform_timer_init(uint32_t frequency);
+
+typedef struct
+{
+    int year;  // e.g. 2026
+    int month; // 1-12
+    int day;   // 1-31
+    int hour;  // 0-23
+    int minute;
+    int second;
+} platform_date_t;
+
+/**
+ * @brief Read the battery-backed clock, assumed to hold UTC.
+ *
+ * @param date Output structure, fully overwritten with the current date and time in UTC.
+ */
+void platform_date_read(platform_date_t *date);
 
 /**
  * @brief Unmask an IRQ line on the interrupt controller.

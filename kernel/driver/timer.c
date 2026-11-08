@@ -3,6 +3,7 @@
 #include <sched/scheduler.h>
 
 static volatile uint64_t ticks;
+static uint64_t tick_nanoseconds;
 
 void timer_tick(void)
 {
@@ -12,10 +13,15 @@ void timer_tick(void)
 
 void timer_init(uint32_t frequency)
 {
-    platform_timer_init(frequency);
+    tick_nanoseconds = platform_timer_init(frequency);
 }
 
 uint64_t timer_ticks(void)
 {
     return ticks;
+}
+
+uint64_t timer_nanoseconds(void)
+{
+    return ticks * tick_nanoseconds;
 }

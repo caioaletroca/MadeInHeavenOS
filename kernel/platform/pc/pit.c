@@ -17,7 +17,13 @@
 // PIT base frequency in Hz
 #define PIT_FREQUENCY 1193182
 
-static void pit_set_frequency(uint32_t frequency)
+/**
+ * @brief Set the PIT frequency.
+ *
+ * @param frequency Desired frequency in Hz.
+ * @return The actual divisor used to achieve the frequency.
+ */
+static uint16_t pit_set_frequency(uint32_t frequency)
 {
     uint16_t divisor = PIT_FREQUENCY / frequency;
 
@@ -27,16 +33,26 @@ static void pit_set_frequency(uint32_t frequency)
     // Send the low and high bytes of the divisor to the PIT channel 0
     outb(PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));
     outb(PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF));
+
+    return divisor;
 }
 
+/**
+ * @brief Handle the PIT IRQ.
+ *
+ * @param irq IRQ number (unused).
+ */
 static void pit_irq_handler(unsigned int irq)
 {
     (void)irq;
     timer_tick();
 }
 
-void platform_timer_init(uint32_t frequency)
+uint64_t platform_timer_init(uint32_t frequency)
 {
     irq_register(PIC_IRQ_TIMER, pit_irq_handler);
-    pit_set_frequency(frequency);
+    uint16_t divisor = pit_set_frequency(frequency);
+
+    // 1193182 / 100 = 11931, so a tick is 9 999 312 ns, not 10 ms
+    return (uint64_t)divisor * 1000000000ULL / PIT_FREQUENCY;
 }

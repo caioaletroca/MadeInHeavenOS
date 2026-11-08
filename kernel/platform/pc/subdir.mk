@@ -9,4 +9,5 @@ vga.c \
 screen.c \
 debugcon.c \
 power.c \
-ata.c
+ata.c \
+rtc.c
