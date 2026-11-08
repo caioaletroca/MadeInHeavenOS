@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -86,6 +86,13 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+bcd6df7 test: cover line editing, the history and memmove
+827463a feat(sh): edit lines with arrows, Home, End and history
+727f60b feat(lib): add a line editing library with history
+1dc4458 feat(lib): add a typed ring buffer
+b50c00e build(user): build user libraries from user/lib
+6bdbf52 fix(libc): copy back to front when memmove moves bytes right
+258e305 docs(architecture): document terminal settings and raw mode in handoff
 e55e9d2 test: cover terminal settings and the keys with no character
 6db44c9 feat(libc): add tcgetattr, tcsetattr and cfmakeraw
 ab1761e feat(driver): add terminal settings with raw mode
@@ -931,8 +938,9 @@ session 12 (the shell, pid 12, is its leader)
   `sh->jobs` (`JOBS_MAX` 8; past that the job is killed). `fg` takes the last one (`job_resume`:
   `tcsetpgrp`, `SIGCONT` to the group, `job_wait` again from where it left off); `jobs` lists them.
   `jobs_hang_up` sends `SIGHUP` and `SIGCONT` when the shell leaves, since nothing else would
-  resume them. A stage's copy of the shell empties its list. `SIGTSTP` at the prompt uses the same
-  handler as `SIGINT`, so the read ends and the prompt comes back, with `$?` unchanged.
+  resume them. A stage's copy of the shell empties its list. The shell ignores `SIGINT`, `SIGTSTP` and
+  `SIGQUIT`: its prompt reads with `ISIG` off (the line library), so there Ctrl+C is a key that
+  drops the line and sets `$?` to 130, and Ctrl+Z and Ctrl+\ do nothing.
 
 ### Signals (`sched/signal.c`, `sys/signals.c`)
 
@@ -2547,6 +2555,9 @@ IRQ1 → platform/pc/keyboard.c (set 2 decoder) → input_report_key(keycode, pr
 
 ## Major bugs fixed (history)
 
+- `memmove` copied front to back even when moving bytes right inside one buffer, overwriting
+  them before reading: the line editor's insert doubled the last character (`echo abcc`). The
+  kernel's two calls move left, so they never showed it.
 - Boot stack started at `stack_bottom` and overwrote `page_table_l2[511]` → start at `stack_top`.
 - `buddy_alloc()` did not remove the block from the free list → duplicate frames.
 - Preemption draft: missing `SS:RSP` in the iret frame, reversed `isr_context_t` order,
@@ -2862,35 +2873,73 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     `exit` and a new shell, a nested `sh`. C6c (done): stop signals, `WUNTRACED`, `WNOHANG`, Ctrl+Z,
     `SIGTTIN` and `SIGTTOU`, jobs with `fg` and `jobs`, the `stop` test; the shell verified by hand
     again. C6d (done): `termios` with `tcgetattr`, `tcsetattr` and `cfmakeraw`, raw mode, `VMIN`,
-    the keys with no character as escape sequences, the `termios` test. Next, C6e: the shell's
-    line editing, arrow keys and history.
+    the keys with no character as escape sequences, the `termios` test. C6e (done): user
+    libraries (`user/lib/`), the `ring` and `line` libraries, the shell's prompt through
+    `line_read`, `memmove` fixed, the `editing`, `history` and `string` tests; verified by hand
+    (`ã` and `õ` show as `a` and `o`: the screen font). C6 is done. Next: save the xmm registers
+    on a switch, which C7 needs.
   - **C7, graduation**: port Lua (needs `fopen`/`fread`, `setjmp`, math); maybe dash.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
+
+### User libraries (`user/lib/`)
+
+Code user programs share that is not C or POSIX, so not libc (which mlibc replaces in phase D):
+Linux keeps readline out of libc too. One directory per library; `user/Makefile` archives every
+`.c` in it into `lib<name>.a` and links all of them into every program, before libc, inside
+`--start-group`/`--end-group` (one library may use another). The linker takes only the members a
+program calls, so an unused library costs nothing. `-Ilib`: a library's header is
+`lib/<name>/<name>.h`, included as `<name/name.h>`. Header-only libraries make an empty archive.
+
+- **`ring`** (`ring.h`, header only): a typed ring buffer from macros. `ring(type, capacity)` is
+  an anonymous struct (`data[capacity]`, `start`, `count`), so each use is a new type: name it
+  with `typedef`. `ring_capacity` (from `sizeof`, stored nowhere), `ring_is_full`,
+  `ring_is_empty`, `ring_at(self, i)` (0 the oldest; the slot itself, assignable; not checked),
+  `ring_push` (false when full), `ring_shift` (removes the oldest; must not be empty). Every
+  macro evaluates `self` once: `ring_push`, `ring_shift` and `ring_at` copy it into a local in a
+  GCC statement expression `({ ... })`, `ring_at` returning `*({ ...; &slot; })` to stay
+  assignable; `sizeof` evaluates nothing.
+- **`line`** (`line.h`, `editor.c`, `history.c`): line editing at a terminal, readline's job,
+  knowing nothing about shells. `line_editor_init(editor, input, output)` saves the terminal's
+  settings (`-1`/`ENOTTY` for no terminal); `line_read(editor, prompt, buffer, size)` prints the
+  prompt, goes raw (`cfmakeraw`, output flags kept), edits, puts the saved settings back and
+  returns `LINE_READ`, `LINE_INTERRUPTED` (Ctrl+C, after printing `^C`) or `LINE_END_OF_INPUT`
+  (Ctrl+D on an empty line, or input closed). Keys: printable characters inserted whole (UTF-8
+  read by its first byte), Left, Right, Home, End, Backspace (`0x7F` or `\b`), Delete and
+  Ctrl+D on text, Ctrl+U (left of the cursor), Up and Down, Enter (`\r` or `\n`). `key_read`
+  turns `ESC [ x` into `KEY_` values above 255; Esc alone waits for the next key, which counts.
+  Drawing is relative, no ANSI: `\b` moves left (the console's `\b` goes up a row from column
+  0, so wrapped lines work), drawing the character under the cursor moves right,
+  `line_show_rest` redraws from the cursor and walks back; one cell per character. History:
+  `line_history_t` is a `ring(char *, LINE_HISTORY_MAX)` (32) of `strdup`'d lines plus `total`;
+  numbers count from 1 as lines are added (bash's), blank lines are not added;
+  `line_history_get(history, number)`. Up and Down move `back` lines from the newest; leaving
+  the line being typed keeps it in `draft` (malloc'd to the buffer's size), and edits to a
+  recalled line last until the next move.
 
 ### Shell (`user/bin/sh/`)
 
 ```text
-main.c   loop: prompt "mihos:<cwd>> " ─▶ command_read ─▶ history_expand ─▶ history_add ─▶ command_parse
-         ─▶ command_run ─▶ fflush(stdout)   (prompt and history only when interactive)
-read.c   command_read: fgets, '\n' stripped (READ_EOF on NULL); command_parse: the tokenizer
-         (quotes, escapes, $ expansion) → READ_COMMAND / READ_NOTHING
+main.c   loop: command_read ─▶ history_expand ─▶ line_history_add ─▶ command_parse
+         ─▶ command_run ─▶ fflush(stdout)   (history only when interactive)
+read.c   command_read: interactive → prompt_make + line_read, else fgets with '\n' stripped;
+         command_parse: the tokenizer (quotes, escapes, $ expansion) → READ_COMMAND / READ_NOTHING
 run.c    command_run: more than one stage → pipeline_run; else builtin_run, else program_run
-builtins.c  table {name, function, help}; cd [dir], exit [n], help, history, pwd
-history.c   ring buffer of strdup'd lines
+builtins.c  table {name, function, help}; cd [dir], exit [n], fg, help, history, jobs, pwd
+history.c   the shell's history syntax: !! !n !-n, and the history builtin's listing
 sh.h / history.h   shared types and declarations ("..." includes)
 ```
 
 - **State:** `shell_t` (owned by `main`, passed down) holds `status` (last command's: `exit`'s
-  default and the shell's own status at EOF), `running` (cleared by `exit`), `interactive` and
-  the `history_t`.
+  default and the shell's own status at EOF), `running` (cleared by `exit`), `interactive`, and
+  `editor`, the line library's `line_editor_t` with the command history.
 - **Interactive or not** (POSIX, as bash and dash): `interactive = isatty(0) && isatty(2)`.
-  Interactive: the banner, the prompt (on **stderr**, as POSIX says), history expansion and
-  `history_add`, a `'\n'` on stderr at EOF. Otherwise (a script piped in) none of these, so only
+  Interactive: the banner, the prompt through the line editor (on **stderr**, as POSIX says),
+  history expansion and `line_history_add`, a `'\n'` on stderr at EOF. Otherwise (a script piped in) none of these, so only
   the commands' output comes out, and `!!` stays literal. Either way every shell message goes to
   stderr (parse and history errors too), and stdout is `fflush`ed after every command: into a
   pipe or a file it is fully buffered, and a builtin's output must be out before the next
   program writes its own. Modules take only the part they own
-  (`history_add(history_t *, line)`); `main` wires them. The tokenizer never modifies the line.
+  (`history_expand(line_history_t *, ...)`); `main` wires them. The tokenizer never modifies the line.
 - **Tokenizer** (`command_parse(sh, cmd)`): a state machine (`STATE_UNQUOTED`, `STATE_SINGLE`,
   `STATE_DOUBLE`) over `cmd->command` writes the words, each `'\0'`-terminated, into
   `cmd->words`; each `stage_t`'s `argv` points there. `parser_t` holds `pos`, `start` and `in_word` (a word is open
@@ -2918,11 +2967,13 @@ sh.h / history.h   shared types and declarations ("..." includes)
   be a builtin (a child's `chdir` dies with the child): no argument → `$HOME`, unset or empty
   → `/`; more than one → `cd: too many arguments`; a failure prints `cd: dir: strerror` (bash's
   format) and returns 1. `pwd` prints `getcwd` into a `CWD_MAX` (1024) buffer.
-- **Prompt:** `print_prompt` calls `getcwd` every time (`mihos:/usr/tests> `); a removed
-  directory, or one deeper than `CWD_MAX`, shows `mihos:?> ` until the next `cd`.
-- **History:** `lines[HISTORY_MAX]` (32) `strdup`'d copies, oldest at `lines[start]`, `count`
-  stored, `total` ever added; full → free the oldest and advance `start`. Blank lines are skipped.
-  `history` prints entry `i` as number `total - count + 1 + i` (bash's numbering).
+- **Prompt:** `prompt_make` calls `getcwd` every time (`mihos:/usr/tests> `); a removed
+  directory, or one deeper than `CWD_MAX`, shows `mihos:?> ` until the next `cd`. `line_read`
+  prints it and edits the line; `LINE_INTERRUPTED` is `READ_NOTHING` with `$?` 130. The
+  settings `line_editor_init` saved in `terminal_setup` are what every program gets.
+- **History:** the line library's (see "User libraries"): Up and Down browse it, and the shell
+  adds each line after expansion. `history` prints numbers `total - lines.count + 1` to `total`
+  through `line_history_get` (bash's numbering).
 - **Programs:** `command_run` gives a lone builtin to the shell itself (`cd` and `exit` must
   change this process); everything else is a pipeline, of one stage for a plain program. A stage
   runs in a forked child: `stage_run` does `execvp` (the `PATH` search is in libc now), and if
@@ -3168,17 +3219,25 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   the test run. `exec_done` is written without `process_tree_lock`, fine on one CPU.
 - Terminal: no `SIGHUP` when a session leader exits, and the rest of its session keeps the
   terminal until a new leader takes it. No `TIOCNOTTY`. Background groups may write. `TIOCSTI` takes each byte as a
-  whole character, so UTF-8 through it comes out wrong. No automatic test of the interactive
-  shell: it needs a pseudo-terminal, or a test that runs `/bin/sh` on the console.
+  whole character, so UTF-8 through it comes out wrong. Keys typed while a command runs are
+  echoed by the console in cooked mode, then drawn again by the line editor at the next prompt
+  (bash on Linux does the same).
 - `termios`: `VINTR` and the other special characters are stored but the keys are fixed; `VTIME`
   is ignored; `OPOST`, `ONLCR`, `ECHOE`, `ECHOK`, `ECHONL` and `IEXTEN` do nothing, `TOSTOP` does not exist
   (`tty_write` always does its own newline). No line speeds (`cfgetospeed`). On a line,
   other control bytes are dropped (Tab too), where Linux stores them, and `ECHOCTL` does not exist.
-  Settings stay when a program dies, so a crashed raw program leaves the terminal raw (C6e's shell
-  should restore them at each prompt). A `^D` byte read in raw mode stays a byte if it was typed on
+  Settings stay when a program dies; the shell puts its startup settings back after each line,
+  but a shell killed at its prompt leaves the terminal raw, and the next one saves that as what it
+  found. `fg` resumes a job with the shell's settings, not the job's own (shells save them per job). A `^D` byte read in raw mode stays a byte if it was typed on
   a line first: the mode at read time decides. An escape sequence is pushed byte by byte, so a read
   can get half of one, and a full ring drops its tail.
-- The screen has no ANSI escape parsing: a program can only move left with `\b` (C6e may need more).
+- The screen has no ANSI escape parsing: a program can only move left with `\b`, and the line editor
+  relies on our `\b` going up a row from column 0 (Linux terminals stop there). The VGA font is
+  CP437, which has no `ã`, `õ`, `Ã`, `Õ`: they show unaccented (a loaded font could fix it).
+- Line editor: no Tab completion, Ctrl+A/E/K/W, Ctrl+L or reverse search; edits to a recalled
+  history line are lost on the next Up or Down; one cell per character (no wide characters).
+- `sys/list.h` and `sys/hashtable.h` live in libc's headers because the kernel uses them: they need
+  a home of their own when mlibc replaces our libc (phase D).
 - `spawn` and `exec` copy user strings byte by byte; path limit is 64 bytes (`-E2BIG`, POSIX would say
   `ENAMETOOLONG`); programs come from the initrd only; no `posix_spawnp` (`PATH` search).
 - Power off works only on Bochs and QEMU (fixed ports); real hardware halts (needs the ACPI FADT).
