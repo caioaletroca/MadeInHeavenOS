@@ -87,6 +87,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+98cd75a test: cover the ext2 timestamps
+49cc3b0 feat(ext2): keep real atime, mtime and ctime
 e0bb35f test: cover clock_gettime, nanosleep and sleep
 058b30a feat(sys): add clock_gettime and nanosleep
 20fee50 test: cover the clocks with a kernel self-test
@@ -1169,7 +1171,7 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   `st_ino`, `st_mode` = type bits | `node->mode`, `st_nlink` = `node->nlink` (1 for the initrd and devfs; also what tools
   read as "not counted" for directories), `st_size` (0 for character and block devices, as on
   Linux: a disk's size comes from `lseek(SEEK_END)`, which uses `node->size`), `st_blksize` =
-  `PAGE_SIZE`, `st_blocks` in 512-byte units (0 for devices), all three times = `node->mtime` (read-only, no clock), `st_dev` = `node->dev`,
+  `PAGE_SIZE`, `st_blocks` in 512-byte units (0 for devices), `st_atim`/`st_mtim`/`st_ctim` = `node->atime`/`mtime`/`ctime` (seconds, `tv_nsec` 0), `st_dev` = `node->dev`,
   `st_rdev` = `node->rdev`; `st_uid`, `st_gid` 0.
 - **Console backend** (`driver/console.c`): `console_init` registers `console` in devfs (5:1,
   `0600`, Linux's numbers and mode) with the console's `file_ops`; `console_open`, once `/`
@@ -1970,8 +1972,7 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   `mutex_init` of both locks, the free counts from the superblock, `vfs_dev_alloc`, and the
   root (`ext2_node_get(2)`; not a directory → `-EIO`).
   `ext2_volume_t` = the disk, `dev`, block size, block/inode counts, inodes per group, inode size,
-  groups, `first_data_block`, `blocks_per_group`, `first_ino`, `want_extra_isize`, `dtime`
-  (freed inodes' `i_dtime`: `s_wtime`, at least `s_inodes_count`),
+  groups, `first_data_block`, `blocks_per_group`, `first_ino`, `want_extra_isize`,
   `read_only`, `max_file_size`, the group
   table, `free_blocks`/`free_inodes` and `allocation_lock` (the bitmaps, the group table's
   counters and those two), `lock` (the node cache) and the node hash (`nodes[64]`, `kzalloc`'d:
@@ -2043,11 +2044,10 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   reused slot keeps its last owner's block map, `i_dtime` and in-inode extended attributes,
   `ext_attr` being on), writes an `ext2_inode_t` with the mode, the links and the three times,
   and `want_extra_isize` at byte 128. `ext2_inode_free(volume, ino, directory)` (called by
-  `ext2_release`): below `first_ino` or past the count → `-EIO`; `i_dtime` = `volume->dtime`
-  first, outside the lock (no clock, so the superblock's last write time, `s_wtime`;
-  non-zero means deleted to `e2fsck`, 0 an orphan; and one below `s_inodes_count` is read
-  as the next inode of the orphan list, a "corrupted orphan list", which is why it is never
-  1), and `i_links_count` 0 (e2fsck calls an inode with links in use whatever its bit says;
+  `ext2_release`): below `first_ino` or past the count → `-EIO`; `i_dtime` = now
+  first, outside the lock (non-zero means deleted to `e2fsck`, 0 an orphan; and one below
+  `s_inodes_count` is read as the next inode of the orphan list, a "corrupted orphan list",
+  so it is at least `s_inodes_count`, which matters with a clock stuck in 1970), and `i_links_count` 0 (e2fsck calls an inode with links in use whatever its bit says;
   a create or mkdir failing after `ext2_inode_init` gives back a slot still saying 1 or 2:
   the full-disk test found it), then the bit cleared (already
   clear → `-EIO`), the counters +1 (`bg_used_dirs_count` −1), both written. On the test disk:
@@ -2084,10 +2084,10 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   (adding a record without updating the hash index would hide it from Linux's lookups); the
   name found by a walk with `ext2_lookup_visit` (any type: `link`, a symlink, too) →
   `-EEXIST`; `ext2_inode_alloc` (the directory's group), `ext2_inode_init(EXT2_S_IFREG | mode
-  & 07777, 1 link, the directory's mtime)`, then `ext2_dir_add` (`EXT2_FT_REG_FILE`): the name
+  & 07777, 1 link, now)`, then `ext2_dir_add` (`EXT2_FT_REG_FILE`): the name
   last, so no record points at an unprepared inode; a failure of either gives the inode back.
   Then `ext2_node_get` (its error returned; the file stays on the disk). The directory's
-  links and times stay (a file adds no `..`; no clock). `ext2_create` must not call
+  links stay (a file adds no `..`); its mtime and ctime become the same now. `ext2_create` must not call
   `ext2_lookup` (it takes the same, non-recursive lock). `ext2_dir_remove(dir, name,
   length)` (lock held): the record found by name is swallowed by the record before it in its
   block (its `rec_len` grows by the removed one's: the test disk's `link`, 12 → 640 if
@@ -2114,7 +2114,7 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   name, length, mode)`, under the parent's lock: `EXT2_INDEX_FL` → `-EROFS`, a removed parent
   (`nlink` 0) → `-ENOENT`, `EXT2_LINK_MAX` (32000) links → `-EMLINK`, the name taken →
   `-EEXIST`; `ext2_inode_alloc(…, directory = true)`, `ext2_inode_init(EXT2_S_IFDIR | mode, 2
-  links, the parent's mtime)`, `ext2_node_get`; then under the new directory's lock two
+  links, now)`, `ext2_node_get`; then under the new directory's lock two
   `ext2_dir_add`s on the empty node: `.` (the first block, one record covering it) and `..`
   split off it, `grow/`'s layout (`.` 12 bytes, `..` the rest); then its name in the parent
   (`EXT2_FT_DIR`) and the parent's `nlink` +1 (`ext2_links_store`, which writes
@@ -2135,7 +2135,7 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   `ext2_block_write`. Errors leave the loop instead of returning: the size grows to what was
   written, and if the size or `blocks` changed the inode is stored (`ext2_inode_store`), so
   blocks linked before an error are in the inode (consistent, maybe unused); returns the bytes
-  written, or the error if none were. No times (no clock). `VFS_APPEND` as the offset is
+  written, or the error if none were. Any bytes written set mtime and ctime (`ext2_times_store`). `VFS_APPEND` as the offset is
   replaced by the size right after the lock is taken (`O_APPEND`).
 - **Truncate** (`ext2_truncate`, under `n->lock`): past `max_file_size` `-EFBIG`; growing or
   the same size only sets the size (a hole) and stores the inode. Shrinking: the new last
@@ -2201,9 +2201,10 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   `empty` to 0 (14 back); the free count at the end = before the growth test + `long`'s 303;
   `-EFBIG`, `-EISDIR`, `-EINVAL` for `/dev/hda`. Create (`ext2_test_create`, in `grow/`):
   `grow/new` with `O_RDWR | O_CREAT | O_EXCL` and `0640` is an empty file in inode 29 with
-  one link, the parent's mtime and `dev`; on the disk both free inode counts −1, bit 28 of
+  one link, `dev`, all three times the create's second (between the clock before and after,
+  `grow/`'s mtime and ctime the same); on the disk both free inode counts −1, bit 28 of
   the inode bitmap set, `bg_used_dirs_count` unchanged, the raw slot: mode `0x8000 | 0640`,
-  size, `i_dtime`, `i_blocks` 0, zeros elsewhere, `i_extra_isize` 32 and zeros after it;
+  the three times, size, `i_dtime`, `i_blocks` 0, zeros elsewhere, `i_extra_isize` 32 and zeros after it;
   written and read back; `O_EXCL` again `-EEXIST`, `O_CREAT` alone opens it (inode 29, size
   7); 90 more names (`f000`…, 12-byte records) give `grow/` a second block (size 2048,
   `i_blocks` 4 on the disk), each looks up to inode 30 + i, 91 inodes and 2 blocks taken in
@@ -2213,7 +2214,7 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   no inode taken by any of them. Unlink (`ext2_test_unlink`): `grow/new` opened, then
   unlinked: lookup `-ENOENT`, `nlink` 0 and `i_links_count` 0 on the disk, still written and
   read (13 bytes), no inode or block back while open; the close gives back its inode and
-  block (both counts), bit 28 clear, `i_dtime` = the disk's `s_wtime`; a create then gets
+  block (both counts), bit 28 clear, `i_dtime` between the clock before and after the close; a create then gets
   inode 29 again, and unlinking it closed frees it at once; the 90 `f…` names go (91 inodes
   back in all); the free counts equal those before the creates but for `grow/`'s second
   block, and `grow/` lists 7 entries again; refusals: `docs`, `docs/`, `docs/.`, `docs/..`
@@ -2470,6 +2471,19 @@ link.next == MALLOC_MAGIC while allocated; size in UNITs (sizeof(block_t)), head
   handler ends it with `EINTR` and the time left (deadline minus monotonic), even with
   `SA_RESTART`, as Linux. libc: `clock_gettime`, `time`, `nanosleep`, and `sleep` (the seconds
   left, rounded up). The `time` test.
+- **On files** (`fs/ext2/`, the VFS node's `atime`, `mtime`, `ctime`, seconds): mtime = the
+  bytes changed, ctime = the inode changed (bytes, links or mode; not "created"), atime = last
+  read. A create gives the new inode's three times and its directory's mtime and ctime one
+  `clock_seconds()`; `write` (any bytes) and `truncate` (always, even to the same size, as
+  Linux's `do_truncate`) set mtime and ctime (`ext2_mark_changed`); a name added or removed
+  (create, `unlink`, `mkdir`, `rmdir`) sets the directory's; `unlink` sets the file's ctime
+  alone (its link count, not its bytes). A read sets atime under Linux's relatime rule
+  (`ext2_atime_due`): only if atime ≤ mtime or ≤ ctime (unread since the change) or a day
+  old, so repeated reads cost no disk writes; best effort, never on a read-only volume.
+  `ext2_times_store` writes all three with one 12-byte write, in the disk's order (`i_atime`
+  8, `i_ctime` 12, `i_mtime` 16, a `_Static_assert` on it). `i_dtime` = the free's time, at
+  least `s_inodes_count`. The superblock gets `s_mtime` and `s_wtime` at a writable mount and
+  `s_wtime` again at the halt. The initrd's three times are tar's mtime.
 
 ### Threads
 
@@ -2804,7 +2818,7 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   flusher thread; whole cache blocks written (a small write fills the buffer first); locks
   node `lock` → `volume->lock` → the cache's; a writable mount only when every `ro_compat`
   feature is known (`SPARSE_SUPER`, `LARGE_FILE`), `s_state` not clean at mount, clean at the
-  halt's sync; no clock (times unchanged); `e2fsck -fn` (in Docker) on a disk written without
+  halt's sync; times kept from C7a step 3; `e2fsck -fn` (in Docker) on a disk written without
   `-snapshot` as the referee for W5/W6; Bochs's disk `mode=volatile` (like QEMU's `-snapshot`).
   - **W1 (done):** `block_write`/`block_flush`, `ata_command`, ATA `WRITE SECTORS` and `CACHE
     FLUSH`; the block self-test's write section.
@@ -2832,8 +2846,8 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **W6 (done).** Decided: sub-steps W6a truncate, W6b the inode allocator, W6c
     directory entries + `O_CREAT`/`O_EXCL`, W6d `unlink` (freed at the last node put when
     the link count is 0) + `O_APPEND`, W6e `mkdir`/`rmdir`, W6f a full-disk test, then the
-    split of `ext2.c`; no clock (new inodes get the parent's `mtime`, a deleted one the
-    superblock's `s_wtime` as `i_dtime`: 1 read as an orphan-list link to `e2fsck`); permissions stored, never checked; a directory with `EXT2_INDEX_FL` is `-EROFS` for
+    split of `ext2.c`; no clock until C7a step 3 (new inodes got the parent's `mtime`, a deleted
+    one the superblock's `s_wtime` as `i_dtime`); permissions stored, never checked; a directory with `EXT2_INDEX_FL` is `-EROFS` for
     changes; names 1–255 bytes, `.`/`..` never created or removed; new 256-byte inodes get
     `s_want_extra_isize`; syscalls numbered from 21. W6a (done): `ext2_truncate`,
     `vfs_truncate`, `O_TRUNC`, `ftruncate`/`truncate`; the truncate tests. W6b (done):
@@ -2948,8 +2962,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     - **C7a, time:** step 1 (done): the CMOS real-time clock read at boot, a wall clock and a
       monotonic clock advanced by the timer, the real tick length, `clock_selftest`. Step 2 (done):
       the `clock_gettime` and `nanosleep` syscalls (mlibc's sysdeps need them), libc `time`,
-      `clock_gettime`, `nanosleep`, `sleep`, the `time` test. Next, step 3: ext2 timestamps (new inodes take the parent's `mtime`, `dtime` comes
-      from `s_wtime`, writes leave `mtime`, `stat` reports `mtime` three times); step 4: libc
+      `clock_gettime`, `nanosleep`, `sleep`, the `time` test. Step 3 (done): ext2 timestamps
+      (atime with relatime, mtime, ctime, a real `i_dtime`, the superblock's mount and write
+      times, three times in the VFS node). Next, step 4: libc
       `gmtime`, `strftime` (UTC only), a `date` program; `clock` (CPU time) on its own. The first prerequisite of
       packages too (see the roadmap's "Packages": TLS checks dates).
     - **C7b, files in stdio:** `fopen`, `fclose`, `fread`, `fwrite`, `fseek`/`ftell`,
@@ -3095,6 +3110,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   `time0=local`, so under Bochs the clock is off by the local time zone.
 - `clock()` is missing: it is CPU time, not wall time, so it needs ticks counted per process
   (`cpu_ticks++` for the running thread in `scheduler_tick`) and a `CLOCK_PROCESS_CPUTIME_ID`.
+- File times: pipes and devfs nodes keep 0 (Linux starts a pipe's at its creation and a tty
+  write moves its mtime: the VFS's job, not ext2's); seconds only (ext4's `i_*time_extra`
+  fields add nanoseconds); Linux reads 128-byte inode times as signed 32-bit (January 2038:
+  a disk carried over shows 1901), ours unsigned (2106); no `utimensat`, so no `touch`, and
+  `cp -p`/`tar` cannot set times.
 - `nanosleep` stopped and continued (Ctrl+Z, `fg`) returns `EINTR` early; Linux sleeps the rest
   through a per-thread restart block. `nanosleep` of 0 still waits about one tick (Linux
   returns at once).
@@ -3343,8 +3363,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The crash loop guard counts kills in a row, not kills per time (no clock in user space).
 - The adoption test's grandchild cannot be waited for: a failure is only its printed `FAIL` line,
   not counted by the runner.
-- `stat` has no clock behind it: all three times are the file's `mtime` (ext2's `i_atime`
-  and `i_ctime` are not read); no users (`uid`/`gid` 0, ext2's `i_uid`/`i_gid` ignored);
+- `stat` times are whole seconds (`tv_nsec` 0); no users (`uid`/`gid` 0, ext2's `i_uid`/`i_gid` ignored);
   `nlink` 1 outside ext2. No `lstat` (no symlinks) or `fstatat` (no `*at` calls yet).
 - `ls` prints file arguments in argument order, mixed with the directories (real `ls` prints
   files first, then each directory). Its options, several paths and errors are checked by
@@ -3365,10 +3384,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
     show) cannot be unlinked (a fast symlink's `i_block` holds text); an `O_APPEND` file's
     offset is the size read after its write, so another appender's bytes may come before it
     (Linux returns the exact end from inside the write); a failure to free an unlinked file at
-    its last put only logs (a leak); times are never
-    updated (no clock), so a created file gets its directory's mtime and the directory's own
-    times stay; no umask; permissions stored, never checked; `s_mnt_count`,
-    `s_mtime` and `s_wtime` are not written; a not-clean or erroneous volume only warns; the
+    its last put only logs (a leak); no umask;
+    permissions stored, never checked; `s_mnt_count` is not counted; a not-clean or erroneous volume only warns; the
     halt hook marks the volume clean before the cache sync, and the sync may sleep (a mutex),
     so another process could still write between the two (nothing stops other processes at
     halt yet); a read-only volume is decided at mount only;
