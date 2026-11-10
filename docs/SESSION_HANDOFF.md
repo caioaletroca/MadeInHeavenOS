@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -87,6 +87,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+e0bb35f test: cover clock_gettime, nanosleep and sleep
+058b30a feat(sys): add clock_gettime and nanosleep
 20fee50 test: cover the clocks with a kernel self-test
 b7e2f74 feat(driver): add a wall clock and a monotonic clock
 fc766e3 docs(roadmap): plan packages on GitHub and reshape C7 as time and files
@@ -2459,6 +2461,15 @@ link.next == MALLOC_MAGIC while allocated; size in UNITs (sizeof(block_t)), head
   together), `clock_seconds()` (whole seconds, for file timestamps). `clock_days_from_civil` is
   Howard Hinnant's `days_from_civil`: the year starts in March, so the leap day comes last. One
   tick of resolution.
+- **To programs** (`sys/time.c`, libc `time/`): `clock_gettime` (`SYS_CLOCK_GETTIME` 41;
+  `CLOCK_REALTIME` 0, `CLOCK_MONOTONIC` 1, Linux's values, in `uapi/mihos/time.h` with
+  `struct mihos_timespec`) and `nanosleep` (`SYS_NANOSLEEP` 42). `SYS_SLEEP` 9 was never wired
+  up: retired, its number stays free. `nanosleep` sleeps on a queue nobody wakes with
+  `wait_queue_sleep_interruptible_timeout` (0 woken, `-EINTR`, `-ETIMEDOUT`), for
+  `timer_ticks_for(ns)` ticks: rounded up plus one, since the tick in progress is partly over. A
+  handler ends it with `EINTR` and the time left (deadline minus monotonic), even with
+  `SA_RESTART`, as Linux. libc: `clock_gettime`, `time`, `nanosleep`, and `sleep` (the seconds
+  left, rounded up). The `time` test.
 
 ### Threads
 
@@ -2935,11 +2946,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     printing and parsing and locales, not worth writing before mlibc; it is now mlibc's first
     port at phase D, through `ports/lua/` with a pinned, hashed tarball):
     - **C7a, time:** step 1 (done): the CMOS real-time clock read at boot, a wall clock and a
-      monotonic clock advanced by the timer, the real tick length, `clock_selftest`. Next, step
-      2: `clock_gettime` and `nanosleep` syscalls (mlibc's
-      sysdeps need them); ext2 timestamps (new inodes take the parent's `mtime`, `dtime` comes
-      from `s_wtime`, writes leave `mtime`, `stat` reports `mtime` three times); libc `time`,
-      `clock_gettime`, `clock`, `gmtime`, `strftime` (UTC only), a `date` program. The first prerequisite of
+      monotonic clock advanced by the timer, the real tick length, `clock_selftest`. Step 2 (done):
+      the `clock_gettime` and `nanosleep` syscalls (mlibc's sysdeps need them), libc `time`,
+      `clock_gettime`, `nanosleep`, `sleep`, the `time` test. Next, step 3: ext2 timestamps (new inodes take the parent's `mtime`, `dtime` comes
+      from `s_wtime`, writes leave `mtime`, `stat` reports `mtime` three times); step 4: libc
+      `gmtime`, `strftime` (UTC only), a `date` program; `clock` (CPU time) on its own. The first prerequisite of
       packages too (see the roadmap's "Packages": TLS checks dates).
     - **C7b, files in stdio:** `fopen`, `fclose`, `fread`, `fwrite`, `fseek`/`ftell`,
       `setvbuf`, streams in a list (`__stdio_head` stops being `const`); maybe
@@ -3082,6 +3093,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   once and never written back or corrected (no `clock_settime`, no NTP); it is assumed UTC; years
   2070 and later read as 1970-1999 (the century register is not used). `.bochsrc` still has
   `time0=local`, so under Bochs the clock is off by the local time zone.
+- `clock()` is missing: it is CPU time, not wall time, so it needs ticks counted per process
+  (`cpu_ticks++` for the running thread in `scheduler_tick`) and a `CLOCK_PROCESS_CPUTIME_ID`.
+- `nanosleep` stopped and continued (Ctrl+Z, `fg`) returns `EINTR` early; Linux sleeps the rest
+  through a per-thread restart block. `nanosleep` of 0 still waits about one tick (Linux
+  returns at once).
 - Clock math: the tick length is rounded twice. The PIT's base is 14 318 180 / 12 =
   1 193 181.67 Hz, not 1 193 182, and `divisor × 10⁹ / 1193182` truncates 9 999 312.4 to
   9 999 312; the exact tick is 9 999 315.56 ns, so the clock runs about 31 ms a day slow (a
