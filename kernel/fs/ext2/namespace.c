@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <driver/clock.h>
 #include <mihos/errno.h>
 #include <mm/kmalloc.h>
 #include <kprintf.h>
@@ -9,7 +10,8 @@
  * @brief A new, empty regular file in a directory: an inode taken and prepared, then its name
  *
  * The name comes last, so no record ever points at an unprepared inode; if it cannot be
- * added, the inode goes back. The directory's links and mtime stay (no "..", no clock).
+ * added, the inode goes back. The directory's links stay (no ".."); its mtime and ctime
+ * become now, the new file's three times too.
  *
  * @param dir: The directory VFS node
  * @param name: The name of the new file (not '\0'-terminated)
@@ -20,6 +22,8 @@
  */
 int ext2_create(vfs_node_t *dir, const char *name, size_t length, uint32_t mode, vfs_node_t **child)
 {
+    int64_t now = clock_seconds();
+
     ext2_node_t *node = EXT2_NODE(dir);
     ext2_volume_t *volume = node->volume;
 
@@ -46,7 +50,7 @@ int ext2_create(vfs_node_t *dir, const char *name, size_t length, uint32_t mode,
     if (ret < 0)
         return ret;
 
-    ret = ext2_inode_init(volume, ino, EXT2_S_IFREG | (mode & 07777), 1, (uint32_t)dir->mtime);
+    ret = ext2_inode_init(volume, ino, EXT2_S_IFREG | (mode & 07777), 1, (uint32_t)now);
     if (ret == 0)
         ret = ext2_dir_add(node, name, length, ino, EXT2_FT_REG_FILE);
 
@@ -55,6 +59,11 @@ int ext2_create(vfs_node_t *dir, const char *name, size_t length, uint32_t mode,
         ext2_inode_free(volume, ino, false);
         return ret;
     }
+
+    // The directory gained a name. The name is already on disk, so a failure here
+    // only leaves an old time: still hand back the file
+    ext2_mark_changed(node, now);
+    ext2_times_store(node);
 
     return ext2_node_get(volume, ino, dir, child);
 }
@@ -112,6 +121,7 @@ void ext2_release(vfs_node_t *node)
  */
 int ext2_unlink(vfs_node_t *dir, const char *name, size_t length)
 {
+    int64_t now = clock_seconds();
     ext2_node_t *d = EXT2_NODE(dir);
     ext2_volume_t *volume = d->volume;
     vfs_node_t *child = NULL;
@@ -157,9 +167,19 @@ int ext2_unlink(vfs_node_t *dir, const char *name, size_t length)
             {
                 child->nlink--;
                 ret = ext2_links_store(c);
+                if (ret == 0)
+                {
+                    child->ctime = now;
+                    ret = ext2_times_store(c);
+                }
                 if (child->nlink == 0)
                     c->free_on_release = true;
             }
+        }
+        if (ret == 0)
+        {
+            ext2_mark_changed(d, now);
+            ret = ext2_times_store(d);
         }
     }
 
@@ -172,6 +192,7 @@ int ext2_unlink(vfs_node_t *dir, const char *name, size_t length)
 
 int ext2_mkdir(vfs_node_t *dir, const char *name, size_t length, uint32_t mode)
 {
+    int64_t now = clock_seconds();
     ext2_node_t *d = EXT2_NODE(dir);
     ext2_volume_t *volume = d->volume;
     vfs_node_t *child = NULL;
@@ -202,7 +223,7 @@ int ext2_mkdir(vfs_node_t *dir, const char *name, size_t length, uint32_t mode)
             ret = ext2_inode_alloc(volume, d->ino, true, &ino);
         if (ret == 0)
         {
-            ret = ext2_inode_init(volume, ino, EXT2_S_IFDIR | (mode & 07777), 2, (uint32_t)dir->mtime);
+            ret = ext2_inode_init(volume, ino, EXT2_S_IFDIR | (mode & 07777), 2, (uint32_t)now);
             if (ret == 0)
                 ret = ext2_node_get(volume, ino, dir, &child);
             if (ret < 0)
@@ -240,6 +261,11 @@ int ext2_mkdir(vfs_node_t *dir, const char *name, size_t length, uint32_t mode)
             dir->nlink++;
             ret = ext2_links_store(d);
         }
+        if (ret == 0)
+        {
+            ext2_mark_changed(d, now);
+            ret = ext2_times_store(d);
+        }
     }
 
     // After the parent's lock (as in ext2_unlink); a failed directory is freed here
@@ -251,6 +277,7 @@ int ext2_mkdir(vfs_node_t *dir, const char *name, size_t length, uint32_t mode)
 
 int ext2_rmdir(vfs_node_t *dir, const char *name, size_t length)
 {
+    int64_t now = clock_seconds();
     ext2_node_t *d = EXT2_NODE(dir);
     ext2_volume_t *volume = d->volume;
     vfs_node_t *child = NULL;
@@ -310,6 +337,11 @@ int ext2_rmdir(vfs_node_t *dir, const char *name, size_t length)
         {
             dir->nlink--;
             ret = ext2_links_store(d);
+        }
+        if (ret == 0)
+        {
+            ext2_mark_changed(d, now);
+            ret = ext2_times_store(d);
         }
     }
 

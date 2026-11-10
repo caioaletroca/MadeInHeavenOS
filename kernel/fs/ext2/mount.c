@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <driver/clock.h>
 #include <mihos/errno.h>
 #include <mm/kmalloc.h>
 #include <string.h>
@@ -6,6 +7,19 @@
 #include <util.h>
 
 // ---- Mounting: the superblock and the group table, checked; the root node; the boot mount ----
+
+/**
+ * @brief Store the current time in the superblock's s_mtime or s_wtime field
+ *
+ * @param volume: The ext2 filesystem
+ * @param field: The offset of the field to store (s_mtime or s_wtime)
+ * @return int: 0 on success, negative error code on failure
+ */
+static int ext2_super_time_store(ext2_volume_t *volume, size_t field)
+{
+    uint32_t now = (uint32_t)clock_seconds();
+    return ext2_disk_write(volume, EXT2_SUPERBLOCK_OFFSET + field, &now, sizeof(now));
+}
 
 /**
  * @brief Read the superblock from the ext2 filesystem
@@ -85,9 +99,6 @@ static int ext2_check_superblock(const ext2_super_t *superblock, const block_dev
     volume->inodes_per_group = superblock->s_inodes_per_group;
     volume->inode_size = inode_size;
     volume->first_ino = superblock->s_first_ino;
-
-    // i_dtime below s_inodes_count is an orphan list link to e2fsck, not a time
-    volume->dtime = MAX(superblock->s_wtime, superblock->s_inodes_count);
 
     // Large inodes: new ones get s_want_extra_isize valid bytes after byte 128 (at least the minimum;
     // 32, Linux's default, when an old mke2fs left both 0). 128-byte inodes have no extra area
@@ -192,7 +203,9 @@ static int ext2_state_store(ext2_volume_t *volume, uint16_t state)
 static void ext2_halt(halt_hook_t *hook)
 {
     ext2_volume_t *volume = list_container(hook, ext2_volume_t, halt_hook);
-    int ret = ext2_state_store(volume, volume->state | EXT2_VALID_FS);
+    int ret = ext2_super_time_store(volume, offsetof(ext2_super_t, s_wtime));
+    if (ret == 0)
+        ret = ext2_state_store(volume, volume->state | EXT2_VALID_FS);
     if (ret < 0)
         kprintf("ext2: %s: cannot mark the volume clean: %d\n", volume->disk->name, ret);
 }
@@ -246,8 +259,14 @@ int ext2_mount(block_device_t *disk, vfs_node_t **root)
         if ((volume->state & EXT2_VALID_FS) == 0 || (volume->state & EXT2_ERROR_FS) != 0)
             kprintf("ext2: %s was not cleanly unmounted or has errors: run e2fsck\n", disk->name);
 
+        // Update the superblock's s_mtime and s_wtime to the current time
+        ret = ext2_super_time_store(volume, offsetof(ext2_super_t, s_mtime));
+        if (ret == 0)
+            ret = ext2_super_time_store(volume, offsetof(ext2_super_t, s_wtime));
+
         // Mark the volume as not cleanly unmounted before continuing
-        ret = ext2_state_store(volume, volume->state & ~EXT2_VALID_FS);
+        if (ret == 0)
+            ret = ext2_state_store(volume, volume->state & ~EXT2_VALID_FS);
         if (ret < 0)
         {
             vfs_node_put(node);

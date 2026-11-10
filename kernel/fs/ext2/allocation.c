@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <driver/clock.h>
 #include <mihos/errno.h>
 #include <util.h>
 
@@ -257,7 +258,7 @@ int ext2_inode_alloc(ext2_volume_t *volume, uint32_t parent, bool directory, uin
  * @param ino: The inode (from ext2_inode_alloc)
  * @param mode: EXT2_S_IF* | permissions
  * @param links: i_links_count (1 for a file, 2 for a directory: its name and its ".")
- * @param time: All three times (no clock: the caller passes its parent's mtime)
+ * @param time: All three times: now, as the caller read it
  * @return 0 on success, negative error code on failure
  */
 int ext2_inode_init(ext2_volume_t *volume, uint32_t ino, uint16_t mode, uint16_t links, uint32_t time)
@@ -305,7 +306,8 @@ int ext2_inode_free(ext2_volume_t *volume, uint32_t ino, bool directory)
 
     uint64_t byte = ext2_inode_byte(volume, ino);
 
-    uint32_t dtime = volume->dtime; // "deleted" for e2fsck (0 would be an orphan); no clock, so the superblock's last write time
+    // "deleted" for e2fsck: below s_inodes_count it would read as an orphan list link (a 1970 clock)
+    uint32_t dtime = (uint32_t)MAX(clock_seconds(), (int64_t)volume->inodes_count);
     int ret = ext2_disk_write(volume, byte + offsetof(ext2_inode_t, i_dtime), &dtime, sizeof(dtime));
 
     // A freed inode has no links: e2fsck calls an inode with links in use, whatever its bit says

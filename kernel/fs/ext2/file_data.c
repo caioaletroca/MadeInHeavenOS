@@ -1,9 +1,26 @@
 #include "internal.h"
+#include <driver/clock.h>
 #include <mihos/errno.h>
 #include <string.h>
 #include <util.h>
 
 // ---- File data: read, write and truncate of a file's bytes ----
+
+#define ATIME_REFRESH (24 * 60 * 60) // relatime: at least once a day
+
+/**
+ * @brief Check if the access time of a file is due for an update.
+ *
+ * @param file: The VFS node representing the file
+ * @param now: The current time in seconds since the epoch
+ * @return true if the access time should be updated, false otherwise
+ */
+static bool ext2_atime_due(const vfs_node_t *file, int64_t now)
+{
+    return file->atime <= file->mtime ||
+           file->atime <= file->ctime ||
+           now - file->atime >= ATIME_REFRESH;
+}
 
 /**
  * @brief Read data from an ext2 file
@@ -55,6 +72,13 @@ long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset)
         }
 
         done += chunk;
+    }
+
+    int64_t now = clock_seconds();
+    if (done > 0 && !volume->read_only && ext2_atime_due(file, now))
+    {
+        file->atime = now;
+        ext2_times_store(n); // best effort: a read never fails over its atime
     }
 
     return (long)done;
@@ -124,6 +148,15 @@ long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint64_t off
         done += chunk;
     }
 
+    // If any bytes were written, update the inode's times and store them on disk
+    if (done > 0)
+    {
+        ext2_mark_changed(n, clock_seconds());
+        int stored = ext2_times_store(n);
+        if (ret == 0)
+            ret = stored;
+    }
+
     // What was written stays written: the size covers it, and blocks linked before an
     // error are in the inode (counted and consistent, only maybe unused)
     uint64_t end = offset + done;
@@ -156,6 +189,12 @@ int ext2_truncate(vfs_node_t *file, uint64_t size)
     if (size > volume->max_file_size)
         return -EFBIG;
 
+    // Update the file's times and store them on disk
+    ext2_mark_changed(node, clock_seconds());
+    int ret = ext2_times_store(node);
+    if (ret < 0)
+        return ret;
+
     // If the new size is equal to the current size, nothing needs to be done.
     if (size == file->size)
         return 0;
@@ -168,7 +207,7 @@ int ext2_truncate(vfs_node_t *file, uint64_t size)
 
     // The block that will hold the new end keeps its first bytes: the rest must read as
     // zeros if the file grows again, not as what was there
-    int ret = 0;
+    ret = 0;
     size_t within = size % volume->block_size;
     if (within != 0)
     {

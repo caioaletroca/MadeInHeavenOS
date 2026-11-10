@@ -39,7 +39,6 @@ typedef struct ext2_volume
     uint32_t groups;
     bool read_only;            // an unknown ro_compat feature: writing could damage the disk
     uint16_t state;            // s_state as it is on the disk (EXT2_VALID_FS cleared while mounted writable)
-    uint32_t dtime;            // i_dtime for freed inodes: s_wtime (no clock), never below s_inodes_count
     halt_hook_t halt_hook;     // writable volumes: marks the volume clean before the power goes off
     uint64_t max_file_size;    // the largest file: what three levels of tables reach, or 2 GiB - 1 without LARGE_FILE
     ext2_group_t *group_table; // kmalloc'd copy of the group descriptors
@@ -85,6 +84,7 @@ uint64_t ext2_inode_byte(const ext2_volume_t *volume, uint32_t ino);
 int ext2_inode_store(ext2_node_t *n);
 int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent, vfs_node_t **out);
 int ext2_links_store(ext2_node_t *node);
+int ext2_times_store(ext2_node_t *node);
 
 // file_blocks.c
 int ext2_file_block(ext2_volume_t *volume, ext2_node_t *node, uint64_t logical, uint32_t *goal, bool create, uint32_t *out);
@@ -132,5 +132,17 @@ void ext2_release(vfs_node_t *node);
 int ext2_unlink(vfs_node_t *dir, const char *name, size_t length);
 int ext2_mkdir(vfs_node_t *dir, const char *name, size_t length, uint32_t mode);
 int ext2_rmdir(vfs_node_t *dir, const char *name, size_t length);
+
+/**
+ * @brief Mark a node's mtime and ctime as changed
+ *
+ * @param node: The ext2 node; the caller holds node->lock
+ * @param now: The current time in seconds since 1970
+ */
+static inline void ext2_mark_changed(ext2_node_t *node, int64_t now)
+{
+    node->base.mtime = now;
+    node->base.ctime = now;
+}
 
 #endif /* _FS_EXT2_INTERNAL_H_ */

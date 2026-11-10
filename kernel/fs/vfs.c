@@ -70,7 +70,9 @@ void vfs_node_init(vfs_node_t *node, vfs_node_type_t type, const vfs_node_ops_t 
     node->size = 0;
     node->ops = ops;
     node->mode = 0;
+    node->atime = 0;
     node->mtime = 0;
+    node->ctime = 0;
     node->dev = 0;
     node->mounted_root = NULL;
     node->mount_point = NULL;
@@ -363,9 +365,9 @@ void vfs_stat(vfs_node_t *node, struct mihos_stat *stat)
     stat->st_dev = node->dev;
     stat->st_rdev = node->rdev;
     stat->st_nlink = node->nlink;
-    stat->st_atim.tv_sec = node->mtime;
+    stat->st_atim.tv_sec = node->atime;
     stat->st_mtim.tv_sec = node->mtime;
-    stat->st_ctim.tv_sec = node->mtime;
+    stat->st_ctim.tv_sec = node->ctime;
 }
 
 int vfs_read_file(const char *path, void **data, size_t *size)

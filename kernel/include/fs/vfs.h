@@ -37,7 +37,9 @@ typedef struct vfs_node
     uint64_t size;
     uint64_t ino;                      // inode number, unique within the file system
     uint32_t mode;                     // permission bits only (07777); the type is `type`
-    int64_t mtime;                     // last change, seconds since 1970 (0: unknown)
+    int64_t atime;                     // last read, seconds since 1970 (0: unknown)
+    int64_t mtime;                     // last change of the contents
+    int64_t ctime;                     // last change of the inode: contents, links or mode
     uint64_t dev;                      // file system id (vfs_dev_alloc), st_dev
     struct vfs_node *mounted_root;     // mount point: the root of the file system mounted here, or NULL
     struct vfs_node *mount_point;      // mounted root: the directory it is mounted on, or NULL

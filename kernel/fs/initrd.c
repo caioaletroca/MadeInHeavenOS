@@ -366,7 +366,7 @@ static void initrd_add_entry(initrd_node_t *root, const tar_header_t *header, si
     if (last != NULL)
     {
         last->base.mode = (uint32_t)(mode & 07777);
-        last->base.mtime = (int64_t)mtime;
+        last->base.atime = last->base.mtime = last->base.ctime = (int64_t)mtime;
     }
 }
 

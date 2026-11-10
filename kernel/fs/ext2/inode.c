@@ -134,7 +134,9 @@ int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent, vfs_n
     n->base.ino = ino;
     n->base.dev = volume->dev;
     n->base.mode = inode.i_mode & 07777;
+    n->base.atime = inode.i_atime;
     n->base.mtime = inode.i_mtime;
+    n->base.ctime = inode.i_ctime;
     n->base.nlink = inode.i_links_count;
     n->base.size = inode.i_size;
     if (type == VFS_FILE)
@@ -170,4 +172,27 @@ int ext2_links_store(ext2_node_t *node)
                            ext2_inode_byte(node->volume, node->ino) + offsetof(ext2_inode_t, i_links_count),
                            &links,
                            sizeof(links));
+}
+
+// i_atime, i_ctime and i_mtime are neighbours (bytes 8, 12, 16): stored with one write
+_Static_assert(offsetof(ext2_inode_t, i_ctime) == offsetof(ext2_inode_t, i_atime) + 4 &&
+                   offsetof(ext2_inode_t, i_mtime) == offsetof(ext2_inode_t, i_atime) + 8,
+               "ext2 inode times layout");
+
+/**
+ * @brief Store a node's three times into its inode, in the disk's order: atime, ctime, mtime
+ *
+ * @param node: The ext2 node; the caller holds node->lock
+ * @return 0 on success, negative error code on failure
+ */
+int ext2_times_store(ext2_node_t *node)
+{
+    uint32_t times[3] = {
+        (uint32_t)node->base.atime,
+        (uint32_t)node->base.ctime,
+        (uint32_t)node->base.mtime};
+    return ext2_disk_write(node->volume,
+                           ext2_inode_byte(node->volume, node->ino) + offsetof(ext2_inode_t, i_atime),
+                           times,
+                           sizeof(times));
 }
