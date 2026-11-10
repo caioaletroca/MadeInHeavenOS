@@ -30,6 +30,23 @@ int wait_queue_sleep_interruptible(wait_queue_t *queue, spinlock_t *lock)
     return signal_pending(self->process) ? -EINTR : 0;
 }
 
+int wait_queue_sleep_interruptible_timeout(wait_queue_t *queue, spinlock_t *lock, uint64_t ticks)
+{
+    thread_t *self = scheduler_current();
+
+    if (signal_pending(self->process))
+        return -EINTR;
+
+    self->interruptible = true;
+    bool woken = wait_queue_sleep_locked_timeout(queue, lock, ticks);
+    self->interruptible = false;
+
+    if (signal_pending(self->process))
+        return -EINTR;
+
+    return woken ? 0 : -ETIMEDOUT;
+}
+
 bool wait_queue_sleep_locked_timeout(wait_queue_t *queue, spinlock_t *lock, uint64_t ticks)
 {
     spinlock_release(lock);

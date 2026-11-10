@@ -8,4 +8,5 @@ directories.c \
 stat.c \
 processes.c \
 memory.c \
-signals.c
+signals.c \
+time.c

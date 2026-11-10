@@ -31,4 +31,5 @@ tcsetpgrp.c \
 isatty.c \
 ftruncate.c \
 truncate.c \
+sleep.c \
 _exit.c

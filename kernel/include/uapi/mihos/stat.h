@@ -2,6 +2,7 @@
 #define _UAPI_MIHOS_STAT_H_
 
 #include <stdint.h>
+#include <mihos/time.h>
 
 // st_mode: the file type in the high bits (S_IFMT mask), permissions in the low 12 (octal, Linux values)
 #define MIHOS_S_IFMT 0170000
@@ -15,12 +16,6 @@
 #define MIHOS_MKDEV(major, minor) (((uint64_t)(major) << 32) | (uint32_t)(minor))
 #define MIHOS_MAJOR(dev) ((uint32_t)((dev) >> 32))
 #define MIHOS_MINOR(dev) ((uint32_t)(dev))
-
-struct mihos_timespec
-{
-    int64_t tv_sec;  // seconds
-    int64_t tv_nsec; // nanoseconds
-};
 
 /**
  * What stat and fstat write. Every field is fixed-width and the padding is

@@ -15,4 +15,5 @@ ioctl \
 cxx \
 signal \
 termios \
+time \
 arch/$(ARCH)

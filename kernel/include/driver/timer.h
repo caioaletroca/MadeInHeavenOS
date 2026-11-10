@@ -27,6 +27,15 @@ void timer_init(uint32_t frequency);
 uint64_t timer_ticks(void);
 
 /**
+ * @brief Converts nanoseconds to the timer ticks a sleep must wait to last at
+ * least that long: rounded up, plus one for the tick already in progress.
+ *
+ * @param nanoseconds The time in nanoseconds.
+ * @return The number of ticks, at least 1 (even for 0 ns).
+ */
+uint64_t timer_ticks_for(uint64_t nanoseconds);
+
+/**
  * @brief Retrieves the current time in nanoseconds since the system started.
  *
  * @return The current time in nanoseconds.

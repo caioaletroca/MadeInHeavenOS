@@ -88,6 +88,10 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_setsid();
     case SYS_GETSID:
         return sys_getsid((long)arg0);
+    case SYS_CLOCK_GETTIME:
+        return sys_clock_gettime((int)arg0, (uintptr_t)arg1);
+    case SYS_NANOSLEEP:
+        return sys_nanosleep((uintptr_t)arg0, (uintptr_t)arg1);
     default:
         return -ENOSYS;
     }

@@ -38,6 +38,17 @@ void wait_queue_sleep_locked(wait_queue_t *queue, spinlock_t *lock);
 int wait_queue_sleep_interruptible(wait_queue_t *queue, spinlock_t *lock);
 
 /**
+ * @brief Like wait_queue_sleep_interruptible, but with a timeout. The lock is
+ * held on return either way. Callers must stop waiting on an error.
+ *
+ * @param queue Pointer to the wait queue to sleep on.
+ * @param lock Pointer to the spinlock that will be released while sleeping and reacquired afterwards.
+ * @param ticks Number of scheduler ticks to wait before timing out.
+ * @return 0 when woken normally, -EINTR when a signal is pending, -ETIMEDOUT when the timeout expires.
+ */
+int wait_queue_sleep_interruptible_timeout(wait_queue_t *queue, spinlock_t *lock, uint64_t ticks);
+
+/**
  * @brief Put the current thread to sleep on the specified wait queue while holding a lock, with a timeout.
  * Lock must be held, it is released while sleeping and reacquired afterwards, IRQs still off. Recheck the condition in a loop.
  *

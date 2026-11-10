@@ -266,6 +266,14 @@ int isatty(int fd);
 int pipe(int fds[2]);
 
 /**
+ * Sleep for a specified number of seconds.
+ *
+ * @param seconds The number of seconds to sleep.
+ * @return 0 if the requested time has elapsed, or the number of seconds left to sleep if interrupted by a signal.
+ */
+unsigned int sleep(unsigned int seconds);
+
+/**
  * Terminate the calling process immediately.
  *
  * @param status The exit status of the process.

@@ -32,5 +32,6 @@
 #define ENOSYS 38       // function not implemented
 #define ENOTEMPTY 39    // directory not empty
 #define ENOBUFS 105     // no buffer space: every block cache buffer is in use
+#define ETIMEDOUT 110   // timed out: a sleep with a time limit ran out
 
 #endif /* _UAPI_MIHOS_ERRNO_H_ */

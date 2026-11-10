@@ -37,6 +37,7 @@ static const char *const messages[] = {
     [ENOSYS] = "Function not implemented",
     [ENOTEMPTY] = "Directory not empty",
     [ENOBUFS] = "No buffer space available",
+    [ETIMEDOUT] = "Connection timed out",
 };
 
 char *strerror(int error)

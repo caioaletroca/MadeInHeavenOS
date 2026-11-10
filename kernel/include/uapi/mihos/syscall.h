@@ -11,7 +11,7 @@
 #define SYS_GETPID 6
 #define SYS_KILL 7
 #define SYS_YIELD 8
-#define SYS_SLEEP 9
+// 9: free (a sleep that was never wired up); numbers are never reused
 #define SYS_CLOSE 10
 #define SYS_BRK 11
 #define SYS_SPAWN 12
@@ -43,6 +43,8 @@
 #define SYS_GETPGID 38
 #define SYS_SETSID 39
 #define SYS_GETSID 40
+#define SYS_CLOCK_GETTIME 41
+#define SYS_NANOSLEEP 42
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)

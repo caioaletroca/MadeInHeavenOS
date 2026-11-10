@@ -73,6 +73,10 @@ long sys_sigreturn(void);
 long sys_sigpending(uintptr_t set);
 long sys_pause(void);
 
+// time.c
+long sys_clock_gettime(int clock, uintptr_t time);
+long sys_nanosleep(uintptr_t request, uintptr_t remaining);
+
 // memory.c
 long sys_brk(uintptr_t address);
 
