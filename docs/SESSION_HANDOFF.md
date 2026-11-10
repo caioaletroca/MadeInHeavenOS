@@ -3082,6 +3082,18 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   once and never written back or corrected (no `clock_settime`, no NTP); it is assumed UTC; years
   2070 and later read as 1970-1999 (the century register is not used). `.bochsrc` still has
   `time0=local`, so under Bochs the clock is off by the local time zone.
+- Clock math: the tick length is rounded twice. The PIT's base is 14 318 180 / 12 =
+  1 193 181.67 Hz, not 1 193 182, and `divisor × 10⁹ / 1193182` truncates 9 999 312.4 to
+  9 999 312; the exact tick is 9 999 315.56 ns, so the clock runs about 31 ms a day slow (a
+  ±20 ppm crystal drifts ±1.7 s a day, so NTP matters more). Exact: keep the divisor and compute
+  `ticks × divisor × 12 × 10⁹ / 14318180` at read time with `__int128` (the product overflows 64
+  bits after about 11 minutes), so the remainder never accumulates.
+- RTC read: the "update in progress" wait in `rtc_read_raw` has no limit. With no CMOS chip the
+  port reads `0xFF`, bit 7 stays set and boot hangs. Linux gives up after about 10 ms: count the
+  tries, return an error, and let `clock_init` start from 1970 with a warning. The boot date is
+  also up to 1 s behind (the RTC has whole seconds, taken as `.000`): waiting for the seconds
+  register to change would start the clock at the edge of a second, at the cost of up to 1 s of
+  boot.
 - `page_unmap` does not reclaim empty intermediate tables.
 - Direct map covers only the first 1 GiB; RAM above it is ignored (clamped in `mmap_init`).
 - `MMU_EXEC` ignored: NX not enabled (`EFER.NXE`), every mapping is executable.
