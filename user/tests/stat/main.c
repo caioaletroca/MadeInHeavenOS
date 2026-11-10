@@ -49,7 +49,10 @@ static void test_file(void)
 
     // The pre-2008 names reach the same fields
     CHECK(st.st_mtime == st.st_mtim.tv_sec && st.st_mtime >= MTIME_MIN);
-    CHECK(st.st_atime == st.st_mtime && st.st_ctime == st.st_mtime);
+    CHECK(st.st_atime == st.st_atim.tv_sec && st.st_ctime == st.st_ctim.tv_sec);
+    // The initrd has only tar's mtime (all three equal); on the disk a read may have moved
+    // atime (relatime), and ctime is when the installer wrote the inode
+    CHECK(st.st_atime >= st.st_mtime && st.st_ctime >= st.st_mtime);
 
     // The size is what lseek finds, and fstat on the open file agrees with stat
     int fd = open(FILE_PATH, O_RDONLY);

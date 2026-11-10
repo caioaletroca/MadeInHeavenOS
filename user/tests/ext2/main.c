@@ -5,6 +5,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
+#include <time.h>
 #include <test.h>
 
 /*
@@ -460,6 +461,70 @@ static void test_unlink(void)
 }
 
 /*
+ * The three times, in grow/ (seconds only, so a sleep(1) makes the next change
+ * a later second). A create gives the file and its directory one time. A write
+ * moves mtime and ctime, not atime. A read after a change moves atime, the next
+ * one doesn't (relatime). ftruncate moves mtime and ctime. An unlink moves the
+ * directory's two and the open file's ctime alone (its links changed, not its
+ * bytes). mkdir and rmdir move the directory's.
+ */
+static void test_times(void)
+{
+    struct stat st, dir;
+    char buffer[8];
+
+    time_t start = time(NULL);
+    int fd = open(MNT "/grow/clock", O_RDWR | O_CREAT | O_EXCL, 0600);
+    CHECK(fd >= 0);
+    CHECK(fstat(fd, &st) == 0);
+    time_t made = st.st_mtime;
+    CHECK(made >= start && made <= time(NULL));
+    CHECK(st.st_atime == made && st.st_ctime == made);
+    CHECK(st.st_mtim.tv_nsec == 0); // ext2 keeps seconds
+    CHECK(stat(MNT "/grow", &dir) == 0 && dir.st_mtime == made && dir.st_ctime == made);
+
+    // A write: the contents and the inode changed, nothing was read
+    sleep(1);
+    CHECK(write(fd, "tick", 4) == 4);
+    CHECK(fstat(fd, &st) == 0);
+    time_t written = st.st_mtime;
+    CHECK(written > made && st.st_ctime == written && st.st_atime == made);
+
+    // A read after the write moves atime; the next read, a second later, doesn't. The
+    // first one waits a second too: an atime equal to mtime still counts as "not read since"
+    sleep(1);
+    CHECK(lseek(fd, 0, SEEK_SET) == 0 && read(fd, buffer, sizeof(buffer)) == 4);
+    CHECK(fstat(fd, &st) == 0);
+    time_t read_at = st.st_atime;
+    CHECK(read_at > written && st.st_mtime == written);
+    sleep(1);
+    CHECK(lseek(fd, 0, SEEK_SET) == 0 && read(fd, buffer, sizeof(buffer)) == 4);
+    CHECK(fstat(fd, &st) == 0 && st.st_atime == read_at);
+
+    // ftruncate: mtime and ctime, atime stays
+    CHECK(ftruncate(fd, 2) == 0);
+    CHECK(fstat(fd, &st) == 0);
+    time_t cut = st.st_mtime;
+    CHECK(cut > written && st.st_ctime == cut && st.st_atime == read_at);
+
+    // An unlink: the directory's names changed; the file's link count, not its bytes
+    CHECK(unlink(MNT "/grow/clock") == 0);
+    CHECK(stat(MNT "/grow", &dir) == 0 && dir.st_mtime >= cut && dir.st_ctime == dir.st_mtime);
+    CHECK(fstat(fd, &st) == 0 && st.st_nlink == 0);
+    CHECK(st.st_ctime == dir.st_mtime && st.st_mtime == cut);
+    close(fd);
+
+    // mkdir: the new directory and its parent share the time; rmdir moves the parent's again
+    CHECK(mkdir(MNT "/grow/clockdir", 0755) == 0);
+    struct stat child;
+    CHECK(stat(MNT "/grow/clockdir", &child) == 0 && stat(MNT "/grow", &dir) == 0);
+    CHECK(child.st_mtime >= cut && child.st_atime == child.st_mtime && child.st_ctime == child.st_mtime);
+    CHECK(dir.st_mtime == child.st_mtime && dir.st_ctime == child.st_mtime);
+    CHECK(rmdir(MNT "/grow/clockdir") == 0);
+    CHECK(stat(MNT "/grow", &dir) == 0 && dir.st_mtime >= child.st_mtime && dir.st_ctime == dir.st_mtime);
+}
+
+/*
  * Directories from user space, in grow/: mkdir with a mode (stat: a directory, 2
  * links, the parent +1), a listing of just . and .., a file inside, rmdir refused
  * while it holds the file and accepted after, the parent's links back; the
@@ -557,6 +622,7 @@ int main(void)
     test_create();
     test_unlink();
     test_dirs();
+    test_times();
     test_refusals();
 
     // Every fd and stream was closed: the next open gets fd 3 again

@@ -13,6 +13,7 @@
 #include <string.h>
 #include <panic.h>
 #include <util.h>
+#include <driver/clock.h>
 
 /*
  * Against disk.img (Makefile): 1 KiB blocks, mounted on /mnt by ext2_init.
@@ -45,6 +46,7 @@
 #define SB_FREE_BLOCKS_COUNT 12
 #define SB_FREE_INODES_COUNT 16
 #define SB_STATE 58
+#define SB_MTIME 44
 #define SB_WTIME 48
 #define EXT2_TEST_VALID_FS 0x0001 // s_state: cleanly unmounted
 #define BG_INODE_BITMAP 4
@@ -56,6 +58,8 @@
 #define BG_INODE_TABLE 8
 #define I_MODE 0
 #define I_SIZE 4
+#define I_ATIME 8
+#define I_CTIME 12
 #define I_MTIME 16
 #define I_DTIME 20
 #define I_LINKS_COUNT 26
@@ -768,7 +772,8 @@ static void ext2_test_grow(void)
 /**
  * The mounted test disk is writable, so on the disk itself (after a sync) its
  * s_state says "not cleanly unmounted": the clean bit comes back only at the
- * halt (fsck-test.sh checks that). A crash before it leaves the bit clear.
+ * halt (fsck-test.sh checks that). A crash before it leaves the bit clear. The
+ * mount stored its time as both s_mtime and s_wtime (at boot: under a minute ago).
  */
 static void ext2_test_state(void)
 {
@@ -781,6 +786,13 @@ static void ext2_test_state(void)
     uint32_t state = disk_u32(disk, SB + SB_STATE) & 0xFFFF;
     if (state & EXT2_TEST_VALID_FS)
         panic("ext2 self-test: the mounted volume's s_state (0x%x) still says clean\n", state);
+
+    int64_t now = clock_seconds();
+    uint32_t mounted = disk_u32(disk, SB + SB_MTIME);
+    uint32_t written = disk_u32(disk, SB + SB_WTIME);
+    if (mounted > now || now - mounted > 60 || written < mounted || written > now)
+        panic("ext2 self-test: s_mtime %u or s_wtime %u is not the mount's time (now %u)\n", mounted, written,
+              (uint32_t)now);
 }
 
 /**
@@ -902,7 +914,8 @@ static void open_expect(const char *path, int flags, int error)
 /**
  * Creating files in grow/ (no listing test reads it): an O_CREAT | O_EXCL open
  * takes the first free inode (29 on the test disk) and prepares its slot (on the
- * disk: the mode, one link, the parent's mtime, no blocks, no i_dtime, i_extra_isize
+ * disk: the mode, one link, the clock's time as all three times (the directory's
+ * mtime and ctime become it too), no blocks, no i_dtime, i_extra_isize
  * 32 and zeros after it), its bitmap bit and one inode from both counts, no
  * directory counted; the name's record fits in the directory's first block. A
  * second O_EXCL open is -EEXIST, a plain O_CREAT one opens the same file. 90 more
@@ -935,13 +948,18 @@ static void ext2_test_create(void)
 
     // A new file: the first free inode, prepared on the disk
     struct file *file = NULL;
+    int64_t before = clock_seconds();
     int ret = vfs_open(MNT "/grow/new", O_RDWR | O_CREAT | O_EXCL, 0640, &file);
     if (ret != 0)
         panic("ext2 self-test: creating grow/new failed: %d\n", ret);
     vfs_node_t *created = file->node;
     if (created->type != VFS_FILE || created->ino != 29 || created->size != 0 || created->mode != 0640 ||
-        created->nlink != 1 || created->mtime != grow->mtime || created->dev != grow->dev)
+        created->nlink != 1 || created->dev != grow->dev)
         panic("ext2 self-test: grow/new is not an empty file in inode 29 with mode 0640\n");
+    int64_t made = created->mtime;
+    if (made < before || made > clock_seconds() || created->atime != made || created->ctime != made ||
+        grow->mtime != made || grow->ctime != made)
+        panic("ext2 self-test: grow/new and grow/ do not both have the create's time\n");
 
     uint32_t now_group0;
     uint32_t now = disk_free_inodes(disk, &now_group0);
@@ -961,19 +979,21 @@ static void ext2_test_create(void)
         panic("ext2 self-test: reading inode 29 failed\n");
     uint8_t *inode = slot + byte % BLOCK_SECTOR_SIZE;
     uint16_t mode, links, extra;
-    uint32_t mtime, dtime, size, blocks;
+    uint32_t atime, ctime, mtime, dtime, size, blocks;
     memcpy(&mode, inode + I_MODE, 2);
     memcpy(&size, inode + I_SIZE, 4);
+    memcpy(&atime, inode + I_ATIME, 4);
+    memcpy(&ctime, inode + I_CTIME, 4);
     memcpy(&mtime, inode + I_MTIME, 4);
     memcpy(&dtime, inode + I_DTIME, 4);
     memcpy(&links, inode + I_LINKS_COUNT, 2);
     memcpy(&blocks, inode + I_BLOCKS, 4);
     memcpy(&extra, inode + I_EXTRA_ISIZE, 2);
-    if (mode != (0x8000 | 0640) || size != 0 || mtime != (uint32_t)grow->mtime || dtime != 0 || links != 1 ||
-        blocks != 0)
+    if (mode != (0x8000 | 0640) || size != 0 || atime != (uint32_t)made || ctime != (uint32_t)made ||
+        mtime != (uint32_t)made || dtime != 0 || links != 1 || blocks != 0)
         panic("ext2 self-test: inode 29 on the disk is not the new file\n");
     for (uint32_t b = I_BLOCK; b < 128; b++)
-        if (inode[b] != 0 && (b < I_MTIME || b >= I_MTIME + 4))
+        if (inode[b] != 0)
             panic("ext2 self-test: byte %u of inode 29 is not zero\n", b);
     if (inode_size > 128)
     {
@@ -1071,7 +1091,7 @@ static void unlink_expect(const char *path, int error)
  * Unlinking what ext2_test_create made. grow/new is unlinked while open: the
  * name is gone at once (lookup ENOENT, nlink 0, i_links_count 0 on the disk),
  * the file still reads and writes, and its inode and block come back only at
- * the last put (bit 28 clear, i_dtime the superblock's s_wtime: no clock); a new create then reuses inode 29,
+ * the last put (bit 28 clear, i_dtime the clock's time then); a new create then reuses inode 29,
  * and unlinking a closed file frees it at once. The 90 f… names go too: in
  * the end grow/ lists its 5 files again, and the free counts are what they were
  * before the creates, but for grow/'s second block (directories never shrink).
@@ -1107,14 +1127,17 @@ static void ext2_test_unlink(void)
         panic("ext2 self-test: an unlinked file was freed while still open\n");
 
     // The last put frees it: its block and inode back, the slot marked deleted
+    int64_t before = clock_seconds();
     file_put(file);
+    int64_t after = clock_seconds();
     uint32_t now = disk_free_inodes(disk, &now_group0);
     if (now != free + 1 || now_group0 != group0 + 1)
         panic("ext2 self-test: closing an unlinked file gave back %u inodes, expected 1\n", now - free);
     if (disk_free_blocks(disk, &now_group0) != free_blocks + 1 || now_group0 != blocks_group0 + 1)
         panic("ext2 self-test: closing an unlinked file did not give back its block\n");
-    if ((disk_u32(disk, bitmap + 28 / 8) >> (28 % 8) & 1) != 0 || disk_u32(disk, inode29 + I_DTIME) != disk_u32(disk, SB + SB_WTIME))
-        panic("ext2 self-test: inode 29 is still marked used, or its i_dtime is not s_wtime, after its free\n");
+    uint32_t dtime = disk_u32(disk, inode29 + I_DTIME);
+    if ((disk_u32(disk, bitmap + 28 / 8) >> (28 % 8) & 1) != 0 || dtime < before || dtime > after)
+        panic("ext2 self-test: inode 29 is still marked used, or its i_dtime (%u) is not the time of its free\n", dtime);
 
     // The freed inode is the first free one again; unlinking a closed file frees it at once
     if (vfs_open(MNT "/grow/again", O_WRONLY | O_CREAT | O_EXCL, 0600, &file) != 0 || file->node->ino != 29)
