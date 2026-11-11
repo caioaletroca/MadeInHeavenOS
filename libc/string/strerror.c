@@ -33,6 +33,7 @@ static const char *const messages[] = {
     [EMLINK] = "Too many links",
     [EPIPE] = "Broken pipe",
     [ERANGE] = "Numerical result out of range",
+    [EOVERFLOW] = "Value too large for defined data type",
     [ENAMETOOLONG] = "File name too long",
     [ENOSYS] = "Function not implemented",
     [ENOTEMPTY] = "Directory not empty",

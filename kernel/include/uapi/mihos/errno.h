@@ -31,6 +31,7 @@
 #define ENAMETOOLONG 36 // file name too long
 #define ENOSYS 38       // function not implemented
 #define ENOTEMPTY 39    // directory not empty
+#define EOVERFLOW 75    // value too large for its type: a gmtime year past an int
 #define ENOBUFS 105     // no buffer space: every block cache buffer is in use
 #define ETIMEDOUT 110   // timed out: a sleep with a time limit ran out
 
