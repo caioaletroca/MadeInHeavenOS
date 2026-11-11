@@ -58,6 +58,12 @@ static const shell_case_t cases[] = {
     {"no history expansion", "echo one\necho !! !1\n", "one\n!! !1\n", "", 0},
     {"a parse error skips one line", "echo 'open\necho next\n", "next\n", "sh: unmatched quote\n", 0},
     {"an empty script", "", "", "", 0},
+    // The shell reads its script one byte at a time: the lines after a command stay in the pipe
+    // for that command (dash too). Read ahead, cat would find nothing and "hello" would run.
+    {"a command reads the rest of the script", "cat\nhello\necho after\n", "hello\necho after\n", "", 0},
+    {"a nested shell takes its lines, then the outer goes on",
+     "sh\necho inner\nexit 3\necho $?\n",
+     "inner\n3\n", "", 0},
 
     // Pipelines
     {"a pipe into cat", "echo hello | cat\n", "hello\n", "", 0},
