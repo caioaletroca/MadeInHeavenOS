@@ -87,6 +87,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+b7356d5 test: cover setvbuf, setbuf and long printf
+9f68fe2 feat(libc): add setvbuf and setbuf, and printf past 512 bytes
 1351313 test: cover fread, fseek, ftell and rewind
 083f057 feat(libc): add fread, fseek, ftell and rewind
 cb209ff test: cover fopen, fdopen, fileno and fclose
@@ -2358,7 +2360,7 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   (`<= 0` → `F_ERR`), `__fflush_one` writes pending output and empties the buffer (dropped on error).
   `fflush(NULL)` walks the stream list. `ferror` reads `F_ERR`. Public functions are thin wrappers: `fputc`, `fputs`,
   `puts`, `putchar`, `fwrite`, `printf`/`fprintf`/`vprintf`/`vfprintf` (formats into a `BUFSIZ`
-  stack buffer, then one `__fwritex`).
+  stack buffer, or the heap when longer, then one `__fwritex`).
 - **stdio input:** in `MODE_READ` the buffer holds `[pos, len)` unread bytes from the last `read`.
   `__fillbuf` (returns 0 or `EOF`) is the only reader: not readable → `F_ERR`; `F_EOF` set → `EOF`
   without reading (sticky until `clearerr`); flushes the stream's own pending output before taking
@@ -2403,6 +2405,18 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   the buffer holds input (`mode != MODE_READ`): after a write `pos` counts output, and it used
   to hand that back. In the `streams` test (a `dup`'d fd shows where `fclose`, `fflush` and a
   child's `exit` put the shared offset).
+- **Buffering control** (C7b step 3): `setvbuf(stream, buffer, mode, size)` with `_IOFBF` 0,
+  `_IOLBF` 1, `_IONBF` 2 (glibc's values) clears `F_LINEBUF`, `F_NOBUF` and `F_TTYCHECK` (an
+  explicit choice outlives the terminal check) and sets the mode's flag; the caller's buffer
+  (`size` bytes, EINVAL for 0) or, for NULL or `_IONBF`, the stream's own: `own_buffer`
+  remembers it (the static arrays, or the bytes after a `fopen`'d `FILE`; stderr has one too
+  now). C allows it only before the first read or write; ours syncs first (pending output
+  written, read-ahead given back), so it works later too. Unbuffered input (`F_NOBUF` in
+  `__fillbuf`) reads one byte at a time: nothing read ahead, as dash reads a pipe. `setbuf` =
+  `setvbuf` with `BUFSIZ`, NULL unbuffered. `vfprintf` formats into its 512-byte stack buffer;
+  when `vsnprintf` says the text is longer, it `malloc`s exactly that and formats again from a
+  `va_copy` (a `va_list` is walked once, like an enumerator), so `printf` is no longer cut
+  (`ENOMEM`: -1 and `F_ERR`). In the `streams` test.
 - **`stat`/`fstat`** (`<sys/stat.h>`, `libc/stat/`, translator in `internal/stat.h`): POSIX
   `struct stat` with POSIX types (`dev_t`, `mode_t`, `nlink_t`, `uid_t`, `gid_t`, `blksize_t`,
   `blkcnt_t`, `time_t` in `<sys/types.h>`, Linux x86-64 sizes) and `struct timespec` times
@@ -3031,8 +3045,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     - **C7b, files in stdio (in progress):** step 1 (done): `fopen`, `fdopen`, `fileno`,
       `fclose`, the stream list (`__stdio_head` no longer `const`), the `streams` test.
       Step 2 (done): `fread`, `fseek`, `ftell`, `rewind`, `__stream_sync` (the read-ahead
-      given back at `fseek`, `fclose`, `fflush`, `exit` and a switch to writing). Next, step 3: `setvbuf`/`setbuf`, and
-      `printf` past 512 bytes (`vfprintf` cuts there). Maybe `setjmp`/`longjmp` after.
+      given back at `fseek`, `fclose`, `fflush`, `exit` and a switch to writing). Step 3 (done): `setvbuf`/`setbuf`, and
+      `printf` past 512 bytes (`own_buffer`, unbuffered input one byte at a time, `va_copy`).
+      Maybe next: `setjmp`/`longjmp`.
       Ours until mlibc replaces it.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
 
@@ -3352,8 +3367,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   parts (prompt, history, the banner) are still checked by hand (no pseudo-terminal). It reads
   stdin through `fgets`' 512-byte buffer, so on a pipe it reads ahead of the current line: a
   command that reads stdin (a `cat` in a script) would miss those bytes (dash reads a pipe one
-  byte at a time, bash seeks back on files). No `sh file`, `sh -c`, `-i`/`-s` or `$0`/`$1`.
-- stdio: no `setvbuf`/`setbuf` yet (C7b step 3); no `fseeko`/`ftello` (`long` is 64-bit
+  byte at a time, bash seeks back on files); `setvbuf(stdin, NULL, _IONBF, 0)` in the shell
+  would now fix it on pipes, and on files `exit` already gives the read-ahead back. No `sh file`, `sh -c`, `-i`/`-s` or `$0`/`$1`.
+- stdio: `setvbuf(NULL)` ignores the size asked for and uses the own 512 bytes (glibc
+  allocates that size); stderr's static entry has `buffer` but `size` 0 until a `setvbuf`
+  (harmless: unbuffered writes go straight out); no `fseeko`/`ftello` (`long` is 64-bit
   already) or `fgetpos`/`fsetpos`; `fread` copies everything through the 512-byte buffer (glibc
   reads a big request straight into the caller's memory); no `"e"` mode (the kernel's `open` has no `O_CLOEXEC`); `fdopen` cannot check the mode
   against the fd's or set `O_APPEND` for `"a"` (no `F_GETFL`/`F_SETFL`); no umask, files get
