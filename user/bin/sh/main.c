@@ -36,6 +36,12 @@ int main(void)
         terminal_setup(&sh);
         print_header();
     }
+    else
+    {
+        // A script may hand stdin to its commands (a "cat" reads the lines after it): reading
+        // one byte at a time leaves every byte past this line for them, as dash does on a pipe
+        setvbuf(stdin, NULL, _IONBF, 0);
+    }
 
     while (sh.running)
     {
