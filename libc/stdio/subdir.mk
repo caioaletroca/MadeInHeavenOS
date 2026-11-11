@@ -13,9 +13,14 @@ __fflush_one.c \
 __fillbuf.c \
 __mode_flags.c \
 __stream_new.c \
+__stream_sync.c \
 fopen.c \
 fdopen.c \
+fread.c \
+fseek.c \
+ftell.c \
 fileno.c \
+rewind.c \
 fclose.c \
 fflush.c \
 ferror.c \

@@ -24,9 +24,11 @@ extern FILE *const stderr;
 int fclose(FILE *);
 
 /**
- * @brief Flushes the output buffer of a stream.
+ * @brief Writes what waits in a stream's output buffer. For an input stream, gives back what
+ * it read ahead: the fd moves back to the stream's position (only on a file: a pipe's or a
+ * terminal's bytes are dropped), and ungetc is undone (POSIX 2008).
  *
- * @param stream Pointer to a FILE object that identifies the stream to be flushed.
+ * @param stream The stream, or NULL for every stream that is writing (input streams untouched).
  * @return On success, 0 is returned. On error, EOF is returned.
  */
 int fflush(FILE *);
@@ -39,10 +41,32 @@ int fflush(FILE *);
  */
 int ferror(FILE *stream);
 
-size_t fread(void *, size_t, size_t, FILE *);
-int fseek(FILE *, long, int);
-long ftell(FILE *);
 void setbuf(FILE *, char *);
+
+/**
+ * @brief Reads up to count items of size bytes each into ptr.
+ * @return The whole items read: fewer than count at end of file or on an error (feof/ferror tell which).
+ */
+size_t fread(void *ptr, size_t size, size_t count, FILE *stream);
+
+/**
+ * @brief Moves the stream to offset from whence (SEEK_SET, SEEK_CUR from the stream's position,
+ * SEEK_END). Pending output is written first; input read ahead and an ungetc byte are dropped.
+ * Clears end of file.
+ * @return 0, or -1 with errno set (ESPIPE for a pipe or terminal, EINVAL, or a write's error).
+ */
+int fseek(FILE *stream, long offset, int whence);
+
+/**
+ * @brief The stream's position: where the next read or write would happen.
+ * @return The position, or -1 with errno set (ESPIPE for a pipe or terminal).
+ */
+long ftell(FILE *stream);
+
+/**
+ * @brief fseek to the start, then clears the error indicator too.
+ */
+void rewind(FILE *stream);
 
 /**
  * @brief Opens path as a stream. mode: "r" read; "w" write, created or emptied; "a" write at

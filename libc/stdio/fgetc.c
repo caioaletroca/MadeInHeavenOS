@@ -10,8 +10,11 @@ int fgetc(FILE *f)
         return c;
     }
 
-    if (f->pos == f->len && __fillbuf(f) != 0)
-        return EOF;
+    if (f->mode != MODE_READ || f->pos == f->len)
+    {
+        if (__fillbuf(f) != 0)
+            return EOF;
+    }
 
     return f->buffer[f->pos++];
 }

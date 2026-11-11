@@ -4,7 +4,7 @@
 
 int fclose(FILE *stream)
 {
-    int result = __fflush_one(stream);
+    int result = __stream_sync(stream);
     if (close(stream->fd) != 0)
         result = EOF;
 

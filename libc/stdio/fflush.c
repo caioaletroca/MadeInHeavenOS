@@ -5,7 +5,7 @@
 int fflush(FILE *stream)
 {
     if (stream != NULL)
-        return __fflush_one(stream);
+        return __stream_sync(stream);
 
     int result = 0;
     for (FILE *f = __stdio_head; f != NULL; f = f->next)

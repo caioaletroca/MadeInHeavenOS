@@ -80,6 +80,16 @@ int __fflush_one(FILE *f);
 int __fillbuf(FILE *f);
 
 /**
+ * Makes the fd's offset the stream's position and empties the buffer: pending output is
+ * written; input read ahead (and an ungetc byte) is given back with an lseek. On a pipe or
+ * terminal that lseek fails and those bytes are dropped (they cannot go back).
+ *
+ * @param f Pointer to the file stream.
+ * @return 0, or EOF if pending output could not be written.
+ */
+int __stream_sync(FILE *f);
+
+/**
  * Turns an fopen mode ("r", "w", "a", each with an optional '+'; 'b' and 'x' allowed after)
  * into the stream's F_READ/F_WRITE flags and open()'s flags.
  *

@@ -23,9 +23,10 @@ size_t __fwritex(const unsigned char *data, size_t n, FILE *f)
         errno = saved;
     }
 
+    // A read stream's fd is ahead of it: back to where the reading stopped, or the write lands too far
     if (f->mode != MODE_WRITE)
     {
-        f->pos = f->len = 0;
+        __stream_sync(f);
         f->mode = MODE_WRITE;
     }
 
