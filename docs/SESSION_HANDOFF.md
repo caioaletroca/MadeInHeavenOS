@@ -38,13 +38,13 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
   pipelines of programs (`a | b | c`); `/bin/cat` (files, stdin, `-`);
   `/bin/echo` as the first command; `/bin/ls` (`-a`, several paths, `/` after directories,
-  `.` without arguments)
+  `.` without arguments); `/bin/date` (`-u`, `+FORMAT`)
 - **uapi headers** (`<mihos/syscall.h>`, `<mihos/errno.h>`, `<mihos/signal.h>`, `<mihos/fcntl.h>`,
   `<mihos/dirent.h>`, `<mihos/stat.h>`): the only kernel
   headers installed into the sysroot
@@ -87,6 +87,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+e7243a2 test: cover gmtime, timegm, strftime and date
+891f1c1 feat(libc): add gmtime, timegm, strftime and a date program
 98cd75a test: cover the ext2 timestamps
 49cc3b0 feat(ext2): keep real atime, mtime and ctime
 e0bb35f test: cover clock_gettime, nanosleep and sleep
@@ -2484,6 +2486,17 @@ link.next == MALLOC_MAGIC while allocated; size in UNITs (sizeof(block_t)), head
   8, `i_ctime` 12, `i_mtime` 16, a `_Static_assert` on it). `i_dtime` = the free's time, at
   least `s_inodes_count`. The superblock gets `s_mtime` and `s_wtime` at a writable mount and
   `s_wtime` again at the halt. The initrd's three times are tar's mtime.
+- **The calendar** (libc `time/`, UTC only: no `TZ`, no `/etc/localtime`): `struct tm`;
+  `gmtime`/`gmtime_r` split seconds with Hinnant's `civil_from_days` (days rounded down, so -1
+  is 1969-12-31 23:59:59; `EOVERFLOW` for a year past an `int`); `localtime`/`localtime_r` are
+  `gmtime_r`; `timegm` (`days_from_civil`) folds out-of-range months into the year, lets the
+  rest carry through the seconds and rewrites `*tm` through `gmtime_r`; `mktime` is `timegm`.
+  `strftime`: the C99 conversions plus `%s`, C locale (`%E`/`%O` ignored, an unknown one copied
+  as written, `?` for a name out of range, `%z` `+0000`, `%Z` `UTC`); it counts every character
+  and stores only while there is room, like `vsnprintf`, and returns 0 if the text and its
+  `\0` do not fit; `%c`, `%D`, `%T`… expand their own formats. ISO weeks (`%V`, `%G`): the week
+  belongs to the year holding its Thursday. `/bin/date [-u] [+FORMAT]`, GNU's default format.
+  The `calendar` test.
 
 ### Threads
 
@@ -2964,8 +2977,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
       the `clock_gettime` and `nanosleep` syscalls (mlibc's sysdeps need them), libc `time`,
       `clock_gettime`, `nanosleep`, `sleep`, the `time` test. Step 3 (done): ext2 timestamps
       (atime with relatime, mtime, ctime, a real `i_dtime`, the superblock's mount and write
-      times, three times in the VFS node). Next, step 4: libc
-      `gmtime`, `strftime` (UTC only), a `date` program; `clock` (CPU time) on its own. The first prerequisite of
+      times, three times in the VFS node). Step 4 (done): libc
+      `struct tm`, `gmtime`, `localtime`, `timegm`, `mktime`, `strftime` (UTC only), `/bin/date`,
+      the `calendar` test. Left: `clock` (CPU time) on its own. The first prerequisite of
       packages too (see the roadmap's "Packages": TLS checks dates).
     - **C7b, files in stdio:** `fopen`, `fclose`, `fread`, `fwrite`, `fseek`/`ftell`,
       `setvbuf`, streams in a list (`__stdio_head` stops being `const`); maybe
@@ -3115,6 +3129,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   fields add nanoseconds); Linux reads 128-byte inode times as signed 32-bit (January 2038:
   a disk carried over shows 1901), ours unsigned (2106); no `utimensat`, so no `touch`, and
   `cp -p`/`tar` cannot set times.
+- Calendar: UTC only (no `TZ`, no zone files, `localtime` = `gmtime`); no GNU `strftime`
+  flags or widths (`%-d`, `%_d`, `%10Y`); `date` cannot set the clock (no `clock_settime`)
+  and has no `-d`; no `<limits.h>` (`gmtime` uses GCC's `__INT_MAX__`); no `strtol`/`strtod`
+  (Lua needs both; the `calendar` test parses digits itself).
 - `nanosleep` stopped and continued (Ctrl+Z, `fg`) returns `EINTR` early; Linux sleeps the rest
   through a per-thread restart block. `nanosleep` of 0 still waits about one tick (Linux
   returns at once).
