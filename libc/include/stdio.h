@@ -39,12 +39,35 @@ int fflush(FILE *);
  */
 int ferror(FILE *stream);
 
-FILE *fopen(const char *, const char *);
-
 size_t fread(void *, size_t, size_t, FILE *);
 int fseek(FILE *, long, int);
 long ftell(FILE *);
 void setbuf(FILE *, char *);
+
+/**
+ * @brief Opens path as a stream. mode: "r" read; "w" write, created or emptied; "a" write at
+ * the end, created if missing; a '+' makes any of them read and write; 'b' is ignored; "wx"
+ * fails if the file exists.
+ * @return The stream, or NULL with errno set (EINVAL for a bad mode, ENOMEM, or open's).
+ */
+FILE *fopen(const char *path, const char *mode);
+
+/**
+ * @brief A stream on an already open fd (mode as fopen's, but nothing is created or emptied).
+ * @return The stream, or NULL with errno set (EINVAL, EBADF, ENOMEM).
+ */
+FILE *fdopen(int fd, const char *mode);
+
+/**
+ * @brief The stream's file descriptor.
+ */
+int fileno(FILE *stream);
+
+/**
+ * @brief Writes what waits in the buffer, closes the fd and frees the stream, even on error.
+ * @return 0, or EOF if the flush or the close failed.
+ */
+int fclose(FILE *stream);
 
 /**
  * @brief Checks the end-of-file indicator for the given stream.

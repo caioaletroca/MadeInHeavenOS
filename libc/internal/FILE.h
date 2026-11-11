@@ -11,6 +11,7 @@
 #define F_LINEBUF (1u << 4)
 #define F_NOBUF (1u << 5)
 #define F_TTYCHECK (1u << 6) // line-buffered only if the fd is a terminal: decided at the first write
+#define F_STATIC (1u << 7)   // stdin, stdout, stderr: not from malloc, never freed
 
 enum
 {
@@ -39,7 +40,8 @@ struct _FILE
     // TODO: Add thread-safety mechanisms if needed
 };
 
-extern FILE *const __stdio_head;
+// The first open stream; each links the next. fopen pushes on the front, fclose unlinks.
+extern FILE *__stdio_head;
 
 /**
  * Write all n bytes of data to f's fd, looping over short writes.
@@ -76,6 +78,26 @@ int __fflush_one(FILE *f);
  * @return 0 on success, or EOF on error or end of file.
  */
 int __fillbuf(FILE *f);
+
+/**
+ * Turns an fopen mode ("r", "w", "a", each with an optional '+'; 'b' and 'x' allowed after)
+ * into the stream's F_READ/F_WRITE flags and open()'s flags.
+ *
+ * @param mode The mode string.
+ * @param open_flags Receives the flags for open().
+ * @return F_READ, F_WRITE or both, or 0 for a mode that does not start with r, w or a.
+ */
+unsigned int __mode_flags(const char *mode, int *open_flags);
+
+/**
+ * A new stream on fd, with its own BUFSIZ buffer, pushed on the front of the list.
+ * Fully buffered, unless its first write finds a terminal (then line-buffered, as C asks).
+ *
+ * @param fd An open file descriptor.
+ * @param flags F_READ, F_WRITE or both.
+ * @return The stream, or NULL with errno ENOMEM.
+ */
+FILE *__stream_new(int fd, unsigned int flags);
 
 /**
  * @brief Performs necessary cleanup for the standard I/O library before program exit.

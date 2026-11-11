@@ -11,6 +11,12 @@ __write_all.c \
 __fwritex.c \
 __fflush_one.c \
 __fillbuf.c \
+__mode_flags.c \
+__stream_new.c \
+fopen.c \
+fdopen.c \
+fileno.c \
+fclose.c \
 fflush.c \
 ferror.c \
 feof.c \
