@@ -7,12 +7,15 @@
 #include <test.h>
 
 /*
- * The clocks and sleeping: clock_gettime, time, nanosleep and sleep.
+ * The clocks and sleeping: clock_gettime, time, clock, nanosleep and sleep.
  *
  * The clocks move in whole timer ticks (about 10 ms), so every duration check
  * measures with CLOCK_MONOTONIC and allows for that. A signal that ends a
  * sleep comes from a child that waits SIGNAL_DELAY first: long enough for the
  * parent to be asleep, short enough that most of the sleep is left.
+ *
+ * CPU time is sampled: each tick goes to the process it interrupts, so a busy
+ * loop gets about its length and a sleep about nothing, within a few ticks.
  */
 
 #define NS_PER_SECOND 1000000000LL
@@ -21,6 +24,8 @@
 #define SHORT_SLEEP_MS 50
 #define LONG_SLEEP_S 5
 #define SIGNAL_DELAY_MS 100
+#define BUSY_MS 300
+#define TICKS_MS 30 // a few ticks of slack
 #define NOT_USER_ADDRESS ((void *)0xFFFFFFFF80100000ULL)
 
 static volatile sig_atomic_t handled;
@@ -105,7 +110,7 @@ static void test_clock_errors(void)
     struct timespec t;
 
     errno = 0;
-    CHECK(clock_gettime(2, &t) == -1 && errno == EINVAL);
+    CHECK(clock_gettime(3, &t) == -1 && errno == EINVAL); // CLOCK_THREAD_CPUTIME_ID: not yet
     errno = 0;
     CHECK(clock_gettime(-1, &t) == -1 && errno == EINVAL);
     errno = 0;
@@ -155,6 +160,75 @@ static void test_sleep_errors(void)
     CHECK(nanosleep(NOT_USER_ADDRESS, NULL) == -1 && errno == EFAULT);
 }
 
+// Spins until `ms` of wall time have passed: all of it on the CPU
+static void busy(int64_t ms)
+{
+    int64_t end = monotonic_ns() + ms * NS_PER_MS;
+    while (monotonic_ns() < end)
+        ;
+}
+
+// clock() in milliseconds
+static int64_t cpu_ms(void)
+{
+    clock_t used = clock();
+    CHECK(used != (clock_t)-1);
+    return (int64_t)used * 1000 / CLOCKS_PER_SEC;
+}
+
+static void test_cpu_time(void)
+{
+    struct timespec t;
+    CHECK(CLOCKS_PER_SEC == 1000000);
+
+    // clock() is the CPU-time clock in microseconds
+    clock_t before = clock();
+    CHECK(clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t) == 0);
+    clock_t after = clock();
+    CHECK(t.tv_nsec >= 0 && t.tv_nsec < NS_PER_SECOND);
+    CHECK(before >= 0 && before <= ns_of(t) / 1000 && ns_of(t) / 1000 <= after);
+
+    // Busy: about as much CPU time as wall time, never more than the wall time (plus a tick)
+    int64_t cpu = cpu_ms();
+    int64_t wall = monotonic_ns();
+    busy(BUSY_MS);
+    int64_t used = cpu_ms() - cpu;
+    int64_t elapsed = (monotonic_ns() - wall) / NS_PER_MS;
+    CHECK(used >= BUSY_MS - TICKS_MS);
+    CHECK(used <= elapsed + TICKS_MS);
+
+    // Asleep: the ticks find the idle thread, not this process
+    struct timespec nap = {.tv_sec = 0, .tv_nsec = BUSY_MS * NS_PER_MS};
+    cpu = cpu_ms();
+    CHECK(nanosleep(&nap, NULL) == 0);
+    CHECK(cpu_ms() - cpu < TICKS_MS);
+}
+
+// Each process has its own: a forked child starts at 0, and its work is not its parent's
+static void test_cpu_time_per_process(void)
+{
+    busy(BUSY_MS / 3); // the parent has some by now
+    CHECK(cpu_ms() >= BUSY_MS / 3 - TICKS_MS);
+
+    fflush(stdout);
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0)
+    {
+        int fresh = cpu_ms() < TICKS_MS;
+        busy(BUSY_MS);
+        int counted = cpu_ms() >= BUSY_MS - TICKS_MS;
+        _exit(fresh && counted ? 0 : 1);
+    }
+
+    int64_t cpu = cpu_ms(); // the parent waits while the child spins
+    int status;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+        ;
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    CHECK(cpu_ms() - cpu < TICKS_MS);
+}
+
 // A handler ends the sleep: EINTR and the time left
 static void test_signal_ends_sleep(int flags)
 {
@@ -202,6 +276,8 @@ int main(void)
 {
     test_clocks();
     test_clock_errors();
+    test_cpu_time();
+    test_cpu_time_per_process();
     test_sleep_lasts();
     test_sleep_errors();
     test_signal_ends_sleep(0);
