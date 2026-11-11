@@ -3045,14 +3045,28 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
       the `calendar` test. `clock` (done): a per-process tick count and
       `CLOCK_PROCESS_CPUTIME_ID`. The first prerequisite of
       packages too (see the roadmap's "Packages": TLS checks dates).
-    - **C7b, files in stdio (in progress):** step 1 (done): `fopen`, `fdopen`, `fileno`,
+    - **C7b, files in stdio (done):** step 1 (done): `fopen`, `fdopen`, `fileno`,
       `fclose`, the stream list (`__stdio_head` no longer `const`), the `streams` test.
       Step 2 (done): `fread`, `fseek`, `ftell`, `rewind`, `__stream_sync` (the read-ahead
       given back at `fseek`, `fclose`, `fflush`, `exit` and a switch to writing). Step 3 (done): `setvbuf`/`setbuf`, and
       `printf` past 512 bytes (`own_buffer`, unbuffered input one byte at a time, `va_copy`).
-      Maybe next: `setjmp`/`longjmp`.
-      Ours until mlibc replaces it.
-- Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
+      `setjmp`/`longjmp` left to mlibc (it brings its own). Ours until mlibc replaces it.
+  - **Phase C is complete.**
+- **Phase D's kernel prerequisites (next, chosen before phase B's hardware path).** The
+  porting platform first: mlibc's sysdeps, pthreads and every port after them need these.
+  Order:
+  - **D1, `mmap`/`munmap` (next):** anonymous private memory. A list of regions per address
+    space (start, end, protection), pages mapped as touched (the fault path, as the stack
+    does), copied at fork, placed top-down below the stack's reservation; `brk` stops at
+    the first region. libc `<sys/mman.h>`, a `memory` test.
+  - **D2, `mprotect`:** a region's protection changed, regions split, `PROT_NONE`.
+  - **D3, NX on:** `EFER.NXE`, the no-execute bit on every page without `MMU_EXEC` (data,
+    heap, stack), a test running code from a page made executable.
+  - **D4, system calls with IRQs on:** the kernel's own locking first.
+  - Then pthreads with a futex, TLS, SMP; then mlibc's sysdeps, the toolchain rebuilt with
+    libstdc++, Lua through `ports/lua/`.
+- Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase D's
+  prerequisites.
 
 ### User libraries (`user/lib/`)
 

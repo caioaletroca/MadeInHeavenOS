@@ -237,13 +237,22 @@ docs/                     # handoff, roadmap
    a pre-installed ext2 on a partition, the initrd as the live system, the tests run in both
    boots; the installer is phase G). An intermission after it: a current directory per
    process, `chdir`/`getcwd` and the shell's `cd`/`pwd` (done).
-8. Phase C (the process model) in progress, before phase B's hardware path (PCI, then
-   AHCI/NVMe; GPT). Order: C1 `dup`/`dup2`, pipes and the shell's `|` (done), C2 `fork` as a plain copy (done), C3
+8. ~~Phase C (the process model)~~ (done). Order: C1 `dup`/`dup2`, pipes and the shell's `|` (done), C2 `fork` as a plain copy (done), C3
    `execve` (done, the shell runs on `fork` + `execvp`), C4 copy-on-write and stack growth (done), C5 signals (done), C6 terminal control (process
    groups, the foreground group, stop signals, termios and the shell's line editing done; vector registers saved), C7 time (C7a, done: the RTC, a
    wall and a monotonic clock, `clock_gettime`/`nanosleep`, ext2 timestamps, libc's time
-   functions, `clock`) and files in stdio (C7b: `fopen` and its family, maybe `setjmp`). Lua moved to
-   phase D as mlibc's first port. Steps in `SESSION_HANDOFF.md`.
+   functions, `clock`) and files in stdio (C7b, done: `fopen` and its family, `fread`/`fseek`,
+   `setvbuf`; `setjmp` left to mlibc). Lua moved to phase D as mlibc's first port.
+   **Phase C complete.**
+9. Phase D's kernel prerequisites, before phase B's hardware path (chosen 2026-11-11: the
+   porting platform first, real disks after; QEMU's ATA disks serve until then). Order: D1
+   `mmap`/`munmap` (anonymous memory, a list of regions per address space, pages mapped as
+   touched), D2 `mprotect`, D3 NX on (pages not executable unless asked, the debt below), D4
+   system calls with IRQs on (the debt below); then pthreads with a futex, TLS and SMP; then
+   mlibc's sysdeps, the toolchain rebuilt with libstdc++, and Lua through `ports/lua/`.
+10. Phase B's hardware path: PCI enumeration, then AHCI/NVMe; GPT.
+
+Steps in `SESSION_HANDOFF.md`.
 
 ## Reference projects
 
