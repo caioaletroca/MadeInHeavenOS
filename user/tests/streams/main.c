@@ -448,6 +448,104 @@ static void test_give_back(void)
     CHECK(unlink(FILE_A) == 0);
 }
 
+static void test_setvbuf(void)
+{
+    char eight[8], big[BUFSIZ];
+
+    // Unbuffered: each write reaches the file at once
+    FILE *f = fopen(FILE_A, "w");
+    CHECK(f != NULL && setvbuf(f, NULL, _IONBF, 0) == 0);
+    CHECK(fputs("ab", f) >= 0 && size_of(FILE_A) == 2);
+    CHECK(fclose(f) == 0);
+
+    // Line-buffered on a file (no terminal check undoes it): out up to the '\n'
+    f = fopen(FILE_A, "w");
+    CHECK(f != NULL && setvbuf(f, NULL, _IOLBF, 0) == 0);
+    CHECK(fputs("x\ny", f) >= 0 && size_of(FILE_A) == 2);
+    CHECK(fflush(f) == 0 && size_of(FILE_A) == 3);
+    CHECK(fclose(f) == 0);
+
+    // The caller's 8 bytes: 7 wait; 2 more do not fit, so the 7 go out and the 2 straight after
+    f = fopen(FILE_A, "w");
+    CHECK(f != NULL && setvbuf(f, eight, _IOFBF, sizeof(eight)) == 0);
+    CHECK(fputs("1234567", f) >= 0 && size_of(FILE_A) == 0);
+    CHECK(fputs("89", f) >= 0 && size_of(FILE_A) == 9);
+
+    // NULL: back to the stream's own BUFSIZ bytes, which hold 100 easily
+    CHECK(setvbuf(f, NULL, _IOFBF, 0) == 0);
+    for (int i = 0; i < 100; i++)
+        fputc('.', f);
+    CHECK(size_of(FILE_A) == 9);
+    CHECK(fclose(f) == 0 && size_of(FILE_A) == 109);
+
+    // Changed after writing started: what waits goes out first
+    f = fopen(FILE_A, "w");
+    CHECK(f != NULL && fputs("abc", f) >= 0 && size_of(FILE_A) == 0);
+    CHECK(setvbuf(f, NULL, _IONBF, 0) == 0 && size_of(FILE_A) == 3);
+
+    // Errors: an unknown mode, a buffer of 0 bytes
+    errno = 0;
+    CHECK(setvbuf(f, NULL, 7, 0) == EOF && errno == EINVAL);
+    errno = 0;
+    CHECK(setvbuf(f, eight, _IOFBF, 0) == EOF && errno == EINVAL);
+    CHECK(fputc('d', f) == 'd' && size_of(FILE_A) == 4); // still unbuffered
+    CHECK(fclose(f) == 0);
+
+    // setbuf: NULL is unbuffered, a BUFSIZ buffer fully buffered
+    f = fopen(FILE_A, "w");
+    CHECK(f != NULL);
+    setbuf(f, NULL);
+    CHECK(fputc('a', f) == 'a' && size_of(FILE_A) == 1);
+    setbuf(f, big);
+    CHECK(fputs("b\n", f) >= 0 && size_of(FILE_A) == 1);
+    CHECK(fclose(f) == 0 && size_of(FILE_A) == 3);
+
+    // Unbuffered input reads one byte at a time: the shared offset shows nothing read ahead
+    make_file(FILE_A, "hello\nmore!\n");
+    int fd = open(FILE_A, O_RDONLY);
+    int other = dup(fd);
+    f = fdopen(fd, "r");
+    CHECK(f != NULL && setvbuf(f, NULL, _IONBF, 0) == 0);
+    CHECK(fgetc(f) == 'h' && lseek(other, 0, SEEK_CUR) == 1);
+    char line[16];
+    CHECK(fgets(line, sizeof(line), f) != NULL && strcmp(line, "ello\n") == 0);
+    CHECK(lseek(other, 0, SEEK_CUR) == 6);
+    CHECK(fclose(f) == 0 && close(other) == 0);
+    CHECK(unlink(FILE_A) == 0);
+
+    // Line-buffered on a pipe, where the first write would have chosen full buffering
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    f = fdopen(fds[1], "w");
+    CHECK(f != NULL && setvbuf(f, NULL, _IOLBF, 0) == 0);
+    CHECK(fputs("a\nb", f) >= 0);
+    CHECK(read(fds[0], line, sizeof(line)) == 2 && memcmp(line, "a\n", 2) == 0);
+    CHECK(fclose(f) == 0);
+    CHECK(read(fds[0], line, sizeof(line)) == 1 && line[0] == 'b');
+    CHECK(close(fds[0]) == 0);
+}
+
+// printf longer than its 512-byte stack buffer: whole, with the arguments after the long one
+static void test_long_printf(void)
+{
+    static char long_text[2001], text[4100];
+    memset(long_text, 'L', 2000);
+
+    FILE *f = fopen(FILE_A, "w");
+    CHECK(f != NULL);
+    CHECK(fprintf(f, "%s", long_text) == 2000);
+    CHECK(fprintf(f, "%d:%s:%d", 7, long_text, 9) == 2004);
+    CHECK(fprintf(f, "%s", "short") == 5);
+    CHECK(fclose(f) == 0);
+
+    CHECK(size_of(FILE_A) == 4009);
+    contents(FILE_A, text, sizeof(text));
+    CHECK(strncmp(text, long_text, 2000) == 0);
+    CHECK(strncmp(text + 2000, "7:LLL", 5) == 0 && strncmp(text + 4001, "L:9short", 8) == 0);
+
+    CHECK(unlink(FILE_A) == 0);
+}
+
 int main(void)
 {
     test_write_and_read();
@@ -460,5 +558,7 @@ int main(void)
     test_seek_and_tell();
     test_read_and_write();
     test_give_back();
+    test_setvbuf();
+    test_long_printf();
     return test_status();
 }
