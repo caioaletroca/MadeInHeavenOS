@@ -265,6 +265,189 @@ static void test_stdout_closed(void)
     CHECK(unlink(FILE_A) == 0);
 }
 
+// path holds exactly text
+static void make_file(const char *path, const char *text)
+{
+    FILE *f = fopen(path, "w");
+    CHECK(f != NULL && fputs(text, f) >= 0 && fclose(f) == 0);
+}
+
+static void test_fread(void)
+{
+    // 1000 bytes: more than one 512-byte buffer
+    static unsigned char pattern[1000], got[1000];
+    for (size_t i = 0; i < sizeof(pattern); i++)
+        pattern[i] = (unsigned char)(i % 251);
+
+    FILE *f = fopen(FILE_A, "w");
+    CHECK(f != NULL && fwrite(pattern, 1, sizeof(pattern), f) == sizeof(pattern) && fclose(f) == 0);
+    CHECK(size_of(FILE_A) == 1000);
+
+    f = fopen(FILE_A, "r");
+    CHECK(f != NULL);
+    CHECK(fread(got, 1, sizeof(got), f) == sizeof(got) && memcmp(got, pattern, sizeof(got)) == 0);
+    CHECK(!feof(f)); // all asked for was there: end of file not seen yet
+    CHECK(fread(got, 1, 1, f) == 0 && feof(f) && !ferror(f));
+
+    // Whole items only: 3 of 300 bytes fit, the last 100 are read but not counted
+    rewind(f);
+    CHECK(fread(got, 300, 4, f) == 3 && feof(f) && ftell(f) == 1000);
+
+    // An ungetc byte comes first, then the buffer
+    rewind(f);
+    CHECK(fgetc(f) == pattern[0] && ungetc('X', f) == 'X');
+    CHECK(fread(got, 1, 3, f) == 3 && got[0] == 'X' && got[1] == pattern[1] && got[2] == pattern[2]);
+
+    CHECK(fread(got, 0, 5, f) == 0 && fread(got, 5, 0, f) == 0 && !ferror(f)); // nothing asked
+    CHECK(fclose(f) == 0);
+
+    // The wrong direction
+    f = fopen(FILE_A, "a");
+    CHECK(f != NULL && fread(got, 1, 1, f) == 0 && ferror(f) && fclose(f) == 0);
+
+    CHECK(unlink(FILE_A) == 0);
+}
+
+static void test_seek_and_tell(void)
+{
+    char text[16];
+    make_file(FILE_A, "hello\nmore!\n"); // 12 bytes
+
+    FILE *f = fopen(FILE_A, "r");
+    CHECK(f != NULL);
+    CHECK(ftell(f) == 0);
+
+    // The read took all 12 bytes, the program one: the stream is at 1, not at the fd's 12
+    CHECK(fgetc(f) == 'h' && ftell(f) == 1);
+    CHECK(ungetc('h', f) == 'h' && ftell(f) == 0);
+    CHECK(fgetc(f) == 'h' && fgets(text, sizeof(text), f) != NULL && strcmp(text, "ello\n") == 0);
+    CHECK(ftell(f) == 6);
+
+    // SEEK_CUR counts from the stream: 6 + 2 is the 'r' of "more"
+    CHECK(fseek(f, 2, SEEK_CUR) == 0 && fgetc(f) == 'r' && ftell(f) == 9);
+
+    // SEEK_END, end of file, and a seek that clears it
+    CHECK(fseek(f, -1, SEEK_END) == 0 && fgetc(f) == '\n');
+    CHECK(fgetc(f) == EOF && feof(f));
+    CHECK(fseek(f, 0, SEEK_SET) == 0 && !feof(f) && fgetc(f) == 'h');
+
+    // Errors leave the stream where it was
+    errno = 0;
+    CHECK(fseek(f, -1, SEEK_SET) == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK(fseek(f, 0, 9) == -1 && errno == EINVAL);
+    CHECK(ftell(f) == 1 && fgetc(f) == 'e');
+
+    // Past the end: allowed, and nothing there
+    CHECK(fseek(f, 100, SEEK_SET) == 0 && ftell(f) == 100 && fgetc(f) == EOF);
+
+    // rewind clears both indicators
+    CHECK(fputc('x', f) == EOF && ferror(f));
+    rewind(f);
+    CHECK(!ferror(f) && !feof(f) && ftell(f) == 0);
+    CHECK(fclose(f) == 0);
+
+    CHECK(unlink(FILE_A) == 0);
+}
+
+static void test_read_and_write(void)
+{
+    char text[16];
+
+    // "w+": pending output counts in ftell; a seek turns writing into reading
+    FILE *f = fopen(FILE_A, "w+");
+    CHECK(f != NULL);
+    CHECK(fputs("abc", f) >= 0 && ftell(f) == 3);
+    CHECK(fseek(f, 0, SEEK_SET) == 0 && fgetc(f) == 'a');
+
+    // Read, then write with no seek between: the write lands where the reading stopped (1),
+    // not where the fd's read-ahead left it (3)
+    CHECK(fputs("XY", f) >= 0);
+    // Write, then read with no seek between: the output is flushed, never read back from the buffer
+    CHECK(fgetc(f) == EOF && feof(f));
+    rewind(f);
+    CHECK(fread(text, 1, sizeof(text), f) == 3 && memcmp(text, "aXY", 3) == 0);
+    CHECK(fclose(f) == 0);
+
+    // "a": every write at the end; ftell knows it only after the write
+    f = fopen(FILE_A, "a");
+    CHECK(f != NULL && fputs("Z", f) >= 0 && ftell(f) == 4 && fclose(f) == 0);
+
+    // "a+": reading starts at the beginning, writing still goes to the end
+    f = fopen(FILE_A, "a+");
+    CHECK(f != NULL && fgetc(f) == 'a');
+    CHECK(fputs("!", f) >= 0);
+    rewind(f);
+    CHECK(fread(text, 1, sizeof(text), f) == 5 && memcmp(text, "aXYZ!", 5) == 0);
+    CHECK(fclose(f) == 0);
+
+    // "r+": overwrite in the middle after a read and a seek, as C asks
+    f = fopen(FILE_A, "r+");
+    CHECK(f != NULL && fgetc(f) == 'a');
+    CHECK(fseek(f, 0, SEEK_CUR) == 0 && fputc('b', f) == 'b' && ftell(f) == 2);
+    CHECK(fclose(f) == 0);
+    CHECK(strcmp(contents(FILE_A, text, sizeof(text)), "abYZ!") == 0);
+
+    CHECK(unlink(FILE_A) == 0);
+
+    // A pipe has no position: ESPIPE, and the stream keeps what it read ahead
+    int fds[2];
+    CHECK(pipe(fds) == 0 && write(fds[1], "xyz", 3) == 3);
+    f = fdopen(fds[0], "r");
+    CHECK(f != NULL && fgetc(f) == 'x');
+    errno = 0;
+    CHECK(ftell(f) == -1 && errno == ESPIPE);
+    errno = 0;
+    CHECK(fseek(f, 0, SEEK_SET) == -1 && errno == ESPIPE);
+    CHECK(fgetc(f) == 'y' && fgetc(f) == 'z');
+    CHECK(fclose(f) == 0 && close(fds[1]) == 0);
+}
+
+static int shared_fd = -1;
+
+// Reads "hell" through its own stream on the parent's open file, then exits
+static void read_four(void)
+{
+    FILE *f = fdopen(dup(shared_fd), "r");
+    CHECK(f != NULL);
+    for (int i = 0; i < 4; i++)
+        CHECK(fgetc(f) == "hell"[i]);
+}
+
+// What a read stream read ahead goes back to the fd: dup'd fds share one offset, so the other
+// fd shows where the stream stopped
+static void test_give_back(void)
+{
+    make_file(FILE_A, "hello\nmore!\n");
+
+    // fclose
+    int fd = open(FILE_A, O_RDONLY);
+    int other = dup(fd);
+    FILE *f = fdopen(fd, "r");
+    CHECK(f != NULL && fgetc(f) == 'h' && fgetc(f) == 'e');
+    CHECK(lseek(other, 0, SEEK_CUR) == 12); // the buffer took everything
+    CHECK(fclose(f) == 0);
+    CHECK(lseek(other, 0, SEEK_CUR) == 2);
+
+    // fflush of an input stream, also undoing an ungetc
+    CHECK(lseek(other, 0, SEEK_SET) == 0);
+    f = fdopen(dup(other), "r");
+    CHECK(f != NULL && fgetc(f) == 'h' && fgetc(f) == 'e' && fgetc(f) == 'l');
+    CHECK(fflush(f) == 0 && lseek(other, 0, SEEK_CUR) == 3);
+    CHECK(fgetc(f) == 'l' && ungetc('Q', f) == 'Q');
+    CHECK(fflush(f) == 0 && lseek(other, 0, SEEK_CUR) == 3 && fgetc(f) == 'l');
+    CHECK(fclose(f) == 0);
+
+    // exit, in a child sharing the offset through fork
+    CHECK(lseek(other, 0, SEEK_SET) == 0);
+    shared_fd = other;
+    CHECK(in_child(read_four) == 0);
+    CHECK(lseek(other, 0, SEEK_CUR) == 4);
+
+    CHECK(close(other) == 0);
+    CHECK(unlink(FILE_A) == 0);
+}
+
 int main(void)
 {
     test_write_and_read();
@@ -273,5 +456,9 @@ int main(void)
     test_no_leak();
     test_exit_flushes();
     test_stdout_closed();
+    test_fread();
+    test_seek_and_tell();
+    test_read_and_write();
+    test_give_back();
     return test_status();
 }
