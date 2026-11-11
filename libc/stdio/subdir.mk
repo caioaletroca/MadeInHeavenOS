@@ -22,6 +22,8 @@ ftell.c \
 fileno.c \
 rewind.c \
 fclose.c \
+setbuf.c \
+setvbuf.c \
 fflush.c \
 ferror.c \
 feof.c \

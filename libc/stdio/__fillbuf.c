@@ -25,7 +25,9 @@ int __fillbuf(FILE *f)
         if ((s->flags & F_LINEBUF) && s->mode == MODE_WRITE)
             __fflush_one(s);
 
-    ssize_t n = read(f->fd, f->buffer, f->size);
+    // Unbuffered: one byte, so nothing is read ahead of what the program takes
+    size_t want = (f->flags & F_NOBUF) ? 1 : f->size;
+    ssize_t n = read(f->fd, f->buffer, want);
     if (n <= 0)
     {
         f->flags |= n == 0 ? F_EOF : F_ERR;

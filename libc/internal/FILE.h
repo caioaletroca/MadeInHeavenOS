@@ -33,6 +33,7 @@ struct _FILE
     size_t size;
     size_t pos;
     size_t len;
+    unsigned char *own_buffer; // the stream's own BUFSIZ buffer: setvbuf(NULL) goes back to it
     int ungot;
 
     struct _FILE *next;

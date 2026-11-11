@@ -12,6 +12,7 @@ FILE *__stream_new(int fd, unsigned int flags)
         .flags = flags | F_LINEBUF | F_TTYCHECK,
         .mode = MODE_NONE,
         .buffer = (unsigned char *)(f + 1),
+        .own_buffer = (unsigned char *)(f + 1),
         .size = BUFSIZ,
         .ungot = EOF,
         .next = __stdio_head};

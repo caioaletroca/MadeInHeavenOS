@@ -12,6 +12,11 @@
 
 #define EOF (-1)
 
+// setvbuf's modes (glibc's values)
+#define _IOFBF 0 // fully buffered: out when the buffer is full
+#define _IOLBF 1 // line-buffered: out at each '\n'
+#define _IONBF 2 // unbuffered: out at once; input read one byte at a time
+
 // Opaque FILE type
 typedef struct _FILE FILE;
 
@@ -20,8 +25,6 @@ __BEGIN_DECLS
 extern FILE *const stdin;
 extern FILE *const stdout;
 extern FILE *const stderr;
-
-int fclose(FILE *);
 
 /**
  * @brief Writes what waits in a stream's output buffer. For an input stream, gives back what
@@ -41,7 +44,18 @@ int fflush(FILE *);
  */
 int ferror(FILE *stream);
 
-void setbuf(FILE *, char *);
+/**
+ * @brief Chooses how a stream buffers: mode _IOFBF, _IOLBF or _IONBF; buffer (size bytes, kept
+ * by the stream until it closes) or NULL for the stream's own. Meant before the first read or
+ * write; here whatever waits is written or given back first. Overrides the terminal check.
+ * @return 0, or EOF with errno EINVAL (bad mode, or a buffer of size 0).
+ */
+int setvbuf(FILE *stream, char *buffer, int mode, size_t size);
+
+/**
+ * @brief setvbuf with BUFSIZ bytes: a buffer makes the stream fully buffered, NULL unbuffered.
+ */
+void setbuf(FILE *stream, char *buffer);
 
 /**
  * @brief Reads up to count items of size bytes each into ptr.
