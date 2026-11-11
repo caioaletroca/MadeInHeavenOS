@@ -2,6 +2,8 @@
 #include <driver/clock.h>
 #include <driver/timer.h>
 #include <sched/wait.h>
+#include <sched/process.h>
+#include <sched/scheduler.h>
 #include <mihos/time.h>
 #include <stdint.h>
 
@@ -35,6 +37,8 @@ long sys_clock_gettime(int clock, uintptr_t time)
         now = clock_realtime();
     else if (clock == MIHOS_CLOCK_MONOTONIC)
         now = clock_monotonic();
+    else if (clock == MIHOS_CLOCK_PROCESS_CPUTIME_ID)
+        now = (int64_t)timer_ticks_to_nanoseconds(scheduler_current()->process->cpu_ticks);
     else
         return -EINVAL;
 

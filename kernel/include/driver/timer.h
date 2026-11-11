@@ -42,4 +42,12 @@ uint64_t timer_ticks_for(uint64_t nanoseconds);
  */
 uint64_t timer_nanoseconds(void);
 
+/**
+ * @brief Converts a count of timer ticks to nanoseconds, at the measured tick length.
+ *
+ * @param ticks The number of ticks.
+ * @return The nanoseconds they last.
+ */
+uint64_t timer_ticks_to_nanoseconds(uint64_t ticks);
+
 #endif // _TIMER_H_

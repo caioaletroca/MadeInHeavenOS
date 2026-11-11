@@ -5,4 +5,5 @@ localtime.c \
 nanosleep.c \
 strftime.c \
 time.c \
+clock.c \
 timegm.c

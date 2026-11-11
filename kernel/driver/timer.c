@@ -32,3 +32,8 @@ uint64_t timer_nanoseconds(void)
 {
     return ticks * tick_nanoseconds;
 }
+
+uint64_t timer_ticks_to_nanoseconds(uint64_t count)
+{
+    return count * tick_nanoseconds;
+}

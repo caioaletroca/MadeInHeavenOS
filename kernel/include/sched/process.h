@@ -51,9 +51,9 @@ typedef struct
  */
 typedef struct
 {
-    uint32_t pending;                // one bit per signal sent and not yet acted on
-    uint32_t blocked;                // waits in pending while set here
-    struct sigaction actions[NSIG];  // zeroed: every signal starts as SIG_DFL
+    uint32_t pending;               // one bit per signal sent and not yet acted on
+    uint32_t blocked;               // waits in pending while set here
+    struct sigaction actions[NSIG]; // zeroed: every signal starts as SIG_DFL
 } process_signals_t;
 
 /**
@@ -82,6 +82,7 @@ typedef struct process
     int killed_by;            // the signal that killed it, 0 if it exited (set before EXITED)
     wait_queue_t waiters;     // process_wait sleeps here until it exits
     wait_queue_t child_exits; // the parent sleeps here in wait; every child's exit or stop wakes it
+    uint64_t cpu_ticks;       // timer ticks that found this process running (written only by the tick)
 
     process_tree_t tree;
     process_stop_t stop;

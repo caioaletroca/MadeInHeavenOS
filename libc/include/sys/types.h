@@ -25,6 +25,8 @@ typedef long blkcnt_t;
 
 typedef long time_t;
 
+typedef long clock_t;
+
 typedef int clockid_t;
 
 #endif

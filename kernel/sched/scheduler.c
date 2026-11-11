@@ -14,6 +14,7 @@
 #include <asm/fpu.h>
 #include <asm/irq_flags.h>
 #include <asm/cpu.h>
+#include <sched/process.h>
 #include <assert.h>
 #include <panic.h>
 
@@ -241,6 +242,11 @@ void scheduler_tick(void)
         return;
 
     scheduler_ticks++;
+
+    // CPU time, sampled: the whole tick goes to the process it interrupted (as Linux without
+    // precise accounting). The idle thread and kernel threads (no process) count for nobody.
+    if (current_thread != &idle_thread && current_thread->process != NULL)
+        current_thread->process->cpu_ticks++;
 
     list_t *node, *next;
     // Wake up any threads whose sleep time has expired.

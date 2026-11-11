@@ -8,6 +8,10 @@
 
 #define CLOCK_REALTIME MIHOS_CLOCK_REALTIME
 #define CLOCK_MONOTONIC MIHOS_CLOCK_MONOTONIC
+#define CLOCK_PROCESS_CPUTIME_ID MIHOS_CLOCK_PROCESS_CPUTIME_ID
+
+// clock()'s unit: microseconds (POSIX's XSI requires exactly 1 000 000)
+#define CLOCKS_PER_SEC 1000000L
 
 struct timespec
 {
@@ -41,6 +45,13 @@ int clock_gettime(clockid_t clock, struct timespec *time);
  * @brief The wall clock in whole seconds since 1970-01-01 UTC, also stored in *t if not NULL.
  */
 time_t time(time_t *t);
+
+/**
+ * @brief The CPU time this process has used, in CLOCKS_PER_SEC units. Only differences
+ * between two calls mean something (C), though here it counts from the process's fork.
+ * @return The CPU time, or (clock_t)-1 if it cannot be read.
+ */
+clock_t clock(void);
 
 /**
  * @brief Sleeps at least *request, unless a signal handler runs first.
