@@ -87,6 +87,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+732c0ef test: cover commands reading the rest of a script
+f668978 fix(sh): read a script's stdin one byte at a time
+621de25 fix(libc): give stderr's static entry its buffer size
 b7356d5 test: cover setvbuf, setbuf and long printf
 9f68fe2 feat(libc): add setvbuf and setbuf, and printf past 512 bytes
 1351313 test: cover fread, fseek, ftell and rewind
@@ -1426,7 +1429,7 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     buffered (`3 stderr first`, then the rest at exit's flush, `5 flushed by exit` last). Then
     on the console, line-buffered, checked by eye (`1`, `3`, `2 no newline... 4`, `checks: …`,
     `5 flushed by exit` last, only via `exit`). Return values, `ferror` + `EBADF` after `close(2)`.
-  - `shell`: `/bin/sh` on 33 scripts, each written into a pipe that becomes its stdin (written
+  - `shell`: `/bin/sh` on 35 scripts, each written into a pipe that becomes its stdin (written
     and its write end closed before the spawn, or the shell would inherit it and never see
     EOF), stdout and stderr in a pipe each, `PATH=/bin` and `GREETING` in its environment; both
     outputs and the status compared exactly. No banner or prompt; quotes and escapes; `$NAME`,
@@ -3105,7 +3108,10 @@ sh.h / history.h   shared types and declarations ("..." includes)
 - **Interactive or not** (POSIX, as bash and dash): `interactive = isatty(0) && isatty(2)`.
   Interactive: the banner, the prompt through the line editor (on **stderr**, as POSIX says),
   history expansion and `line_history_add`, a `'\n'` on stderr at EOF. Otherwise (a script piped in) none of these, so only
-  the commands' output comes out, and `!!` stays literal. Either way every shell message goes to
+  the commands' output comes out, and `!!` stays literal; stdin is unbuffered
+  (`setvbuf(stdin, NULL, _IONBF, 0)`): `fgets` reads one byte at a time and never past the
+  current line, so a command reading stdin (a `cat`, a nested `sh`) gets the lines after it,
+  as dash on a pipe (the `shell` test's "a command reads the rest of the script"). Either way every shell message goes to
   stderr (parse and history errors too), and stdout is `fflush`ed after every command: into a
   pipe or a file it is fully buffered, and a builtin's output must be out before the next
   program writes its own. Modules take only the part they own
@@ -3364,14 +3370,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The shell has no arrow-key history (needs raw mode / termios), no `;`, `&&`, `||` or
   redirections, no field splitting, no continuation lines for an open quote; a `'` inside `"..."`
   flips history expansion's quote tracking. The `shell` test covers scripts; the interactive
-  parts (prompt, history, the banner) are still checked by hand (no pseudo-terminal). It reads
-  stdin through `fgets`' 512-byte buffer, so on a pipe it reads ahead of the current line: a
-  command that reads stdin (a `cat` in a script) would miss those bytes (dash reads a pipe one
-  byte at a time, bash seeks back on files); `setvbuf(stdin, NULL, _IONBF, 0)` in the shell
-  would now fix it on pipes, and on files `exit` already gives the read-ahead back. No `sh file`, `sh -c`, `-i`/`-s` or `$0`/`$1`.
+  parts (prompt, history, the banner) are still checked by hand (no pseudo-terminal). A script's
+  stdin costs one `read` per byte (dash's way); on a file bash keeps its buffer and seeks back
+  after each line (`fflush(stdin)` before each command would do that here). No `sh file`, `sh -c`, `-i`/`-s` or `$0`/`$1`.
 - stdio: `setvbuf(NULL)` ignores the size asked for and uses the own 512 bytes (glibc
-  allocates that size); stderr's static entry has `buffer` but `size` 0 until a `setvbuf`
-  (harmless: unbuffered writes go straight out); no `fseeko`/`ftello` (`long` is 64-bit
+  allocates that size); no `fseeko`/`ftello` (`long` is 64-bit
   already) or `fgetpos`/`fsetpos`; `fread` copies everything through the 512-byte buffer (glibc
   reads a big request straight into the caller's memory); no `"e"` mode (the kernel's `open` has no `O_CLOEXEC`); `fdopen` cannot check the mode
   against the fd's or set `O_APPEND` for `"a"` (no `F_GETFL`/`F_SETFL`); no umask, files get
