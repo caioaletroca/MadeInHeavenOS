@@ -38,7 +38,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`, `streams`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -87,6 +87,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+cb209ff test: cover fopen, fdopen, fileno and fclose
+6119001 feat(libc): add fopen, fdopen, fileno and fclose
 f2b0396 test: cover clock and the CPU-time clock
 583c611 feat(sys): add the process CPU-time clock and clock()
 e7243a2 test: cover gmtime, timegm, strftime and date
@@ -2366,6 +2368,20 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   (kept), `n - 1` characters or `EOF`; NULL for `EOF` before any character or a read error; a cut
   line continues in the next call. `feof`/`clearerr` on the flags. Ctrl+D mid-line hands over the
   typed bytes; a second one on the empty line is the end of file.
+- **Streams on files** (C7b step 1): `fopen(path, mode)` turns the mode into `F_READ`/`F_WRITE`
+  and `open` flags (`__mode_flags`: `r` `O_RDONLY`; `w` `O_CREAT | O_TRUNC`; `a`
+  `O_CREAT | O_APPEND`, the kernel finds the end; `+` makes it `O_RDWR` without creating or
+  emptying more than its letter does; `x` adds `O_EXCL` to `w`/`a`; `b` and the rest ignored;
+  another first letter `EINVAL`), opens with `0666`, then `__stream_new`: one `malloc` holding
+  the `FILE` and its `BUFSIZ` buffer right after it (`(unsigned char *)(f + 1)`, one `free`),
+  `F_LINEBUF | F_TTYCHECK` (fully buffered unless the first write finds a terminal, as C asks),
+  pushed on the front of the list (`__stdio_head` is no longer `const`). `fdopen` checks the fd
+  with `fcntl(F_GETFD)` (`EBADF`) and never creates or empties. `fileno`. `fclose` flushes,
+  closes the fd, unlinks the stream through a pointer to the slot holding it (`FILE **link`:
+  the head or a `next`, no special case for the first) and frees it, `EOF` if the flush or the
+  close failed; `stdin`/`stdout`/`stderr` are `F_STATIC`: never freed, left with no direction,
+  so a `printf` after `fclose(stdout)` fails instead of writing to whatever gets fd 1. The
+  `streams` test (files in `/mnt`).
 - **`stat`/`fstat`** (`<sys/stat.h>`, `libc/stat/`, translator in `internal/stat.h`): POSIX
   `struct stat` with POSIX types (`dev_t`, `mode_t`, `nlink_t`, `uid_t`, `gid_t`, `blksize_t`,
   `blkcnt_t`, `time_t` in `<sys/types.h>`, Linux x86-64 sizes) and `struct timespec` times
@@ -2991,9 +3007,13 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
       the `calendar` test. `clock` (done): a per-process tick count and
       `CLOCK_PROCESS_CPUTIME_ID`. The first prerequisite of
       packages too (see the roadmap's "Packages": TLS checks dates).
-    - **C7b, files in stdio (next):** `fopen`, `fclose`, `fread`, `fwrite`, `fseek`/`ftell`,
-      `setvbuf`, streams in a list (`__stdio_head` stops being `const`); maybe
-      `setjmp`/`longjmp`. Ours until mlibc replaces it.
+    - **C7b, files in stdio (in progress):** step 1 (done): `fopen`, `fdopen`, `fileno`,
+      `fclose`, the stream list (`__stdio_head` no longer `const`), the `streams` test.
+      Next, step 2: `fread`, `fseek`, `ftell`, `rewind`, with the read buffer's read-ahead
+      accounted for (the fd is ahead of the stream; switching between reading and writing,
+      `fclose` and `fflush` on an input stream move it back). Step 3: `setvbuf`/`setbuf`, and
+      `printf` past 512 bytes (`vfprintf` cuts there). Maybe `setjmp`/`longjmp` after.
+      Ours until mlibc replaces it.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
 
 ### User libraries (`user/lib/`)
@@ -3313,9 +3333,12 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   stdin through `fgets`' 512-byte buffer, so on a pipe it reads ahead of the current line: a
   command that reads stdin (a `cat` in a script) would miss those bytes (dash reads a pipe one
   byte at a time, bash seeks back on files). No `sh file`, `sh -c`, `-i`/`-s` or `$0`/`$1`.
-- stdio: no `fread`, `fopen`/`fclose`/`setvbuf`,
-  `__stdio_head` is `const` (must change when `fopen` adds streams), no stream locking (needed with
-  user threads); `stdio.h` is still partly a stub (`fopen`, `fread`, `fseek` declared but missing).
+- stdio: no `fread`, `fseek`/`ftell`, `setvbuf` yet (C7b steps 2 and 3; `stdio.h` declares
+  some of them already); `fclose` of a read stream leaves the fd past what it read ahead (step
+  2); no `"e"` mode (the kernel's `open` has no `O_CLOEXEC`); `fdopen` cannot check the mode
+  against the fd's or set `O_APPEND` for `"a"` (no `F_GETFL`/`F_SETFL`); no umask, files get
+  `0666`; `BUFSIZ` is 512 (glibc 8192, or the file's `st_blksize`); no stream locking (needed
+  with user threads).
   `fgets` copies byte by byte through `fgetc` (could copy `[pos, len)` up to the `'\n'` at once).
   Switching one stream from reading to writing drops unread input (`__fwritex` resets the buffer);
   fine for the console, needs `fseek` semantics once files exist.
