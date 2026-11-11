@@ -240,9 +240,9 @@ docs/                     # handoff, roadmap
 8. Phase C (the process model) in progress, before phase B's hardware path (PCI, then
    AHCI/NVMe; GPT). Order: C1 `dup`/`dup2`, pipes and the shell's `|` (done), C2 `fork` as a plain copy (done), C3
    `execve` (done, the shell runs on `fork` + `execvp`), C4 copy-on-write and stack growth (done), C5 signals (done), C6 terminal control (process
-   groups, the foreground group, stop signals, termios and the shell's line editing done; vector registers saved), C7 time (C7a: the RTC, a
+   groups, the foreground group, stop signals, termios and the shell's line editing done; vector registers saved), C7 time (C7a, done: the RTC, a
    wall and a monotonic clock, `clock_gettime`/`nanosleep`, ext2 timestamps, libc's time
-   functions) and files in stdio (C7b: `fopen` and its family, maybe `setjmp`). Lua moved to
+   functions, `clock`) and files in stdio (C7b: `fopen` and its family, maybe `setjmp`). Lua moved to
    phase D as mlibc's first port. Steps in `SESSION_HANDOFF.md`.
 
 ## Reference projects

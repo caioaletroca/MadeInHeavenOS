@@ -87,6 +87,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+f2b0396 test: cover clock and the CPU-time clock
+583c611 feat(sys): add the process CPU-time clock and clock()
 e7243a2 test: cover gmtime, timegm, strftime and date
 891f1c1 feat(libc): add gmtime, timegm, strftime and a date program
 98cd75a test: cover the ext2 timestamps
@@ -2473,6 +2475,13 @@ link.next == MALLOC_MAGIC while allocated; size in UNITs (sizeof(block_t)), head
   handler ends it with `EINTR` and the time left (deadline minus monotonic), even with
   `SA_RESTART`, as Linux. libc: `clock_gettime`, `time`, `nanosleep`, and `sleep` (the seconds
   left, rounded up). The `time` test.
+- **CPU time** (`scheduler_tick`, `process_t.cpu_ticks`): sampled, as Linux without precise
+  accounting: each tick goes whole to the process it interrupted (the idle thread and kernel
+  threads count for nobody). Only the tick writes it, with IRQs off, and a 64-bit load is
+  atomic, so no lock. A fork starts at 0 (`kzalloc`), exec keeps it.
+  `clock_gettime` of `MIHOS_CLOCK_PROCESS_CPUTIME_ID` (2, Linux's value) gives
+  `timer_ticks_to_nanoseconds(cpu_ticks)`; libc `clock()` is that in microseconds
+  (`CLOCKS_PER_SEC` 1 000 000, `clock_t` a `long`). In the `time` test.
 - **On files** (`fs/ext2/`, the VFS node's `atime`, `mtime`, `ctime`, seconds): mtime = the
   bytes changed, ctime = the inode changed (bytes, links or mode; not "created"), atime = last
   read. A create gives the new inode's three times and its directory's mtime and ctime one
@@ -2972,16 +2981,17 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **C7, time and files** (reshaped: Lua would have needed a full `<math.h>`, exact float
     printing and parsing and locales, not worth writing before mlibc; it is now mlibc's first
     port at phase D, through `ports/lua/` with a pinned, hashed tarball):
-    - **C7a, time:** step 1 (done): the CMOS real-time clock read at boot, a wall clock and a
+    - **C7a, time (done):** step 1 (done): the CMOS real-time clock read at boot, a wall clock and a
       monotonic clock advanced by the timer, the real tick length, `clock_selftest`. Step 2 (done):
       the `clock_gettime` and `nanosleep` syscalls (mlibc's sysdeps need them), libc `time`,
       `clock_gettime`, `nanosleep`, `sleep`, the `time` test. Step 3 (done): ext2 timestamps
       (atime with relatime, mtime, ctime, a real `i_dtime`, the superblock's mount and write
       times, three times in the VFS node). Step 4 (done): libc
       `struct tm`, `gmtime`, `localtime`, `timegm`, `mktime`, `strftime` (UTC only), `/bin/date`,
-      the `calendar` test. Left: `clock` (CPU time) on its own. The first prerequisite of
+      the `calendar` test. `clock` (done): a per-process tick count and
+      `CLOCK_PROCESS_CPUTIME_ID`. The first prerequisite of
       packages too (see the roadmap's "Packages": TLS checks dates).
-    - **C7b, files in stdio:** `fopen`, `fclose`, `fread`, `fwrite`, `fseek`/`ftell`,
+    - **C7b, files in stdio (next):** `fopen`, `fclose`, `fread`, `fwrite`, `fseek`/`ftell`,
       `setvbuf`, streams in a list (`__stdio_head` stops being `const`); maybe
       `setjmp`/`longjmp`. Ours until mlibc replaces it.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
@@ -3122,8 +3132,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   once and never written back or corrected (no `clock_settime`, no NTP); it is assumed UTC; years
   2070 and later read as 1970-1999 (the century register is not used). `.bochsrc` still has
   `time0=local`, so under Bochs the clock is off by the local time zone.
-- `clock()` is missing: it is CPU time, not wall time, so it needs ticks counted per process
-  (`cpu_ticks++` for the running thread in `scheduler_tick`) and a `CLOCK_PROCESS_CPUTIME_ID`.
+- CPU time: sampled per tick (a process that always sleeps just before the tick is never
+  charged; Linux's `VIRT_CPU_ACCOUNTING` measures at every switch); no user/system split (the
+  tick would read the saved `cs & 3`) and no children's times at `wait`, so no `times()` or
+  `getrusage()`; no `CLOCK_THREAD_CPUTIME_ID` (3) and no `clock_getres`.
 - File times: pipes and devfs nodes keep 0 (Linux starts a pipe's at its creation and a tty
   write moves its mtime: the VFS's job, not ext2's); seconds only (ext4's `i_*time_extra`
   fields add nanoseconds); Linux reads 128-byte inode times as signed 32-bit (January 2038:
