@@ -87,6 +87,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+1351313 test: cover fread, fseek, ftell and rewind
+083f057 feat(libc): add fread, fseek, ftell and rewind
 cb209ff test: cover fopen, fdopen, fileno and fclose
 6119001 feat(libc): add fopen, fdopen, fileno and fclose
 f2b0396 test: cover clock and the CPU-time clock
@@ -2382,6 +2384,25 @@ Our own libc until the start of roadmap phase D, then mlibc in user space (see `
   close failed; `stdin`/`stdout`/`stderr` are `F_STATIC`: never freed, left with no direction,
   so a `printf` after `fclose(stdout)` fails instead of writing to whatever gets fd 1. The
   `streams` test (files in `/mnt`).
+- **Positions** (C7b step 2): the fd runs ahead of the stream. Reading, one `read` fills the
+  buffer, so the stream is `len - pos` (plus 1 for an `ungetc` byte) behind the fd's offset;
+  writing, it is `pos` pending bytes past it. `__stream_sync` makes the two agree and empties
+  the buffer (`MODE_NONE`): output flushed, or input given back with
+  `lseek(fd, -ahead, SEEK_CUR)` (on a pipe or terminal that fails, `errno` kept, and those
+  bytes are dropped). It starts `fseek`, `fclose`, `fflush` of one stream (an input stream
+  included, POSIX 2008; `fflush(NULL)` still only writing streams, as glibc), `exit`
+  (`__stdio_exit` syncs every stream, as POSIX's exit = fclose: a process sharing the fd
+  finds it where this one stopped reading) and `__fwritex`'s switch from reading to writing
+  (C asks for an `fseek` between them; glibc copes without, so do we). `ftell`: in write mode
+  flush first (in `a` mode only the kernel knows where the bytes land), then
+  `lseek(fd, 0, SEEK_CUR)` minus what is unread and the `ungetc` byte. `fseek`: `whence`
+  checked, then an `lseek(fd, 0, SEEK_CUR)` probe (`ESPIPE` before anything is dropped, so a
+  failed seek changes nothing), the sync (so `SEEK_CUR` counts from the stream), the real
+  `lseek`, `F_EOF` cleared. `rewind` = `fseek(0)` and `F_ERR` cleared. `fread`: the `ungetc`
+  byte, then `[pos, len)`, then `__fillbuf` again, whole items counted. `fgetc` refills unless
+  the buffer holds input (`mode != MODE_READ`): after a write `pos` counts output, and it used
+  to hand that back. In the `streams` test (a `dup`'d fd shows where `fclose`, `fflush` and a
+  child's `exit` put the shared offset).
 - **`stat`/`fstat`** (`<sys/stat.h>`, `libc/stat/`, translator in `internal/stat.h`): POSIX
   `struct stat` with POSIX types (`dev_t`, `mode_t`, `nlink_t`, `uid_t`, `gid_t`, `blksize_t`,
   `blkcnt_t`, `time_t` in `<sys/types.h>`, Linux x86-64 sizes) and `struct timespec` times
@@ -3009,9 +3030,8 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
       packages too (see the roadmap's "Packages": TLS checks dates).
     - **C7b, files in stdio (in progress):** step 1 (done): `fopen`, `fdopen`, `fileno`,
       `fclose`, the stream list (`__stdio_head` no longer `const`), the `streams` test.
-      Next, step 2: `fread`, `fseek`, `ftell`, `rewind`, with the read buffer's read-ahead
-      accounted for (the fd is ahead of the stream; switching between reading and writing,
-      `fclose` and `fflush` on an input stream move it back). Step 3: `setvbuf`/`setbuf`, and
+      Step 2 (done): `fread`, `fseek`, `ftell`, `rewind`, `__stream_sync` (the read-ahead
+      given back at `fseek`, `fclose`, `fflush`, `exit` and a switch to writing). Next, step 3: `setvbuf`/`setbuf`, and
       `printf` past 512 bytes (`vfprintf` cuts there). Maybe `setjmp`/`longjmp` after.
       Ours until mlibc replaces it.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase C.
@@ -3333,15 +3353,13 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   stdin through `fgets`' 512-byte buffer, so on a pipe it reads ahead of the current line: a
   command that reads stdin (a `cat` in a script) would miss those bytes (dash reads a pipe one
   byte at a time, bash seeks back on files). No `sh file`, `sh -c`, `-i`/`-s` or `$0`/`$1`.
-- stdio: no `fread`, `fseek`/`ftell`, `setvbuf` yet (C7b steps 2 and 3; `stdio.h` declares
-  some of them already); `fclose` of a read stream leaves the fd past what it read ahead (step
-  2); no `"e"` mode (the kernel's `open` has no `O_CLOEXEC`); `fdopen` cannot check the mode
+- stdio: no `setvbuf`/`setbuf` yet (C7b step 3); no `fseeko`/`ftello` (`long` is 64-bit
+  already) or `fgetpos`/`fsetpos`; `fread` copies everything through the 512-byte buffer (glibc
+  reads a big request straight into the caller's memory); no `"e"` mode (the kernel's `open` has no `O_CLOEXEC`); `fdopen` cannot check the mode
   against the fd's or set `O_APPEND` for `"a"` (no `F_GETFL`/`F_SETFL`); no umask, files get
   `0666`; `BUFSIZ` is 512 (glibc 8192, or the file's `st_blksize`); no stream locking (needed
   with user threads).
   `fgets` copies byte by byte through `fgetc` (could copy `[pos, len)` up to the `'\n'` at once).
-  Switching one stream from reading to writing drops unread input (`__fwritex` resets the buffer);
-  fine for the console, needs `fseek` semantics once files exist.
 - Bochs (win32 GUI) sends Left Ctrl for the ABNT2 `/ ?` key, so `KEY_RO` can only be tested on QEMU.
 - No IDT gate uses the IST stacks yet; a double fault on a broken kernel stack still triple-faults.
 - `mmap_split_region` drops region remainders smaller than 16 frames.
