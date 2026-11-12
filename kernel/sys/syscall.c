@@ -4,10 +4,6 @@
 
 long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {
-    (void)arg3;
-    (void)arg4;
-    (void)arg5;
-
     switch (number)
     {
     case SYS_EXIT:
@@ -92,6 +88,10 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_clock_gettime((int)arg0, (uintptr_t)arg1);
     case SYS_NANOSLEEP:
         return sys_nanosleep((uintptr_t)arg0, (uintptr_t)arg1);
+    case SYS_MMAP:
+        return sys_mmap((uintptr_t)arg0, (size_t)arg1, (unsigned int)arg2, (unsigned int)arg3, (long)arg4, (long)arg5);
+    case SYS_MUNMAP:
+        return sys_munmap((uintptr_t)arg0, (size_t)arg1);
     default:
         return -ENOSYS;
     }

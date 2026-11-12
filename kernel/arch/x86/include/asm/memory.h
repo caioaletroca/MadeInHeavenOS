@@ -11,9 +11,10 @@
 #define KERNEL_DIRECT_MAP_SIZE 0x40000000ULL
 
 // User half of the address space: [USER_BASE, USER_TOP)
-#define USER_BASE 0x0000000000400000ULL      // First user page (leaves 0 unmapped for NULL)
-#define USER_STACK_TOP 0x00007FFFFFFFF000ULL // Initial user stack pointer (grows down)
-#define USER_TOP 0x0000800000000000ULL       // End of the canonical lower half
-#define USER_STACK_MAX (8 * 1024 * 1024)     // Reserved for the stack, mapped as it is touched (Linux's limit)
+#define USER_BASE 0x0000000000400000ULL                            // First user page (leaves 0 unmapped for NULL)
+#define USER_STACK_TOP 0x00007FFFFFFFF000ULL                       // Initial user stack pointer (grows down)
+#define USER_TOP 0x0000800000000000ULL                             // End of the canonical lower half
+#define USER_STACK_MAX (8 * 1024 * 1024)                           // Reserved for the stack, mapped as it is touched (Linux's limit)
+#define USER_MAP_TOP (USER_STACK_TOP - USER_STACK_MAX - PAGE_SIZE) // mmap's regions and the heap stay below (a guard page)
 
 #endif

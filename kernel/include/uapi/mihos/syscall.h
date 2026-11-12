@@ -45,6 +45,8 @@
 #define SYS_GETSID 40
 #define SYS_CLOCK_GETTIME 41
 #define SYS_NANOSLEEP 42
+#define SYS_MMAP 43
+#define SYS_MUNMAP 44
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)

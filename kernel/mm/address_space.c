@@ -2,6 +2,8 @@
 #include <mm/kmalloc.h>
 #include <mm/frame.h>
 #include <asm/memory.h>
+#include <mihos/mman.h>
+#include <mihos/errno.h>
 #include <string.h>
 #include <addresses.h>
 #include <util.h>
@@ -12,6 +14,69 @@
 static bool address_space_range_valid(uintptr_t address, size_t size)
 {
     return address >= USER_BASE && address <= USER_TOP && size <= USER_TOP - address;
+}
+
+static unsigned int region_mmu_flags(unsigned int protection)
+{
+    return (protection & PROT_WRITE ? MMU_WRITE : 0) | (protection & PROT_EXEC ? MMU_EXEC : 0);
+}
+
+static region_t *region_find(address_space_t *space, uintptr_t address)
+{
+    list_t *node;
+    list_for_each(node, &space->regions)
+    {
+        region_t *region = list_container(node, region_t, link);
+        if (address < region->start)
+            break;
+        if (address < region->end)
+            return region;
+    }
+
+    return NULL;
+}
+
+static void region_insert(address_space_t *space, region_t *region)
+{
+    list_t *node;
+    list_for_each(node, &space->regions)
+    {
+        if (list_container(node, region_t, link)->start > region->start)
+            break;
+    }
+
+    list_insert_before(node, &region->link);
+}
+
+static uintptr_t region_place(address_space_t *space, size_t size)
+{
+    uintptr_t bottom = ALIGN_UP(space->brk, PAGE_SIZE);
+    uintptr_t top = USER_MAP_TOP;
+
+    for (list_t *node = space->regions.prev; node != &space->regions; node = node->prev)
+    {
+        region_t *region = list_container(node, region_t, link);
+        if (top - region->end >= size)
+            return top - size;
+        top = region->start;
+    }
+
+    return top >= bottom && top - bottom >= size ? top - size : 0;
+}
+
+bool address_space_range_free(address_space_t *space, uintptr_t start, uintptr_t end)
+{
+    list_t *node;
+    list_for_each(node, &space->regions)
+    {
+        region_t *region = list_container(node, region_t, link);
+        if (region->start >= end)
+            break;
+        if (region->end > start)
+            return false;
+    }
+
+    return true;
 }
 
 /**
@@ -64,10 +129,10 @@ static int address_space_copy(address_space_t *space, uintptr_t address, void *d
 address_space_t *address_space_create(void)
 {
     address_space_t *space = kzalloc(sizeof(address_space_t));
-
     if (space == NULL)
         return NULL;
 
+    list_init(&space->regions);
     space->root = arch_mmu_root_create();
 
     if (space->root == NULL)
@@ -85,6 +150,9 @@ void address_space_destroy(address_space_t *space)
         return;
 
     arch_mmu_root_destroy(space->root);
+    list_t *node, *next;
+    list_for_each_safe(node, next, &space->regions)
+        kfree(list_container(node, region_t, link));
     kfree(space);
 }
 
@@ -102,6 +170,19 @@ address_space_t *address_space_clone(address_space_t *space)
 
     copy->heap_start = space->heap_start;
     copy->brk = space->brk;
+
+    list_t *node;
+    list_for_each(node, &space->regions)
+    {
+        region_t *region = kmalloc(sizeof(region_t));
+        if (region == NULL)
+        {
+            address_space_destroy(copy);
+            return NULL;
+        }
+        *region = *list_container(node, region_t, link);
+        list_insert_before(&copy->regions, &region->link);
+    }
 
     return copy;
 }
@@ -164,6 +245,105 @@ int address_space_unmap(address_space_t *space, uintptr_t address, size_t size)
     return 0;
 }
 
+int address_space_reserve(address_space_t *space, uintptr_t *address, size_t size, unsigned int protection, bool fixed)
+{
+    uintptr_t bottom = ALIGN_UP(space->brk, PAGE_SIZE);
+    uintptr_t start = *address;
+
+    if (size == 0)
+        return -EINVAL;
+    if (size > USER_MAP_TOP)
+        return -ENOMEM;
+    size = ALIGN_UP(size, PAGE_SIZE);
+
+    bool aligned = (start & (PAGE_SIZE - 1)) == 0;
+    bool inside = start >= bottom && start <= USER_MAP_TOP && size <= USER_MAP_TOP - start;
+
+    if (fixed)
+    {
+        if (!aligned)
+            return -EINVAL;
+        if (!inside)
+            return -ENOMEM;
+    }
+    else if (!aligned || !inside || !address_space_range_free(space, start, start + size))
+    {
+        start = region_place(space, size);
+        if (start == 0)
+            return -ENOMEM;
+    }
+
+    region_t *region = kmalloc(sizeof(region_t));
+    if (region == NULL)
+        return -ENOMEM;
+
+    // MAP_FIXED replaces whatever was there
+    if (fixed && address_space_release(space, start, size) != 0)
+    {
+        kfree(region);
+        return -ENOMEM;
+    }
+
+    region->start = start;
+    region->end = start + size;
+    region->protection = protection;
+    region_insert(space, region);
+
+    *address = start;
+    return 0;
+}
+
+int address_space_release(address_space_t *space, uintptr_t address, size_t size)
+{
+    if ((address & (PAGE_SIZE - 1)) != 0 || size == 0 || !address_space_range_valid(address, size))
+        return -EINVAL;
+
+    uintptr_t end = address + ALIGN_UP(size, PAGE_SIZE);
+
+    // Cutting the middle out of a region leaves two: the second is allocated first, so a
+    // failure changes nothing
+    region_t *spare = kmalloc(sizeof(region_t));
+    if (spare == NULL)
+        return -ENOMEM;
+
+    list_t *node, *next;
+    list_for_each_safe(node, next, &space->regions)
+    {
+        region_t *region = list_container(node, region_t, link);
+        if (region->start >= end)
+            break;
+        if (region->end <= address)
+            continue;
+
+        uintptr_t cut_start = MAX(region->start, address);
+        uintptr_t cut_end = MIN(region->end, end);
+        address_space_unmap(space, cut_start, cut_end - cut_start);
+
+        if (region->start < address && region->end > end)
+        {
+            *spare = *region;
+            spare->start = end;
+            region->end = address;
+            list_insert_after(&region->link, &spare->link);
+            spare = NULL;
+            break;
+        }
+
+        if (region->start < address) // its tail
+            region->end = address;
+        else if (region->end > end) // its head
+            region->start = end;
+        else // all of it
+        {
+            list_remove(&region->link);
+            kfree(region);
+        }
+    }
+
+    kfree(spare);
+    return 0;
+}
+
 int address_space_fault(address_space_t *space, uintptr_t address, bool write)
 {
     uintptr_t page = ALIGN_DOWN(address, PAGE_SIZE);
@@ -172,10 +352,17 @@ int address_space_fault(address_space_t *space, uintptr_t address, bool write)
     if (arch_mmu_translate(space->root, page, &physical) == 0)
         return write ? arch_mmu_prepare_write(space->root, page) : 0;
 
-    if (page < USER_STACK_TOP - USER_STACK_MAX || page >= USER_STACK_TOP)
+    // The stack grows into its reservation
+    if (page >= USER_STACK_TOP - USER_STACK_MAX && page < USER_STACK_TOP)
+        return address_space_map(space, page, PAGE_SIZE, MMU_WRITE);
+
+    // A region's page touched for the first time, if its protection allows the access
+    region_t *region = region_find(space, page);
+    if (region == NULL || region->protection == PROT_NONE ||
+        (write && (region->protection & PROT_WRITE) == 0))
         return -1;
 
-    return address_space_map(space, page, PAGE_SIZE, MMU_WRITE);
+    return address_space_map(space, page, PAGE_SIZE, region_mmu_flags(region->protection));
 }
 
 int address_space_write(address_space_t *space, uintptr_t address, const void *data, size_t size)

@@ -5,6 +5,18 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <arch/mmu.h>
+#include <sys/list.h>
+
+/**
+ * @brief A range of user memory reserved by mmap: its pages are mapped as they are touched.
+ */
+typedef struct region
+{
+    list_t link;             // in address_space_t.regions
+    uintptr_t start;         // page aligned
+    uintptr_t end;           // page aligned, exclusive
+    unsigned int protection; // PROT_READ | PROT_WRITE | PROT_EXEC, or PROT_NONE
+} region_t;
 
 /**
  * @brief A user address space: private user half, shared kernel half.
@@ -17,6 +29,7 @@ typedef struct address_space
     mmu_root_t *root;
     uintptr_t heap_start;
     uintptr_t brk;
+    list_t regions;
 } address_space_t;
 
 /**
@@ -57,6 +70,28 @@ int address_space_map(address_space_t *space, uintptr_t address, size_t size, un
  * @return 0 on success, -1 on failure.
  */
 int address_space_unmap(address_space_t *space, uintptr_t address, size_t size);
+
+/**
+ * @brief Reserve [*address, *address + size) for user memory mapped as touched.
+ *
+ * @param address In: the wanted start (a hint unless fixed). Out: the start chosen.
+ * @param fixed Exactly there, replacing any region in the way.
+ * @return 0, -EINVAL (fixed and not page aligned) or -ENOMEM (no room, out of memory).
+ */
+int address_space_reserve(address_space_t *space, uintptr_t *address, size_t size, unsigned int protection, bool fixed);
+
+/**
+ * @brief Remove the regions inside [address, address + size), and free their pages.
+ * Parts of regions outside the range stay. Memory outside regions is never touched.
+ *
+ * @return 0, -EINVAL (unaligned, empty or outside the user half) or -ENOMEM.
+ */
+int address_space_release(address_space_t *space, uintptr_t address, size_t size);
+
+/**
+ * @brief Whether no region overlaps [start, end).
+ */
+bool address_space_range_free(address_space_t *space, uintptr_t start, uintptr_t end);
 
 /**
  * @brief Make a user page ready for an access, as a page fault would: a stack

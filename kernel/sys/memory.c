@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <mihos/mman.h>
 
 // ---- The user heap: brk ----
 
@@ -11,7 +12,7 @@ long sys_brk(uintptr_t address)
     if (space == NULL)
         return -ENOMEM;
 
-    uintptr_t limit = USER_STACK_TOP - USER_STACK_MAX - PAGE_SIZE;
+    uintptr_t limit = USER_MAP_TOP;
 
     if (address < space->heap_start || address > limit)
         return (long)space->brk;
@@ -19,7 +20,9 @@ long sys_brk(uintptr_t address)
     uintptr_t old_end = ALIGN_UP(space->brk, PAGE_SIZE);
     uintptr_t new_end = ALIGN_UP(address, PAGE_SIZE);
 
-    if (new_end > old_end && address_space_map(space, old_end, new_end - old_end, MMU_WRITE) != 0)
+    if (new_end > old_end &&
+        (!address_space_range_free(space, old_end, new_end) ||
+         address_space_map(space, old_end, new_end - old_end, MMU_WRITE) != 0))
         return (long)space->brk;
 
     if (new_end < old_end)
@@ -27,4 +30,43 @@ long sys_brk(uintptr_t address)
 
     space->brk = address;
     return (long)space->brk;
+}
+
+/**
+ * mmap(address, length, protection, flags, fd, offset): reserves anonymous private
+ * memory; its pages are mapped zeroed as they are touched. Returns the start.
+ */
+long sys_mmap(uintptr_t address, size_t length, unsigned int protection, unsigned int flags, long fd, long offset)
+{
+    (void)fd;
+    (void)offset;
+
+    address_space_t *space = syscall_space();
+    if (space == NULL)
+        return -ENOMEM;
+
+    unsigned int sharing = flags & (MAP_SHARED | MAP_PRIVATE);
+    if (sharing == 0 || sharing == (MAP_SHARED | MAP_PRIVATE) ||
+        (flags & ~(MAP_SHARED | MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS)) != 0 ||
+        (protection & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0)
+        return -EINVAL;
+
+    // Files, and memory shared across fork, come later
+    if ((flags & MAP_ANONYMOUS) == 0 || sharing == MAP_SHARED)
+        return -ENODEV;
+
+    int error = address_space_reserve(space, &address, length, protection, (flags & MAP_FIXED) != 0);
+    return error != 0 ? error : (long)address;
+}
+
+/**
+ * munmap(address, length): removes the mappings in the range; the rest stays.
+ */
+long sys_munmap(uintptr_t address, size_t length)
+{
+    address_space_t *space = syscall_space();
+    if (space == NULL)
+        return -EINVAL;
+
+    return address_space_release(space, address, length);
 }

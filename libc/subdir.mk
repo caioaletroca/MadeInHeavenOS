@@ -16,4 +16,5 @@ cxx \
 signal \
 termios \
 time \
+mman \
 arch/$(ARCH)
