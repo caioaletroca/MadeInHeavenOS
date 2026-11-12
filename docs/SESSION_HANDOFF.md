@@ -19,7 +19,8 @@ Working x86-64 PC kernel with:
 - Programs start with `argc`/`argv`/`envp` on a System V initial stack; parents spawn children
   (programs found by path in the initramfs) and wait for one or any of them with a POSIX
   wait status
-- User heap after the ELF image (`brk`), a user stack that grows on demand up to 8 MiB
+- User heap after the ELF image (`brk`), a user stack that grows on demand up to 8 MiB,
+  anonymous `mmap`/`munmap` (regions mapped as touched, between the heap and the stack)
 - Processes (`process_t`) owning their address space and fd table, waitable, refcounted; faults in
   ring 3 kill the process with 128 + signal instead of panicking
 - Open files (`file_t` + `file_ops_t`), `/dev/console` behind fds 0–2
@@ -38,7 +39,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`, `streams`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`, `streams`, `memory`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -87,6 +88,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+1b2ea0e test: cover mmap and munmap
+5b97fe6 feat(mm): add anonymous mmap and munmap
 732c0ef test: cover commands reading the rest of a script
 f668978 fix(sh): read a script's stdin one byte at a time
 621de25 fix(libc): give stderr's static entry its buffer size
@@ -655,7 +658,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `USER_STACK_MAX` 8 MiB.
   ```text
   USER_BASE  text | rodata | data+bss | heap (heap_start .. brk, grows up) ...
-             ... gap | stack (up to USER_STACK_MAX, mapped as touched) | USER_STACK_TOP
+             ... regions (mmap, placed top-down) | USER_MAP_TOP | guard | stack (up to USER_STACK_MAX, mapped as touched) | USER_STACK_TOP
   ```
 - `address_space_t` (`mm/address_space.c`): `root`, `heap_start`, `brk`; `create` (zeroed: no heap
   until `exec_load`), `map` (fresh zeroed frames, `MMU_USER` added; on failure unmaps what it mapped,
@@ -665,8 +668,27 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `arch_mmu_prepare_write` on each page first (read-only `-1`, shared pages copied). `fill` skips
   that, for the ELF loader writing `.text` into a space nothing runs in yet.
   **Ownership rule:** every frame in a user half is counted in `frame_t.refs` and freed with the last
-  space mapping it, so kernel frames must never be mapped there. `heap_start`/`brk` have no lock (one
-  thread per process, like the fd table).
+  space mapping it, so kernel frames must never be mapped there. `heap_start`/`brk` and the
+  regions have no lock (one thread per process, like the fd table).
+- **Regions** (D1, `mmap`/`munmap`): `address_space_t.regions` is a list of `region_t`
+  (`start`, `end`, `protection` as `PROT_*`), sorted by start, never overlapping: ranges
+  reserved by `mmap`, whose pages are mapped only when touched. `address_space_reserve` places
+  one top-down from `USER_MAP_TOP` (`USER_STACK_TOP - USER_STACK_MAX - PAGE_SIZE`, a guard page
+  below the stack's reservation) into the highest gap above the heap's last page
+  (`ALIGN_UP(brk)`); a hint is taken when it is aligned, inside that range and free;
+  `MAP_FIXED` releases what is in the way first (`ENOMEM` outside the range, `EINVAL`
+  unaligned). `address_space_release` trims a region's head or tail, removes it whole, or cuts
+  its middle out (the second piece allocated before anything changes, so `ENOMEM` leaves all
+  as it was), unmapping only the pages inside regions: the heap, the stack and the image are
+  not regions, so `munmap` never touches them. `address_space_fault` maps a region's page on
+  its first touch with the region's protection (`PROT_NONE`, or a write to a region without
+  `PROT_WRITE`, is a `SIGSEGV`; `PROT_EXEC` means nothing until NX is on). `brk` refuses to
+  grow over a region (`address_space_range_free`). `clone` copies the list (the pages are
+  shared copy-on-write like any other), `destroy` frees it. System calls: `mmap`
+  (`SYS_MMAP` 43, six arguments: the first call to use `r9`) and `munmap` (`SYS_MUNMAP` 44) in
+  `sys/memory.c`; only `MAP_PRIVATE | MAP_ANONYMOUS` (and `MAP_FIXED`); a file or `MAP_SHARED`
+  is `ENODEV`, an unknown flag or protection bit `EINVAL`. Linux's values in
+  `<mihos/mman.h>`; libc `<sys/mman.h>` with `MAP_FAILED`. The `memory` test.
 - **Faults that are not errors:** `address_space_fault(space, address, write)` makes a page ready as
   the access needs: mapped → `arch_mmu_prepare_write` for a write, else nothing; not mapped inside
   the stack's reservation → `address_space_map` of that one zeroed page (the stack grows, gaps
@@ -3055,11 +3077,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
 - **Phase D's kernel prerequisites (next, chosen before phase B's hardware path).** The
   porting platform first: mlibc's sysdeps, pthreads and every port after them need these.
   Order:
-  - **D1, `mmap`/`munmap` (next):** anonymous private memory. A list of regions per address
+  - **D1, `mmap`/`munmap` (done):** anonymous private memory. A list of regions per address
     space (start, end, protection), pages mapped as touched (the fault path, as the stack
     does), copied at fork, placed top-down below the stack's reservation; `brk` stops at
     the first region. libc `<sys/mman.h>`, a `memory` test.
-  - **D2, `mprotect`:** a region's protection changed, regions split, `PROT_NONE`.
+  - **D2, `mprotect` (next):** a region's protection changed, regions split, `PROT_NONE`.
   - **D3, NX on:** `EFER.NXE`, the no-execute bit on every page without `MMU_EXEC` (data,
     heap, stack), a test running code from a page made executable.
   - **D4, system calls with IRQs on:** the kernel's own locking first.
@@ -3203,6 +3225,15 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 **Debt:**
 
+- `mmap`: anonymous private memory only (no files, no `MAP_SHARED`: a fork's pages are always
+  copy-on-write); the heap, the stack and the program image are not regions, so `munmap` and
+  (D2) `mprotect` cannot reach them (Linux has one VMA each; `brk` would become a region that
+  grows); regions are a linked list searched from the start (Linux: a maple tree); no address
+  randomization; a read of an untouched page maps a fresh zeroed frame (Linux maps one shared
+  zero page until a write); no `MAP_NORESERVE`/`MAP_POPULATE`/`MAP_GROWSDOWN`, `mremap`,
+  `madvise`, `msync`, `mlock`; no limit on reservations (a 4 GiB `mmap` succeeds and fails
+  only page by page, as `SIGSEGV`, when memory runs out: Linux's overcommit, without its OOM
+  killer); `PROT_EXEC` is not enforced until NX (D3).
 - Clocks: one tick of resolution (about 10 ms; the TSC or HPET would give finer); the RTC is read
   once and never written back or corrected (no `clock_settime`, no NTP); it is assumed UTC; years
   2070 and later read as 1970-1999 (the century register is not used). `.bochsrc` still has

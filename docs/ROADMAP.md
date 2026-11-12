@@ -245,8 +245,8 @@ docs/                     # handoff, roadmap
    `setvbuf`; `setjmp` left to mlibc). Lua moved to phase D as mlibc's first port.
    **Phase C complete.**
 9. Phase D's kernel prerequisites, before phase B's hardware path (chosen 2026-11-11: the
-   porting platform first, real disks after; QEMU's ATA disks serve until then). Order: D1
-   `mmap`/`munmap` (anonymous memory, a list of regions per address space, pages mapped as
+   porting platform first, real disks after; QEMU's ATA disks serve until then). Order: ~~D1
+   `mmap`/`munmap`~~ (done: anonymous memory, a list of regions per address space, pages mapped as
    touched), D2 `mprotect`, D3 NX on (pages not executable unless asked, the debt below), D4
    system calls with IRQs on (the debt below); then pthreads with a futex, TLS and SMP; then
    mlibc's sysdeps, the toolchain rebuilt with libstdc++, and Lua through `ports/lua/`.
