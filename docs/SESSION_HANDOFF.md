@@ -89,6 +89,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+9015f92 test: cover no-execute pages
+4349faf feat(x86): turn on no-execute pages
 1124288 test: cover mprotect
 f1f79ef feat(mm): add mprotect
 1b2ea0e test: cover mmap and munmap
@@ -707,6 +709,19 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `WRITE`: the first write copies, and the other process keeps its data. Regions never merge
   back. The `memory` test (a guard page, a region split in three, a shared page made writable
   after fork).
+- **No-execute** (D3): `arch_mmu_init` asks `cpuid` (leaf `0x80000001`, EDX bit 20) and, when
+  the CPU has NX, sets `EFER.NXE` (bit 11) before any user page exists; `mmu_flags_to_pte`
+  then gives every page mapped without `MMU_EXEC` `PAGE_TABLE_ENTRY_NO_EXECUTE` (bit 63). The
+  flags were already right everywhere: ELF segments turn `PF_X` into `MMU_EXEC` (`user.ld`
+  keeps text R+X, rodata R, data R+W apart), the stack and the heap map `MMU_WRITE` only,
+  regions map `PROT_EXEC`, and copy-on-write and `arch_mmu_protect` keep bit 63. Only the
+  program's text and `PROT_EXEC` mappings run; a fetch from any other page is a protection
+  fault with the instruction-fetch bit (`exec protection violation` in the log), a `SIGSEGV`.
+  Without NX the kernel prints `mmu: no NX support` and every page stays executable (bit 63
+  would be a reserved-bit fault). `page_map` took its entry bits as `unsigned int`, which cut
+  bit 63 off silently: the first bit above 31; it takes `uint64_t` now. `<x86/cpu.h>` has
+  `cpuid`, `msr_read` and `msr_write`. The `memory` test (code on the stack, heap, `.data`
+  and `.rodata` faults; a JIT page runs only while `PROT_EXEC`).
 - **Faults that are not errors:** `address_space_fault(space, address, write)` makes a page ready as
   the access needs: mapped → `arch_mmu_prepare_write` for a write, else nothing; not mapped inside
   the stack's reservation → `address_space_map` of that one zeroed page (the stack grows, gaps
@@ -3101,9 +3116,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     the first region. libc `<sys/mman.h>`, a `memory` test.
   - **D2, `mprotect` (done):** a region's protection changed, regions split, `PROT_NONE`
     (the user bit dropped, the frame kept), copy-on-write kept for shared frames.
-  - **D3, NX on (next):** `EFER.NXE`, the no-execute bit on every page without `MMU_EXEC` (data,
+  - **D3, NX on (done):** `EFER.NXE`, the no-execute bit on every page without `MMU_EXEC` (data,
     heap, stack), a test running code from a page made executable.
-  - **D4, system calls with IRQs on:** the kernel's own locking first.
+  - **D4, system calls with IRQs on (next):** the kernel's own locking first.
   - Then pthreads with a futex, TLS, SMP; then mlibc's sysdeps, the toolchain rebuilt with
     libstdc++, Lua through `ports/lua/`.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase D's
@@ -3244,6 +3259,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 **Debt:**
 
+- NX: the kernel half stays executable (its boot tables have no bit 63: the kernel's data,
+  stacks and direct map could run; Linux maps them NX); no SMEP/SMAP (the kernel may run or,
+  outside the copy helpers, touch user pages by accident); `EFER.NXE` is set on the boot CPU
+  only, so each CPU must set it at SMP.
 - `read()` reads from the file before it copies to the program: when the copy fails
   (`EFAULT`), the bytes are already gone from a pipe or the terminal, and a file's offset has
   moved. Linux copies straight from the pipe's buffer and only consumes what reached the
