@@ -12,7 +12,10 @@
  * region); each page is mapped, zeroed, the first time it is touched, with the
  * region's protection. Regions are placed top-down below the stack, never over
  * the heap, and brk stops below them. A fork copies them, the pages private
- * as any other. Accesses that must fail run in a child and end it with SIGSEGV.
+ * as any other. mprotect changes a range's protection, splitting regions,
+ * and keeps the pages' contents. With NX, only pages asked to be executable
+ * run: the program's text and PROT_EXEC mappings, never data, stack or heap.
+ * Accesses that must fail run in a child and end it with SIGSEGV.
  */
 
 #define PAGE 4096UL
@@ -471,6 +474,121 @@ static void test_protect_errors(void)
     CHECK(munmap(a, PAGE) == 0);
 }
 
+// ---- No-execute ----
+
+// mov eax, 42; ret
+#define CODE_SIZE 6
+#define CODE_RESULT 42
+static unsigned char data_code[CODE_SIZE] = {0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC3};             // .data
+static const unsigned char rodata_code[CODE_SIZE] = {0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC3};     // .rodata
+
+// Whether the CPU has NX (cpuid works in ring 3): without it every page runs, and nothing can fault
+static int cpu_has_nx(void)
+{
+    uint32_t eax = 0x80000001, ebx, ecx = 0, edx;
+    __asm__ __volatile__("cpuid" : "+a"(eax), "=b"(ebx), "+c"(ecx), "=d"(edx));
+    return (edx & (1u << 20)) != 0;
+}
+
+static int call(const void *code)
+{
+    return ((int (*)(void))(uintptr_t)code)();
+}
+
+// Calls code in a child and checks that it died of SIGSEGV
+static void call_faults(const void *code)
+{
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0)
+    {
+        call(code);
+        _exit(0); // it ran: wrong
+    }
+
+    int status = -1;
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
+}
+
+// Only the program's text runs: its data, its stack and its heap never do
+static void test_data_never_runs(void)
+{
+    // The stack: a child's own array, so the parent's frame is never involved
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0)
+    {
+        unsigned char on_stack[CODE_SIZE];
+        memcpy(on_stack, rodata_code, CODE_SIZE);
+        call(on_stack);
+        _exit(0);
+    }
+    int status = -1;
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
+
+    unsigned char *on_heap = malloc(CODE_SIZE);
+    CHECK(on_heap != NULL);
+    if (on_heap != NULL)
+    {
+        memcpy(on_heap, rodata_code, CODE_SIZE);
+        call_faults(on_heap);
+        free(on_heap);
+    }
+
+    call_faults(data_code);
+    call_faults(rodata_code);
+}
+
+// The JIT pattern: written while writable, run once executable, refused again after
+static void test_jit(int nx)
+{
+    unsigned char *code = map(PAGE, PROT_READ | PROT_WRITE);
+    CHECK(code != MAP_FAILED);
+    if (code == MAP_FAILED)
+        return;
+    memcpy(code, rodata_code, CODE_SIZE);
+
+    if (nx)
+        call_faults(code);
+
+    CHECK(mprotect(code, PAGE, PROT_READ | PROT_EXEC) == 0);
+    CHECK(call(code) == CODE_RESULT);
+    faults((char *)code, 1); // and no longer writable
+
+    CHECK(mprotect(code, PAGE, PROT_READ | PROT_WRITE) == 0);
+    if (nx)
+        call_faults(code);
+
+    CHECK(munmap(code, PAGE) == 0);
+}
+
+// Read, write and execute at once (Linux allows it); a fork's copy-on-write copy stays executable
+static void test_executable_after_fork(void)
+{
+    unsigned char *code = map(PAGE, PROT_READ | PROT_WRITE | PROT_EXEC);
+    CHECK(code != MAP_FAILED);
+    if (code == MAP_FAILED)
+        return;
+    memcpy(code, rodata_code, CODE_SIZE);
+    CHECK(call(code) == CODE_RESULT);
+
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0)
+    {
+        code[1] = 7; // mov eax, 7: the shared page is copied here
+        _exit(call(code) == 7 ? 0 : 1);
+    }
+
+    int status = -1;
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    CHECK(call(code) == CODE_RESULT); // the parent's page is its own
+    CHECK(munmap(code, PAGE) == 0);
+}
+
 int main(void)
 {
     test_map();
@@ -488,5 +606,13 @@ int main(void)
     test_guard_page();
     test_protect_after_fork();
     test_protect_errors();
+
+    int nx = cpu_has_nx();
+    if (nx)
+        test_data_never_runs();
+    else
+        printf("  no NX on this CPU: data pages run, not checked\n");
+    test_jit(nx);
+    test_executable_after_fork();
     return test_status();
 }
