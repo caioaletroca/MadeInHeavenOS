@@ -20,7 +20,8 @@ Working x86-64 PC kernel with:
   (programs found by path in the initramfs) and wait for one or any of them with a POSIX
   wait status
 - User heap after the ELF image (`brk`), a user stack that grows on demand up to 8 MiB,
-  anonymous `mmap`/`munmap` (regions mapped as touched, between the heap and the stack)
+  anonymous `mmap`/`munmap`/`mprotect` (regions mapped as touched, between the heap and the
+  stack)
 - Processes (`process_t`) owning their address space and fd table, waitable, refcounted; faults in
   ring 3 kill the process with 128 + signal instead of panicking
 - Open files (`file_t` + `file_ops_t`), `/dev/console` behind fds 0–2
@@ -88,6 +89,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+1124288 test: cover mprotect
+f1f79ef feat(mm): add mprotect
 1b2ea0e test: cover mmap and munmap
 5b97fe6 feat(mm): add anonymous mmap and munmap
 732c0ef test: cover commands reading the rest of a script
@@ -689,6 +692,21 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `sys/memory.c`; only `MAP_PRIVATE | MAP_ANONYMOUS` (and `MAP_FIXED`); a file or `MAP_SHARED`
   is `ENODEV`, an unknown flag or protection bit `EINVAL`. Linux's values in
   `<mihos/mman.h>`; libc `<sys/mman.h>` with `MAP_FAILED`. The `memory` test.
+- **Protection changes** (D2, `mprotect`, `SYS_MPROTECT` 45): `address_space_protect` first
+  checks that regions cover the whole range with no gap (`ENOMEM` otherwise, nothing
+  changed; length 0 is 0, as POSIX says), then splits a region at each end of the range
+  (`region_split`; both spare regions allocated first), sets the protection of every region
+  inside, and changes each page already mapped through `arch_mmu_protect(root, page, flags)`
+  (the arch contract's new call; pages not touched yet get it at their first fault). The x86
+  entry keeps its frame and gets the flags from `mmu_flags_to_pte`, so NX (D3) will reach it
+  unchanged. Two cases: **`PROT_NONE`** keeps the frame (the data survives NONE → RW) and
+  drops the user bit, so any ring-3 access is a protection fault; the kernel reaches the page
+  through the direct map, which ignores that bit, so `address_space_fault` refuses a mapped
+  page in a `PROT_NONE` region too (`write(fd, guard_page, n)` is `EFAULT`, nothing leaks).
+  **Writable on a shared frame** (`refs` > 1 after a fork) sets the copy-on-write bit, not
+  `WRITE`: the first write copies, and the other process keeps its data. Regions never merge
+  back. The `memory` test (a guard page, a region split in three, a shared page made writable
+  after fork).
 - **Faults that are not errors:** `address_space_fault(space, address, write)` makes a page ready as
   the access needs: mapped → `arch_mmu_prepare_write` for a write, else nothing; not mapped inside
   the stack's reservation → `address_space_map` of that one zeroed page (the stack grows, gaps
@@ -3081,8 +3099,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     space (start, end, protection), pages mapped as touched (the fault path, as the stack
     does), copied at fork, placed top-down below the stack's reservation; `brk` stops at
     the first region. libc `<sys/mman.h>`, a `memory` test.
-  - **D2, `mprotect` (next):** a region's protection changed, regions split, `PROT_NONE`.
-  - **D3, NX on:** `EFER.NXE`, the no-execute bit on every page without `MMU_EXEC` (data,
+  - **D2, `mprotect` (done):** a region's protection changed, regions split, `PROT_NONE`
+    (the user bit dropped, the frame kept), copy-on-write kept for shared frames.
+  - **D3, NX on (next):** `EFER.NXE`, the no-execute bit on every page without `MMU_EXEC` (data,
     heap, stack), a test running code from a page made executable.
   - **D4, system calls with IRQs on:** the kernel's own locking first.
   - Then pthreads with a futex, TLS, SMP; then mlibc's sysdeps, the toolchain rebuilt with
@@ -3225,13 +3244,19 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 **Debt:**
 
+- `read()` reads from the file before it copies to the program: when the copy fails
+  (`EFAULT`), the bytes are already gone from a pipe or the terminal, and a file's offset has
+  moved. Linux copies straight from the pipe's buffer and only consumes what reached the
+  program. Found by the `memory` test.
 - `mmap`: anonymous private memory only (no files, no `MAP_SHARED`: a fork's pages are always
   copy-on-write); the heap, the stack and the program image are not regions, so `munmap` and
   (D2) `mprotect` cannot reach them (Linux has one VMA each; `brk` would become a region that
   grows); regions are a linked list searched from the start (Linux: a maple tree); no address
   randomization; a read of an untouched page maps a fresh zeroed frame (Linux maps one shared
   zero page until a write); no `MAP_NORESERVE`/`MAP_POPULATE`/`MAP_GROWSDOWN`, `mremap`,
-  `madvise`, `msync`, `mlock`; no limit on reservations (a 4 GiB `mmap` succeeds and fails
+  `madvise`, `msync`, `mlock`; `mprotect` never merges regions back (Linux merges neighbours
+  with the same protection, so the list only grows here) and walks every page of the range,
+  touched or not (a 4 GiB region is a million lookups); no limit on reservations (a 4 GiB `mmap` succeeds and fails
   only page by page, as `SIGSEGV`, when memory runs out: Linux's overcommit, without its OOM
   killer); `PROT_EXEC` is not enforced until NX (D3).
 - Clocks: one tick of resolution (about 10 ms; the TSC or HPET would give finer); the RTC is read
