@@ -47,6 +47,7 @@
 #define SYS_NANOSLEEP 42
 #define SYS_MMAP 43
 #define SYS_MUNMAP 44
+#define SYS_MPROTECT 45
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)

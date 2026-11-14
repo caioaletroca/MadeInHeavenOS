@@ -385,6 +385,26 @@ int arch_mmu_prepare_write(mmu_root_t *root, uintptr_t virtual_address)
     return 0;
 }
 
+int arch_mmu_protect(mmu_root_t *root, uintptr_t virtual_address, unsigned int flags)
+{
+    page_table_entry_t *entry = page_entry_find(root->top, virtual_address);
+    if (entry == NULL)
+        return -1;
+
+    physaddr_t physical = *entry & PAGE_4K_ADDRESS_MASK;
+    uint64_t pte = mmu_flags_to_pte(flags & ~MMU_WRITE);
+
+    // A frame other spaces share must not become writable here: the first write copies it
+    if (flags & MMU_WRITE)
+        pte |= frame_lookup(physical)->refs > 1 ? PAGE_TABLE_ENTRY_COPY_ON_WRITE : PAGE_TABLE_ENTRY_WRITE;
+
+    *entry = physical | PAGE_TABLE_ENTRY_PRESENT | pte;
+
+    __asm__ __volatile__("invlpg (%0)" ::"r"(virtual_address) : "memory");
+
+    return 0;
+}
+
 static inline physaddr_t cr3_read(void)
 {
     physaddr_t value;

@@ -92,6 +92,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_mmap((uintptr_t)arg0, (size_t)arg1, (unsigned int)arg2, (unsigned int)arg3, (long)arg4, (long)arg5);
     case SYS_MUNMAP:
         return sys_munmap((uintptr_t)arg0, (size_t)arg1);
+    case SYS_MPROTECT:
+        return sys_mprotect((uintptr_t)arg0, (size_t)arg1, (unsigned int)arg2);
     default:
         return -ENOSYS;
     }

@@ -24,6 +24,13 @@ void *mmap(void *address, size_t length, int protection, int flags, int fd, off_
  */
 int munmap(void *address, size_t length);
 
+/**
+ * @brief Changes the protection of [address, address + length), which must be mapped.
+ *
+ * @return 0, or -1 with errno set.
+ */
+int mprotect(void *address, size_t length, int protection);
+
 __END_DECLS
 
 #endif // _SYS_MMAN_H_

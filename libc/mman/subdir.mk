@@ -1,3 +1,4 @@
 hosted_local_sources := \
 mmap.c \
-munmap.c
+munmap.c \
+mprotect.c

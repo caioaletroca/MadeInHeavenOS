@@ -81,6 +81,7 @@ long sys_nanosleep(uintptr_t request, uintptr_t remaining);
 long sys_brk(uintptr_t address);
 long sys_mmap(uintptr_t address, size_t length, unsigned int protection, unsigned int flags, long fd, long offset);
 long sys_munmap(uintptr_t address, size_t length);
+long sys_mprotect(uintptr_t address, size_t length, unsigned int protection);
 
 // power.c
 long sys_reboot(long command);

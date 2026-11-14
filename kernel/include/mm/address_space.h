@@ -29,7 +29,7 @@ typedef struct address_space
     mmu_root_t *root;
     uintptr_t heap_start;
     uintptr_t brk;
-    list_t regions;
+    list_t regions; // region_t, sorted by start, never overlapping
 } address_space_t;
 
 /**
@@ -87,6 +87,15 @@ int address_space_reserve(address_space_t *space, uintptr_t *address, size_t siz
  * @return 0, -EINVAL (unaligned, empty or outside the user half) or -ENOMEM.
  */
 int address_space_release(address_space_t *space, uintptr_t address, size_t size);
+
+/**
+ * @brief Change the protection of [address, address + size), which regions must cover
+ * with no gap. Regions are split where the range cuts them; pages already mapped get
+ * the new protection at once, the rest when touched.
+ *
+ * @return 0, -EINVAL (unaligned or outside the user half), -ENOMEM (a gap, or out of memory).
+ */
+int address_space_protect(address_space_t *space, uintptr_t address, size_t size, unsigned int protection);
 
 /**
  * @brief Whether no region overlaps [start, end).

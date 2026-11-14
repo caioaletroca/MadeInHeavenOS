@@ -68,6 +68,18 @@ int arch_mmu_translate(mmu_root_t *root, uintptr_t virtual_address, uintptr_t *p
 int arch_mmu_prepare_write(mmu_root_t *root, uintptr_t virtual_address);
 
 /**
+ * @brief Change a mapped page's protection, keeping its frame and contents.
+ * Without MMU_USER the page stays mapped, but user mode cannot reach it.
+ * MMU_WRITE on a frame other spaces share makes it copy-on-write, not writable.
+ *
+ * @param root Pointer to the root of the translation hierarchy.
+ * @param virtual_address Virtual address of the page (page aligned).
+ * @param flags Mapping flags (MMU_WRITE, MMU_USER, MMU_EXEC).
+ * @return 0 on success, negative value if the page is not mapped.
+ */
+int arch_mmu_protect(mmu_root_t *root, uintptr_t virtual_address, unsigned int flags);
+
+/**
  * @brief Prepare the kernel half for sharing between address spaces.
  *
  * Must run after the frame allocator is up and before the first

@@ -32,19 +32,22 @@ long sys_brk(uintptr_t address)
     return (long)space->brk;
 }
 
+// ---- Mappings: mmap, munmap and mprotect ----
+
 /**
  * mmap(address, length, protection, flags, fd, offset): reserves anonymous private
  * memory; its pages are mapped zeroed as they are touched. Returns the start.
  */
 long sys_mmap(uintptr_t address, size_t length, unsigned int protection, unsigned int flags, long fd, long offset)
 {
-    (void)fd;
+    (void)fd; // anonymous memory only: no file, no offset
     (void)offset;
 
     address_space_t *space = syscall_space();
     if (space == NULL)
         return -ENOMEM;
 
+    // Exactly one of MAP_SHARED and MAP_PRIVATE; no flag or protection bit we do not know
     unsigned int sharing = flags & (MAP_SHARED | MAP_PRIVATE);
     if (sharing == 0 || sharing == (MAP_SHARED | MAP_PRIVATE) ||
         (flags & ~(MAP_SHARED | MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS)) != 0 ||
@@ -69,4 +72,20 @@ long sys_munmap(uintptr_t address, size_t length)
         return -EINVAL;
 
     return address_space_release(space, address, length);
+}
+
+/**
+ * mprotect(address, length, protection): changes the protection of mapped memory;
+ * the range must be inside mappings, with no gap.
+ */
+long sys_mprotect(uintptr_t address, size_t length, unsigned int protection)
+{
+    if ((protection & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0)
+        return -EINVAL;
+
+    address_space_t *space = syscall_space();
+    if (space == NULL)
+        return -ENOMEM;
+
+    return address_space_protect(space, address, length, protection);
 }
