@@ -290,6 +290,187 @@ static void test_errors(void)
         CHECK(munmap(a, PAGE) == 0);
 }
 
+// ---- mprotect ----
+
+static int all_bytes(const char *data, size_t size, char byte)
+{
+    for (size_t i = 0; i < size; i++)
+        if (data[i] != byte)
+            return 0;
+    return 1;
+}
+
+// Pages keep their contents through every change, PROT_NONE included
+static void test_protect_keeps_data(void)
+{
+    char *a = map(2 * PAGE, PROT_READ | PROT_WRITE);
+    CHECK(a != MAP_FAILED);
+    if (a == MAP_FAILED)
+        return;
+    memset(a, 'k', PAGE); // the second page stays untouched: it gets the protection when touched
+
+    CHECK(mprotect(a, 2 * PAGE, PROT_READ) == 0);
+    CHECK(all_bytes(a, PAGE, 'k') && all_zero(a + PAGE, PAGE));
+    faults(a, 1);
+    faults(a + PAGE, 1);
+
+    CHECK(mprotect(a, 2 * PAGE, PROT_NONE) == 0);
+    faults(a, 0);
+    faults(a + PAGE, 0);
+
+    CHECK(mprotect(a, 2 * PAGE, PROT_READ | PROT_WRITE) == 0);
+    CHECK(all_bytes(a, PAGE, 'k'));
+    a[0] = 'w';
+    a[PAGE] = 'w';
+    CHECK(a[0] == 'w' && a[PAGE] == 'w');
+
+    CHECK(munmap(a, 2 * PAGE) == 0);
+}
+
+// The kernel's own copies obey the protection: no write into a read-only page,
+// nothing read out of a PROT_NONE one (the kernel reaches it through the direct map)
+static void test_protect_system_calls(void)
+{
+    char *a = map(PAGE, PROT_READ | PROT_WRITE);
+    int fds[2];
+    CHECK(a != MAP_FAILED && pipe(fds) == 0);
+    memset(a, 's', PAGE);
+
+    CHECK(mprotect(a, PAGE, PROT_READ) == 0);
+    CHECK(write(fds[1], "hello", 5) == 5);
+    errno = 0;
+    CHECK(read(fds[0], a, 5) == -1 && errno == EFAULT);
+    CHECK(write(fds[1], a, 5) == 5); // reading it is fine
+
+    CHECK(mprotect(a, PAGE, PROT_NONE) == 0);
+    errno = 0;
+    CHECK(write(fds[1], a, 5) == -1 && errno == EFAULT);
+
+    // The five 's' written while readable, and nothing from the PROT_NONE write. (The failed
+    // read already took "hello" out of the pipe: sys_read reads before it copies, see the debt)
+    char got[10];
+    CHECK(read(fds[0], got, sizeof(got)) == 5);
+    CHECK(memcmp(got, "sssss", 5) == 0);
+
+    close(fds[0]);
+    close(fds[1]);
+    munmap(a, PAGE);
+}
+
+// The middle page of three: the region splits in three, both ends keep their protection
+static void test_protect_middle(void)
+{
+    char *a = map(3 * PAGE, PROT_READ | PROT_WRITE);
+    CHECK(a != MAP_FAILED);
+    if (a == MAP_FAILED)
+        return;
+    memset(a, 'm', 3 * PAGE);
+
+    CHECK(mprotect(a + PAGE, PAGE, PROT_READ) == 0);
+    a[0] = 'x';
+    a[3 * PAGE - 1] = 'x';
+    faults(a + PAGE, 1);
+    CHECK(a[PAGE] == 'm');
+
+    // Back, across all three pieces at once, then a piece unmapped on its own
+    CHECK(mprotect(a, 3 * PAGE, PROT_READ | PROT_WRITE) == 0);
+    a[PAGE] = 'x';
+    CHECK(munmap(a + 2 * PAGE, PAGE) == 0);
+    CHECK(a[0] == 'x' && a[PAGE] == 'x');
+    faults(a + 2 * PAGE, 0);
+
+    CHECK(munmap(a, 2 * PAGE) == 0);
+}
+
+// The thread-stack pattern: a guard page at the bottom of a writable block
+static void test_guard_page(void)
+{
+    char *stack = map(4 * PAGE, PROT_READ | PROT_WRITE);
+    CHECK(stack != MAP_FAILED);
+    if (stack == MAP_FAILED)
+        return;
+
+    CHECK(mprotect(stack, PAGE, PROT_NONE) == 0);
+    memset(stack + PAGE, 's', 3 * PAGE);
+    faults(stack + PAGE - 1, 1); // one byte past the bottom
+    CHECK(munmap(stack, 4 * PAGE) == 0);
+}
+
+// After a fork the pages are shared: made writable again, a write copies them
+static void test_protect_after_fork(void)
+{
+    char *a = map(PAGE, PROT_READ | PROT_WRITE);
+    CHECK(a != MAP_FAILED);
+    if (a == MAP_FAILED)
+        return;
+    a[0] = 'p';
+    CHECK(mprotect(a, PAGE, PROT_READ) == 0);
+
+    int ready[2], done[2];
+    CHECK(pipe(ready) == 0 && pipe(done) == 0);
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == 0)
+    {
+        char byte;
+        close(ready[1]);
+        close(done[0]);
+        int ok = read(ready[0], &byte, 1) == 1 && a[0] == 'p'; // after the parent's write
+        CHECK(mprotect(a, PAGE, PROT_READ | PROT_WRITE) == 0);
+        a[0] = 'c';
+        ok = ok && a[0] == 'c';
+        CHECK(write(done[1], "x", 1) == 1);
+        _exit(ok ? 0 : 1);
+    }
+    close(ready[0]);
+    close(done[1]);
+
+    CHECK(mprotect(a, PAGE, PROT_READ | PROT_WRITE) == 0);
+    a[0] = 'P'; // the frame is shared: this write gets a copy
+    CHECK(write(ready[1], "x", 1) == 1);
+    char byte;
+    CHECK(read(done[0], &byte, 1) == 1);
+    CHECK(a[0] == 'P'); // the child's write stayed in the child
+
+    int status = -1;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    close(ready[1]);
+    close(done[0]);
+    munmap(a, PAGE);
+}
+
+static void test_protect_errors(void)
+{
+    char *a = map(2 * PAGE, PROT_READ | PROT_WRITE);
+    CHECK(a != MAP_FAILED);
+    if (a == MAP_FAILED)
+        return;
+    a[0] = 'e';
+    CHECK(munmap(a + PAGE, PAGE) == 0); // a gap right after the first page
+
+    errno = 0;
+    CHECK(mprotect(a + 1, PAGE, PROT_READ) == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK(mprotect(a, PAGE, 8) == -1 && errno == EINVAL);
+    CHECK(mprotect(a, 0, PROT_READ) == 0);
+
+    // The range runs into the gap: ENOMEM, and the first page did not change
+    errno = 0;
+    CHECK(mprotect(a, 2 * PAGE, PROT_READ) == -1 && errno == ENOMEM);
+    a[0] = 'f';
+    CHECK(a[0] == 'f');
+
+    // Memory outside regions: the stack is not one
+    volatile char on_stack = 's';
+    errno = 0;
+    CHECK(mprotect((void *)((uintptr_t)&on_stack & ~(PAGE - 1)), PAGE, PROT_READ) == -1 && errno == ENOMEM);
+    on_stack = 't';
+    CHECK(on_stack == 't');
+
+    CHECK(munmap(a, PAGE) == 0);
+}
+
 int main(void)
 {
     test_map();
@@ -301,5 +482,11 @@ int main(void)
     test_brk();
     test_fork();
     test_errors();
+    test_protect_keeps_data();
+    test_protect_system_calls();
+    test_protect_middle();
+    test_guard_page();
+    test_protect_after_fork();
+    test_protect_errors();
     return test_status();
 }
