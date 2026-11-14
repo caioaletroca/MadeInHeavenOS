@@ -35,6 +35,9 @@
 // Ignored by the CPU, ours to use: read-only until the next write, which makes a private copy
 #define PAGE_TABLE_ENTRY_COPY_ON_WRITE (1ULL << 9)
 
+// Instruction fetches from the page fault (honoured only with EFER.NXE; reserved otherwise)
+#define PAGE_TABLE_ENTRY_NO_EXECUTE (1ULL << 63)
+
 typedef uint64_t page_table_entry_t;
 
 /**

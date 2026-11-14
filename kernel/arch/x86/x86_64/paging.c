@@ -1,6 +1,7 @@
 #include <x86/paging.h>
 #include <x86/isr.h>
 #include <x86/vectors.h>
+#include <x86/cpu.h>
 #include <mm/frame.h>
 #include <mm/kmalloc.h>
 #include <mm/address_space.h>
@@ -10,6 +11,7 @@
 #include <mihos/signal.h>
 #include <kprintf.h>
 #include <panic.h>
+#include <stdbool.h>
 #include <string.h>
 
 extern page_table_t page_table_l4;
@@ -117,7 +119,7 @@ static page_table_t *page_table_next(page_table_t *parent, uint16_t index, uint6
  * @param flags The flags for the page table entry.
  * @return 0 on success, or -1 on error.
  */
-static int page_map(page_table_t *root, uintptr_t virtual_address, physaddr_t physical_address, unsigned int flags)
+static int page_map(page_table_t *root, uintptr_t virtual_address, physaddr_t physical_address, uint64_t flags)
 {
     if (root == NULL)
         return -1;
@@ -305,6 +307,10 @@ static void page_fault_handler(isr_context_t *regs)
 
 /* ---- Architecture contract (include/arch/mmu.h) ---- */
 
+// Whether the CPU honours the no-execute bit (set by arch_mmu_init). Without it, bit 63
+// is reserved: setting it would fault, so every page stays executable
+static bool no_execute;
+
 static mmu_root_t kernel_root;
 
 static uint64_t mmu_flags_to_pte(unsigned int flags)
@@ -318,8 +324,9 @@ static uint64_t mmu_flags_to_pte(unsigned int flags)
     if (flags & MMU_NOCACHE)
         pte |= PAGE_TABLE_ENTRY_CACHE_DISABLE;
 
-    // TODO: Honor MMU_EXEC with the NX bit once EFER.NXE is enabled in boot;
-    // until then every mapping is executable.
+    // Executable only when asked: data, heap and stack can never run
+    if (no_execute && (flags & MMU_EXEC) == 0)
+        pte |= PAGE_TABLE_ENTRY_NO_EXECUTE;
 
     return pte;
 }
@@ -500,6 +507,17 @@ static int page_table_copy(page_table_t *from, page_table_t *to, int level)
 
 void arch_mmu_init(void)
 {
+    // No-execute: switched on before the first user page is mapped, so every one gets it
+    uint32_t eax, ebx, ecx, edx;
+    cpuid(CPUID_EXTENDED_FEATURES, &eax, &ebx, &ecx, &edx);
+    if ((edx & CPUID_EXTENDED_EDX_NO_EXECUTE) != 0)
+    {
+        msr_write(MSR_EFER, msr_read(MSR_EFER) | EFER_NO_EXECUTE);
+        no_execute = true;
+    }
+    else
+        kprintf("mmu: no NX support: every page is executable\n");
+
     // Address spaces copy the kernel's L4 entries when created. An L4 entry
     // added later would be missing from all of them, so give every
     // kernel-half entry its L3 table now (256 pages, 1 MiB).
