@@ -3137,8 +3137,18 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     heap, stack), a test running code from a page made executable.
   - **D4, system calls with IRQs on (done):** the locks were already there; the call enables
     IRQs itself, and a spinlock left held panics.
-  - Next: pthreads with a futex, TLS, SMP; then mlibc's sysdeps, the toolchain rebuilt with
-    libstdc++, Lua through `ports/lua/`.
+  - Then what mlibc needs first (decided 2026-11-14; threads and SMP are not needed by it):
+    - **D5, TLS (next):** a thread pointer per thread (x86-64: the FS base), set by a system
+      call, switched with the thread, kept at fork, cleared at exec. mlibc's startup sets one
+      even in a program with one thread (`errno` lives there).
+    - **D6, futex:** wait while a word holds a value, and wake. mlibc's internal locks call
+      it; with one thread per process it is never contended, but the calls must exist.
+    - Then mlibc's sysdeps, the toolchain rebuilt with libstdc++, Lua through `ports/lua/`,
+      busybox for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as the
+      roadmap says).
+    - Threads (`clone`, pthreads) when a port needs them (Python, Node.js), with real locks
+      for what one thread per process covers today (fd table, address space, regions,
+      `brk`); SMP last.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase D's
   prerequisites.
 
