@@ -94,6 +94,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+e3a3516 test: cover the Linux ABI values
+faa3937 feat(abi): move the kernel ABI to Linux's values for mlibc
+b2bdfc4 build: track sysroot headers in dependency files
+94ee529 build(toolchain): clone gcc and binutils from the MiH-Operating-System org
 48326f2 test: cover the futex
 ff53482 feat(sched): add futex wait and wake
 bcaeccd test: cover the thread pointer
@@ -836,6 +840,24 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   for an unreadable one. No libc wrapper (mlibc's sysdeps make the calls). The scheduler
   self-test (two kernel threads: a real wake, a bystander in the same bucket left asleep) and the
   `futex` test (the time limits, `EINTR` under `SA_RESTART`, a fresh page, fork, errors).
+- **The ABI on Linux's values** (D7, for mlibc, which reuses Linux's ABI headers): the uapi
+  headers were already Linux's x86-64 numbers (errno, `O_*`, signal numbers, `MAP_*`,
+  `struct stat`, clocks, `WNOHANG`, the kernel's `struct termios` with 19 `c_cc`); four places
+  moved. `getdents` records are `getdents64`'s: `d_ino`, `d_off` (the position after the
+  record: the next entry's index, so `lseek` to it resumes there), `d_reclen`, `d_type`, the
+  name (a 19-byte header: `.` takes 24 bytes). The tty ioctls are Linux's plain numbers
+  (`TCGETS` 0x5401 … `TIOCGWINSZ` 0x5413, older than the `_IOC` encoding): `sys_ioctl` finds
+  their copy direction and size in `ioctl_legacy` (`sys/files.c`), any other request in its
+  `_IOC` bits (Linux copies inside each driver instead). Signals: `SA_RESTART` 0x10000000,
+  `SA_NODEFER` 0x40000000, `SA_RESETHAND` 0x80000000, `SA_RESTORER` 0x04000000 (libc sets
+  it; the kernel uses `sa_restorer` regardless); `sigset_t` is 64 bits with bit n-1 for
+  signal n (`MIHOS_SIGNAL_BIT`; delivery takes `__builtin_ctzll + 1`); `struct sigaction` is
+  `rt_sigaction`'s (handler, `unsigned long` flags, restorer, mask). `dev_t` is Linux's
+  encoding (`MIHOS_MKDEV`: the minor's low byte in bits 0-7, the major's low 12 bits in 8-19,
+  the rest above); a partition is its disk's minor plus the slot. Covered by `dirs`,
+  `sigaction`, `devices` and `ioctl`. The build tracks the sysroot's headers now (`-MD`, not
+  `-MMD`: those come in with `-isystem`, and a changed uapi header rebuilt only the kernel;
+  D7 showed it as a stale `readdir.o` spinning in `/usr/tests/run`).
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
   `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_FORK` 3, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20, `SYS_FTRUNCATE` 21, `SYS_TRUNCATE` 22, `SYS_UNLINK` 23, `SYS_MKDIR` 24, `SYS_RMDIR` 25, `SYS_CHDIR` 26, `SYS_GETCWD` 27, `SYS_DUP` 28, `SYS_DUP2` 29 (4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
@@ -3181,13 +3203,13 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
       even in a program with one thread (`errno` lives there).
     - **D6, futex (done):** wait while a word holds a value, and wake. mlibc's internal locks call
       it; with one thread per process it is never contended, but the calls must exist.
-    - **D7, the ABI on Linux's values (next):** mlibc reuses `abis/linux`, and ours already
+    - **D7, the ABI on Linux's values (done):** mlibc reuses `abis/linux`, and ours already
       matches it (errno, `O_*`, signals, `MAP_*`, `struct stat`, clocks, the kernel termios)
       except where programs or mlibc see other numbers: `getdents` records without `d_off`,
       ioctl numbers in the `_IOC` encoding (Linux's tty ones are plain 0x54xx), `SA_*` values,
       a 32-bit signal set with bit n for signal n (Linux: 64 bits, bit n-1), the `dev_t`
       encoding.
-    - **D8, the toolchain on GCC 13 or newer:** mlibc builds as C++23 and its `meson.build`
+    - **D8, the toolchain on GCC 13 or newer (next):** mlibc builds as C++23 and its `meson.build`
       refuses GCC below 13.1; our target patch (`MiH-Operating-System/gcc`, ~70 lines) moves
       over, binutils with it.
     - **D9, mlibc's sysdeps** in `sysdeps/mihos/` of the fork: the 16 required ones first
@@ -3339,6 +3361,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 **Debt:**
 
+- ABI (D7): no real-time signals (`NSIG` 32 in a 64-bit set); the kernel ignores
+  `SA_RESTORER` and always uses `sa_restorer`; the tty ioctls' copy sizes live in one table in
+  `sys_ioctl`, not in the driver; `SA_SIGINFO`, `SA_ONSTACK`, `SA_NOCLDSTOP` are not there; no
+  `AT_RANDOM` in the auxiliary vector (mlibc's stack protector gets no random canary).
 - Futex: one global lock for the table (per-bucket locks at SMP); wakes go newest waiter first
   (`hlist_insert` at the head; Linux wakes in order); private futexes only (no shared ones:
   there is no shared memory yet); no requeue, priority inheritance, bitsets or absolute time

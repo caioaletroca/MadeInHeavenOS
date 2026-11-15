@@ -251,7 +251,7 @@ docs/                     # handoff, roadmap
    system calls with IRQs on~~ (done); then what mlibc needs first (decided 2026-11-14): ~~D5
    TLS~~ (done: a thread pointer per thread: mlibc's startup sets one even with one thread), ~~D6 a
    futex~~ (done: mlibc's internal locks call it); then (decided 2026-11-14, after reading mlibc):
-   D7 the kernel ABI on Linux's values where programs see the numbers (mlibc reuses
+   ~~D7 the kernel ABI on Linux's values~~ (done) where programs see the numbers (mlibc reuses
    `abis/linux`: `getdents` records with `d_off`, Linux's tty ioctl numbers, `SA_*` flags and
    a 64-bit signal set with bit n-1 for signal n, Linux's `dev_t` encoding); D8 the toolchain
    on GCC 13 or newer (mlibc is C++23 and refuses older GCC); D9 mlibc's sysdeps in the
