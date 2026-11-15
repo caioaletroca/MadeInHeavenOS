@@ -158,7 +158,12 @@ void *scheduler_on_interrupt(void *context)
         if (previous_thread->space != NULL)
             fpu_save(&previous_thread->fpu);
         if (next_thread->space != NULL)
+        {
             fpu_restore(&next_thread->fpu);
+
+            // User mode cannot change it (no wrfsbase), so the thread's copy is always right
+            cpu_thread_pointer_load(next_thread->thread_pointer);
+        }
     }
 
     // Kernel stack for traps from ring 3, then the thread's address space

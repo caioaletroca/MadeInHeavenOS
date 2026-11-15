@@ -94,6 +94,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_munmap((uintptr_t)arg0, (size_t)arg1);
     case SYS_MPROTECT:
         return sys_mprotect((uintptr_t)arg0, (size_t)arg1, (unsigned int)arg2);
+    case SYS_SET_THREAD_POINTER:
+        return sys_set_thread_pointer((uintptr_t)arg0);
     default:
         return -ENOSYS;
     }

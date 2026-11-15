@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <asm/cpu.h>
 #include <arch/context.h>
 #include <sched/process.h>
 #include <sched/scheduler.h>
@@ -397,6 +398,10 @@ void process_exec(address_space_t *space, uintptr_t entry, uintptr_t user_stack)
     // The new program starts clean, not with the old one's registers
     fpu_init(&thread->fpu);
     fpu_restore(&thread->fpu);
+
+    // The old program's TLS block is gone with its memory
+    thread->thread_pointer = 0;
+    cpu_thread_pointer_load(0);
 
     // The old space must not be active when it is destroyed
     address_space_activate(space);

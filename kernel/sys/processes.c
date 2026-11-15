@@ -1,4 +1,6 @@
 #include "internal.h"
+#include <asm/memory.h>
+#include <asm/cpu.h>
 #include <exec/exec.h>
 #include <sched/signal.h>
 #include <mihos/wait.h>
@@ -270,6 +272,23 @@ long sys_getppid(void)
 {
     process_t *current = scheduler_current()->process;
     return process_parent_pid(current);
+}
+
+/**
+ * set_thread_pointer(pointer): sets this thread's TLS pointer (x86-64: the FS base);
+ * 0 clears it. Not POSIX: Linux's arch_prctl(ARCH_SET_FS), mlibc's sys_tcb_set.
+ */
+long sys_set_thread_pointer(uintptr_t pointer)
+{
+    // A user address or 0: anything at USER_TOP or above is the kernel's, or not
+    // canonical, which the CPU would refuse with a fault inside the kernel
+    if (pointer >= USER_TOP)
+        return -EINVAL;
+
+    thread_t *thread = scheduler_current();
+    thread->thread_pointer = pointer;
+    cpu_thread_pointer_load(pointer);
+    return 0;
 }
 
 /**

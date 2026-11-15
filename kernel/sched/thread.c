@@ -188,6 +188,7 @@ thread_t *thread_create_fork(process_t *process, thread_t *parent)
     {
         // The parent is in its fork call, so the registers are its own right now
         fpu_save(&thread->fpu);
+        thread->thread_pointer = parent->thread_pointer;
         context = arch_user_context_fork(stack, THREAD_STACK_SIZE, parent->stack, THREAD_STACK_SIZE);
     }
 

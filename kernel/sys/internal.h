@@ -60,6 +60,7 @@ long sys_exec(uintptr_t path, uintptr_t argv, uintptr_t envp);
 long sys_wait(long pid, uintptr_t status, int options);
 long sys_getpid(void);
 long sys_getppid(void);
+long sys_set_thread_pointer(uintptr_t pointer);
 long sys_setpgid(long pid, long group);
 long sys_getpgid(long pid);
 long sys_setsid(void);

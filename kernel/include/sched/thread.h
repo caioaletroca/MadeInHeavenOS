@@ -52,6 +52,7 @@ typedef struct thread
     struct address_space *space; // The address space this thread belongs to. The thread does not take ownership of it.
     struct process *process;     // The process this thread belongs to. The thread does not take ownership of it.
     fpu_state_t fpu;             // user threads: their vector registers while off the CPU
+    uintptr_t thread_pointer;    // user threads: their TLS pointer (x86-64: the FS base), 0 if none
 
     list_t run_link;
     list_t timeout_link; // in the timeout queue during a timed wait; else points at itself
