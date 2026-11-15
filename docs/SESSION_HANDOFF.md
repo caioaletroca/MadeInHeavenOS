@@ -8,6 +8,11 @@ see [`ROADMAP.md`](ROADMAP.md). This file describes where it is now.
 Working x86-64 PC kernel with:
 
 - Docker generic → custom MiHOS cross-toolchain pipeline (build only runs inside the Docker image)
+- Companion repositories in the GitHub organization `MiH-Operating-System` (2026-11-14):
+  `gcc` and `binutils` (the `x86_64-mihos` target; `cross-compiler/Dockerfile` clones them as
+  `mihos-gcc`/`mihos-binutils`) and `mlibc` (a fork of managarm/mlibc for phase D's sysdeps;
+  local clone `../mlibc`, `origin` the fork, `upstream` managarm). This repository stays under
+  `caioaletroca`.
 - GRUB/Multiboot2 boot, higher-half kernel
 - Physical memory map, zones, buddy allocator, early boot allocator
 - `kmalloc`/`kfree` on slab size classes (16–1024 B) with buddy pages above that

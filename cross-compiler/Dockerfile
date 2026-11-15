@@ -14,8 +14,8 @@ RUN set -x \
 RUN set -x \
 	&& mkdir -p /usr/local/src \
 	&& cd /usr/local/src \
-	&& git clone https://github.com/caioaletroca/mihos-binutils.git \
-	&& git clone https://github.com/caioaletroca/mihos-gcc.git \
+	&& git clone https://github.com/MiH-Operating-System/binutils.git mihos-binutils \
+	&& git clone https://github.com/MiH-Operating-System/gcc.git mihos-gcc \
 	&& chown -R root:root mihos-binutils \
 	&& chown -R root:root mihos-gcc \
 	&& chmod -R o-w,g+w,g+x mihos-binutils \
