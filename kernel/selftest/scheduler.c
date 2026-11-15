@@ -4,7 +4,13 @@
 #include <sched/sync.h>
 #include <sched/spinlock.h>
 #include <sched/wait.h>
+#include <sched/futex.h>
+#include <mm/address_space.h>
+#include <arch/mmu.h>
+#include <asm/memory.h>
 #include <asm/cpu.h>
+#include <sys/hashtable.h>
+#include <mihos/errno.h>
 #include <kprintf.h>
 #include <assert.h>
 #include <panic.h>
@@ -249,6 +255,107 @@ static void sync_selftest(void)
     KASSERT(cond_waiter_woke && !cond_lock.locked);
 }
 
+// ---- Futex: two kernel threads sleep on words of one user page ----
+
+#define FUTEX_TEST_BUCKET_BITS 6 // futex.c's FUTEX_BUCKET_BITS: to pick a key in the same bucket
+#define FUTEX_BYSTANDER_TICKS 50
+
+static address_space_t *futex_space;
+static uintptr_t futex_word;       // the waiter sleeps here; the waker wakes it
+static uintptr_t futex_other_word; // the bystander sleeps here: same bucket, another key
+static volatile bool futex_bystander_started;
+static volatile int futex_waiter_result = 1;
+static volatile int futex_bystander_result = 1;
+
+/**
+ * Sleeps on futex_word while it holds 0, with no time limit: only the wake ends it.
+ * Then the word is 1, so a second wait refuses at once.
+ */
+static void futex_waiter(void *arg)
+{
+    (void)arg;
+
+    futex_waiter_result = futex_wait(futex_space, futex_word, 0, FUTEX_NO_TIME_LIMIT);
+    KASSERT(futex_wait(futex_space, futex_word, 0, FUTEX_NO_TIME_LIMIT) == -EAGAIN);
+
+    semaphore_up(&tests_done);
+}
+
+/**
+ * Sleeps on another word of the same bucket: the wake on futex_word must pass it by, so
+ * it ends by its time limit, off the bucket.
+ */
+static void futex_bystander(void *arg)
+{
+    (void)arg;
+
+    uint64_t start = timer_ticks();
+    futex_bystander_started = true;
+    futex_bystander_result = futex_wait(futex_space, futex_other_word, 0, FUTEX_BYSTANDER_TICKS);
+
+    KASSERT(timer_ticks() - start >= FUTEX_BYSTANDER_TICKS);
+    KASSERT(futex_wake(futex_space, futex_other_word, 1) == 0); // it left the bucket
+
+    semaphore_up(&tests_done);
+}
+
+/**
+ * Changes the word, then wakes, as unlock code does: retries until the waiter is queued
+ * (before that the wake finds nobody, and the waiter would see 1 and not sleep at all).
+ */
+static void futex_waker(void *arg)
+{
+    (void)arg;
+
+    while (!futex_bystander_started)
+        scheduler_yield();
+
+    // A wake with the word unchanged still wakes: futex_wait's check is only at the start
+    size_t woken;
+    while ((woken = futex_wake(futex_space, futex_word, 1)) == 0)
+        scheduler_yield();
+    KASSERT(woken == 1);
+
+    const uint32_t one = 1;
+    KASSERT(address_space_write(futex_space, futex_word, &one, sizeof(one)) == 0);
+
+    semaphore_up(&tests_done);
+}
+
+static void futex_selftest(void)
+{
+    futex_space = address_space_create();
+    KASSERT(futex_space != NULL);
+    KASSERT(address_space_map(futex_space, USER_BASE, PAGE_SIZE, MMU_WRITE) == 0);
+
+    // Both words start at 0 (a fresh page). Find a second word in the first one's bucket
+    futex_word = USER_BASE;
+    uint64_t bucket = hash_64((uint64_t)(uintptr_t)futex_space ^ futex_word, FUTEX_TEST_BUCKET_BITS);
+    futex_other_word = 0;
+    for (uintptr_t word = futex_word + 4; word < USER_BASE + PAGE_SIZE && futex_other_word == 0; word += 4)
+        if (hash_64((uint64_t)(uintptr_t)futex_space ^ word, FUTEX_TEST_BUCKET_BITS) == bucket)
+            futex_other_word = word;
+    KASSERT(futex_other_word != 0);
+
+    // Refused before sleeping: a differing word, a zero time limit, unaligned, not mapped
+    KASSERT(futex_wait(futex_space, futex_word, 7, FUTEX_NO_TIME_LIMIT) == -EAGAIN);
+    KASSERT(futex_wait(futex_space, futex_word, 0, 0) == -ETIMEDOUT);
+    KASSERT(futex_wait(futex_space, futex_word + 2, 0, FUTEX_NO_TIME_LIMIT) == -EINVAL);
+    KASSERT(futex_wait(futex_space, USER_BASE + PAGE_SIZE, 0, FUTEX_NO_TIME_LIMIT) == -EFAULT);
+    KASSERT(futex_wake(futex_space, futex_word, 1) == 0); // nobody waits
+
+    KASSERT(thread_create(futex_bystander, NULL) != NULL);
+    KASSERT(thread_create(futex_waiter, NULL) != NULL);
+    KASSERT(thread_create(futex_waker, NULL) != NULL);
+    for (int i = 0; i < 3; i++)
+        semaphore_down(&tests_done);
+
+    KASSERT(futex_waiter_result == 0);
+    KASSERT(futex_bystander_result == -ETIMEDOUT);
+
+    address_space_destroy(futex_space);
+}
+
 void scheduler_selftest(void)
 {
     if (thread_init(&worker_a_thread, worker_a_stack, sizeof(worker_a_stack), worker_a_entry, NULL) != 0)
@@ -281,4 +388,5 @@ void scheduler_selftest(void)
         panic("Boot thread is not running after preemption test");
 
     sync_selftest();
+    futex_selftest();
 }
