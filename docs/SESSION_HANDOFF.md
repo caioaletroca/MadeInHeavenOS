@@ -40,7 +40,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`, `streams`, `memory`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`, `streams`, `memory`, `interrupts`, `concurrent`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -89,6 +89,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+7794757 test: cover system calls with IRQs on
+ecc9760 feat(x86): run system calls with IRQs on
 9015f92 test: cover no-execute pages
 4349faf feat(x86): turn on no-execute pages
 1124288 test: cover mprotect
@@ -778,9 +780,24 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   also loads it). `thread_create_fork` saves the live registers into the child (the parent is
   in its fork call), before `scheduler_add`. Signals: see "Handlers".
 - **Syscall ABI** (`include/syscall.h`, shared with assembly via `__ASSEMBLER__`): `int $0x80`
-  (DPL 3 interrupt gate, IRQs off on entry), `rax` = number, `rdi rsi rdx r10 r8 r9` = arguments,
+  (DPL 3 interrupt gate, IRQs off on entry, on for the call itself), `rax` = number, `rdi rsi rdx r10 r8 r9` = arguments,
   `rax` = result or `-errno` (Linux values). `r10` instead of `rcx` keeps the ABI valid for a later
   `syscall`/`sysret`.
+- **IRQs on during a call** (D4): the gate stays an interrupt gate, so the entry stub and the way
+  out (`isr_handler`'s reschedule check, `isr_return`'s signal delivery, `iretq`) run with IRQs
+  off; `syscall_handler` runs `irq_enable()` before `syscall_dispatch` and `irq_disable()` after
+  it (Linux's order: on in C, not in the entry). A timer IRQ in the middle of a call works as it
+  does in a kernel thread: a nested frame on the thread's kernel stack, `scheduler_on_interrupt`
+  switches, the call resumes later. Before, a long call kept every IRQ out: the PIC holds one
+  pending timer interrupt, so a 200 ms call moved the clocks one tick, and nothing else ran.
+  Shared state already had locks of its own (a call could already sleep in the middle, on the
+  disk): ext2, the block cache, pipes, files, VFS nodes, the process tree and signals;
+  `kmalloc`, frames, the input ring and `tty_write` take `irq_save` themselves; the fd table,
+  the address space and its regions belong to the process's one thread. After the call,
+  `KASSERT(irq_enabled())`: IRQs still off mean a spinlock was taken and never released. The
+  `interrupts` test (a long write to `/dev/null` against the cycle counter: the monotonic clock
+  and CPU time keep up) and the `concurrent` test (four processes creating, checking and
+  deleting files in one ext2 directory and appending to one `O_APPEND` file).
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
   `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_FORK` 3, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20, `SYS_FTRUNCATE` 21, `SYS_TRUNCATE` 22, `SYS_UNLINK` 23, `SYS_MKDIR` 24, `SYS_RMDIR` 25, `SYS_CHDIR` 26, `SYS_GETCWD` 27, `SYS_DUP` 28, `SYS_DUP2` 29 (4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
@@ -3118,8 +3135,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     (the user bit dropped, the frame kept), copy-on-write kept for shared frames.
   - **D3, NX on (done):** `EFER.NXE`, the no-execute bit on every page without `MMU_EXEC` (data,
     heap, stack), a test running code from a page made executable.
-  - **D4, system calls with IRQs on (next):** the kernel's own locking first.
-  - Then pthreads with a futex, TLS, SMP; then mlibc's sysdeps, the toolchain rebuilt with
+  - **D4, system calls with IRQs on (done):** the locks were already there; the call enables
+    IRQs itself, and a spinlock left held panics.
+  - Next: pthreads with a futex, TLS, SMP; then mlibc's sysdeps, the toolchain rebuilt with
     libstdc++, Lua through `ports/lua/`.
 - Phase B's hardware path (PCI enumeration, then AHCI/NVMe; GPT) waits until after phase D's
   prerequisites.
@@ -3481,7 +3499,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   negative `sbrk`); `realloc` never shrinks or grows in place (the freed tail or a free next block
   is not used); first fit walks the whole list (no size classes); no lock (needed with threads).
 - The malloc test hard-codes the 32-byte header (`sizeof(block_t)`).
-- Syscalls run with IRQs off for their whole duration (interrupt gate); long writes delay IRQs.
+- IRQs on in system calls (D4), but user page faults still run with IRQs off (exception
+  gates; short: one page mapped or copied); a user thread's 16 KiB kernel stack now also holds
+  a nested IRQ frame in the middle of a call; the `concurrent` test only shakes the locking
+  (a rare race can pass it), it proves nothing.
 - The fd table has no lock (safe only with one thread per process).
 - Pipes: no `O_NONBLOCK`/`pipe2`, no `poll`/`select`, no named FIFOs (`mkfifo`, ext2's FIFO
   inodes). The buffer is a fixed 4096 bytes (Linux: 16 pages, resizable with `F_SETPIPE_SZ`).
