@@ -4,4 +4,5 @@ scheduler.c \
 wait.c \
 sync.c \
 process.c \
-signal.c
+signal.c \
+futex.c

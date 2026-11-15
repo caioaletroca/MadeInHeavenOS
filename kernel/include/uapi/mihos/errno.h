@@ -10,6 +10,7 @@
 #define ENOEXEC 8       // exec format error
 #define EBADF 9         // bad file descriptor
 #define ECHILD 10       // no such child: wait on a pid that is not ours
+#define EAGAIN 11       // try again: futex_wait found the word changed already
 #define ENOMEM 12       // out of memory
 #define EACCES 13       // permission denied
 #define EFAULT 14       // bad address

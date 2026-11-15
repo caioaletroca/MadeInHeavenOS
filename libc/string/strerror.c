@@ -15,6 +15,7 @@ static const char *const messages[] = {
     [ENOEXEC] = "Exec format error",
     [EBADF] = "Bad file descriptor",
     [ECHILD] = "No child processes",
+    [EAGAIN] = "Resource temporarily unavailable",
     [ENOMEM] = "Out of memory",
     [EACCES] = "Permission denied",
     [EFAULT] = "Bad address",

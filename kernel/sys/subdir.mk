@@ -9,4 +9,5 @@ stat.c \
 processes.c \
 memory.c \
 signals.c \
-time.c
+time.c \
+futex.c

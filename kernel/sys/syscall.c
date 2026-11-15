@@ -96,6 +96,10 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_mprotect((uintptr_t)arg0, (size_t)arg1, (unsigned int)arg2);
     case SYS_SET_THREAD_POINTER:
         return sys_set_thread_pointer((uintptr_t)arg0);
+    case SYS_FUTEX_WAIT:
+        return sys_futex_wait((uintptr_t)arg0, (uint32_t)arg1, (uintptr_t)arg2);
+    case SYS_FUTEX_WAKE:
+        return sys_futex_wake((uintptr_t)arg0, (size_t)arg1);
     default:
         return -ENOSYS;
     }

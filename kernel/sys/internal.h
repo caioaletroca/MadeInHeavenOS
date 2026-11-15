@@ -78,6 +78,10 @@ long sys_pause(void);
 long sys_clock_gettime(int clock, uintptr_t time);
 long sys_nanosleep(uintptr_t request, uintptr_t remaining);
 
+// futex.c
+long sys_futex_wait(uintptr_t address, uint32_t expected, uintptr_t timeout);
+long sys_futex_wake(uintptr_t address, size_t count);
+
 // memory.c
 long sys_brk(uintptr_t address);
 long sys_mmap(uintptr_t address, size_t length, unsigned int protection, unsigned int flags, long fd, long offset);
