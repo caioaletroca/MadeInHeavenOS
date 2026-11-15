@@ -250,8 +250,15 @@ docs/                     # handoff, roadmap
    touched), ~~D2 `mprotect`~~ (done), ~~D3 NX on~~ (done: pages not executable unless asked), ~~D4
    system calls with IRQs on~~ (done); then what mlibc needs first (decided 2026-11-14): ~~D5
    TLS~~ (done: a thread pointer per thread: mlibc's startup sets one even with one thread), ~~D6 a
-   futex~~ (done: mlibc's internal locks call it); then mlibc's sysdeps, the toolchain rebuilt with
-   libstdc++, Lua through `ports/lua/`, busybox for the commands (`mkdir`, `rm`, `cp` …).
+   futex~~ (done: mlibc's internal locks call it); then (decided 2026-11-14, after reading mlibc):
+   D7 the kernel ABI on Linux's values where programs see the numbers (mlibc reuses
+   `abis/linux`: `getdents` records with `d_off`, Linux's tty ioctl numbers, `SA_*` flags and
+   a 64-bit signal set with bit n-1 for signal n, Linux's `dev_t` encoding); D8 the toolchain
+   on GCC 13 or newer (mlibc is C++23 and refuses older GCC); D9 mlibc's sysdeps in the
+   `MiH-Operating-System/mlibc` fork (16 required: exit, futex, open/read/write/seek/close,
+   a clock, log/panic, anonymous memory, `mmap`/`munmap`, the thread pointer), static first;
+   D10 the switch: user programs on mlibc, libstdc++, then Lua through `ports/lua/`, busybox
+   for the commands (`mkdir`, `rm`, `cp` …).
    Threads (`clone`, pthreads) when a port needs them (Python, Node.js; not Lua, GCC or
    make); SMP last, maybe after the hardware path: programs gain only speed from it.
 10. Phase B's hardware path: PCI enumeration, then AHCI/NVMe; GPT.

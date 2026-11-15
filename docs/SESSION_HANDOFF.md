@@ -3181,7 +3181,21 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
       even in a program with one thread (`errno` lives there).
     - **D6, futex (done):** wait while a word holds a value, and wake. mlibc's internal locks call
       it; with one thread per process it is never contended, but the calls must exist.
-    - **Next:** mlibc's sysdeps, the toolchain rebuilt with libstdc++, Lua through `ports/lua/`,
+    - **D7, the ABI on Linux's values (next):** mlibc reuses `abis/linux`, and ours already
+      matches it (errno, `O_*`, signals, `MAP_*`, `struct stat`, clocks, the kernel termios)
+      except where programs or mlibc see other numbers: `getdents` records without `d_off`,
+      ioctl numbers in the `_IOC` encoding (Linux's tty ones are plain 0x54xx), `SA_*` values,
+      a 32-bit signal set with bit n for signal n (Linux: 64 bits, bit n-1), the `dev_t`
+      encoding.
+    - **D8, the toolchain on GCC 13 or newer:** mlibc builds as C++23 and its `meson.build`
+      refuses GCC below 13.1; our target patch (`MiH-Operating-System/gcc`, ~70 lines) moves
+      over, binutils with it.
+    - **D9, mlibc's sysdeps** in `sysdeps/mihos/` of the fork: the 16 required ones first
+      (all have a call already), a static `libc.a`, hello world. Static startup reads the
+      program headers from `__ehdr_start`, and our initial stack already ends with an empty
+      auxiliary vector.
+    - **D10, the switch:** user programs on mlibc, libstdc++,
+      Lua through `ports/lua/`,
       busybox for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as the
       roadmap says).
     - Threads (`clone`, pthreads) when a port needs them (Python, Node.js), with real locks
