@@ -189,8 +189,9 @@ void idt_init(void)
 	IDT_INSTALL_STI(126);
 	IDT_INSTALL_STI(127);
 
-	// Syscalls: the only gate ring 3 may raise (DPL 3); interrupt gate so
-	// syscalls start with IRQs off, like every other kernel entry
+	// Syscalls: the only gate ring 3 may raise (DPL 3). An interrupt gate, so the
+	// entry runs with IRQs off like every other; syscall_handler turns them on for
+	// the call itself
 	extern void isr_128(void);
 	idt_entry_init(VECTOR_SYSCALL, (uint64_t)isr_128, IDT_GATE_USER_INTERRUPT);
 
