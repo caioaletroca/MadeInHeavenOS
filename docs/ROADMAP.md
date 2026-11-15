@@ -249,8 +249,8 @@ docs/                     # handoff, roadmap
    `mmap`/`munmap`~~ (done: anonymous memory, a list of regions per address space, pages mapped as
    touched), ~~D2 `mprotect`~~ (done), ~~D3 NX on~~ (done: pages not executable unless asked), ~~D4
    system calls with IRQs on~~ (done); then what mlibc needs first (decided 2026-11-14): ~~D5
-   TLS~~ (done: a thread pointer per thread: mlibc's startup sets one even with one thread), D6 a
-   futex (mlibc's internal locks call it); then mlibc's sysdeps, the toolchain rebuilt with
+   TLS~~ (done: a thread pointer per thread: mlibc's startup sets one even with one thread), ~~D6 a
+   futex~~ (done: mlibc's internal locks call it); then mlibc's sysdeps, the toolchain rebuilt with
    libstdc++, Lua through `ports/lua/`, busybox for the commands (`mkdir`, `rm`, `cp` …).
    Threads (`clone`, pthreads) when a port needs them (Python, Node.js; not Lua, GCC or
    make); SMP last, maybe after the hardware path: programs gain only speed from it.
