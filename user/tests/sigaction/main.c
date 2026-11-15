@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <spawn.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <errno.h>
 #include <mihos/syscall.h>
 #include <test.h>
@@ -371,6 +372,34 @@ static void test_set_functions(void)
     CHECK(sigismember(&set, SIGINT) == 0);
     CHECK(sigfillset(&set) == 0);
     CHECK(sigismember(&set, SIGTERM) == 1 && sigismember(&set, 31) == 1);
+
+    // Linux's layout, which mlibc writes too: 64 bits, bit n-1 for signal n
+    CHECK(sizeof(sigset_t) == 8);
+    CHECK(sigemptyset(&set) == 0 && sigaddset(&set, SIGHUP) == 0 && set == 1);
+    CHECK(sigemptyset(&set) == 0 && sigaddset(&set, SIGUSR1) == 0 && set == (1ull << 9));
+    CHECK(sigemptyset(&set) == 0 && sigaddset(&set, 31) == 0 && set == (1ull << 30));
+    CHECK(sigfillset(&set) == 0 && set == ~0ull);
+}
+
+// The kernel's struct sigaction is Linux's (rt_sigaction): handler, flags, restorer, mask
+static void test_abi_layout(void)
+{
+    CHECK(offsetof(struct sigaction, sa_handler) == 0);
+    CHECK(offsetof(struct sigaction, sa_flags) == 8);
+    CHECK(offsetof(struct sigaction, sa_restorer) == 16);
+    CHECK(offsetof(struct sigaction, sa_mask) == 24);
+    CHECK(SA_RESTART == 0x10000000 && SA_NODEFER == 0x40000000);
+    CHECK(SA_RESETHAND == 0x80000000u && SA_RESTORER == 0x04000000);
+
+    // The flags come back as set, with the SA_RESTORER libc adds
+    struct sigaction action = {0}, old;
+    action.sa_handler = on_signal;
+    action.sa_flags = SA_RESTART | SA_NODEFER;
+    sigemptyset(&action.sa_mask);
+    CHECK(sigaction(SIGUSR2, &action, NULL) == 0);
+    CHECK(sigaction(SIGUSR2, NULL, &old) == 0);
+    CHECK(old.sa_flags == (SA_RESTART | SA_NODEFER | SA_RESTORER));
+    signal(SIGUSR2, SIG_DFL);
 }
 
 static void test_mask(void)
@@ -1080,6 +1109,7 @@ int main(int argc, char **argv)
     isolated(test_ignore);
     isolated(test_errors);
     isolated(test_set_functions);
+    isolated(test_abi_layout);
     isolated(test_mask);
     isolated(test_unblockable);
     isolated(test_nesting);

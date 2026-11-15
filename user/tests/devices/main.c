@@ -69,6 +69,22 @@ static void test_zero(void)
     CHECK(close(fd) == 0);
 }
 
+/*
+ * dev_t in Linux's encoding, as mlibc's major()/minor() read it: the minor's low byte in bits
+ * 0-7, the major's low 12 bits in 8-19, the rest of both above. Small numbers look the same as
+ * Linux's old 16-bit ones (major * 256 + minor).
+ */
+static void test_device_numbers(void)
+{
+    CHECK(makedev(1, 3) == 0x103);
+    CHECK(makedev(8, 17) == 0x811);
+    dev_t big = makedev(0x12345, 0x6789A);
+    CHECK(big == ((0x12000ULL << 32) | (0x678ULL << 20) | (0x345ULL << 8) | 0x9AULL));
+    CHECK(major(big) == 0x12345 && minor(big) == 0x6789A);
+    CHECK(major(makedev(4095, 255)) == 4095 && minor(makedev(4095, 255)) == 255);
+    CHECK(major(makedev(4096, 256)) == 4096 && minor(makedev(4096, 256)) == 256);
+}
+
 static void test_stat(void)
 {
     // Zeroed: struct stat has padding that libc never writes, and memcmp sees it
@@ -185,6 +201,7 @@ int main(void)
     test_null();
     test_zero();
     test_stat();
+    test_device_numbers();
     test_readdir();
     test_console();
     test_refusals();

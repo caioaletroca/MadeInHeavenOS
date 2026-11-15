@@ -68,8 +68,23 @@ static void test_errors(void)
     CHECK(ioctl(-1, TIOCGWINSZ, &ws) == -1 && errno == EBADF);
 }
 
+// Linux's tty numbers (older than the _IOC encoding), which mlibc's headers carry too
+static void test_numbers(void)
+{
+    CHECK(TCGETS == 0x5401 && TCSETS == 0x5402 && TCSETSW == 0x5403 && TCSETSF == 0x5404);
+    CHECK(TIOCSCTTY == 0x540E && TIOCGPGRP == 0x540F && TIOCSPGRP == 0x5410);
+    CHECK(TIOCSTI == 0x5412 && TIOCGWINSZ == 0x5413);
+
+    // An unknown number in the old range copies nothing and is refused
+    char untouched[4] = {1, 2, 3, 4};
+    errno = 0;
+    CHECK(ioctl(0, 0x54FF, untouched) == -1 && errno == ENOTTY);
+    CHECK(untouched[0] == 1 && untouched[3] == 4);
+}
+
 int main(void)
 {
+    test_numbers();
     test_winsize();
     test_not_terminals();
     test_errors();

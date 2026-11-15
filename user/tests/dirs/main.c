@@ -16,7 +16,7 @@
 
 #define TESTS "/usr/tests"
 #define USR_COUNT 3
-#define USR_RECORDS 56 // "." and "..": 16 bytes each, "tests": 24
+#define USR_RECORDS 80 // "." and "..": 24 bytes each, "tests": 32
 
 // One directory's listing, as readdir returns it
 typedef struct listing
@@ -172,10 +172,10 @@ static void test_getdents(void)
     CHECK(getdents(fd, buffer, 8) == -1 && errno == EINVAL);
 
     // Exactly one record, then the rest, then the end (again and again)
-    CHECK(getdents(fd, buffer, 16) == 16);
-    CHECK(records_match(buffer, 16, usr, 1) == 1);
+    CHECK(getdents(fd, buffer, 24) == 24);
+    CHECK(records_match(buffer, 24, usr, 1) == 1);
     long n = getdents(fd, buffer, sizeof(buffer));
-    CHECK(n == USR_RECORDS - 16);
+    CHECK(n == USR_RECORDS - 24);
     CHECK(records_match(buffer, n, usr + 1, USR_COUNT - 1) == USR_COUNT - 1);
     CHECK(getdents(fd, buffer, sizeof(buffer)) == 0);
     CHECK(getdents(fd, buffer, sizeof(buffer)) == 0);
@@ -201,6 +201,24 @@ static void test_getdents(void)
     }
     CHECK(padding_clean);
 
+    // d_off is the position after each record (Linux's getdents64): lseek to it resumes there
+    int64_t offsets[USR_COUNT] = {0};
+    int count = 0;
+    for (long used = 0; used < n && count < USR_COUNT; count++)
+    {
+        const struct mihos_dirent *record = (const void *)(bytes + used);
+        offsets[count] = record->d_off;
+        used += record->d_reclen;
+    }
+    int offsets_grow = count == USR_COUNT;
+    for (int i = 0; i < count; i++)
+        offsets_grow = offsets_grow && offsets[i] == i + 1;
+    CHECK(offsets_grow);
+
+    CHECK(lseek(fd, offsets[0], SEEK_SET) == offsets[0]);
+    n = getdents(fd, buffer, sizeof(buffer));
+    CHECK(n == USR_RECORDS - 24 && records_match(buffer, n, usr + 1, USR_COUNT - 1) == USR_COUNT - 1);
+
     CHECK(close(fd) == 0);
 
     // Small buffers: the kernel resumes where it stopped, and the total matches readdir
@@ -208,7 +226,7 @@ static void test_getdents(void)
     int records = 0;
     for (;;)
     {
-        n = getdents(fd, buffer, 40); // one or two records per call
+        n = getdents(fd, buffer, 56); // one or two records per call
         if (n <= 0)
             break;
         for (long used = 0; used < n; records++)
