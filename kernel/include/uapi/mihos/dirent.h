@@ -11,6 +11,7 @@
 struct mihos_dirent
 {
     uint64_t d_ino;
+    int64_t d_off; // position of the next record: lseek(fd, d_off, SEEK_SET) resumes after this one
     uint16_t d_reclen;
     uint8_t d_type;
     char d_name[];

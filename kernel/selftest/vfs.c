@@ -222,9 +222,9 @@ static void vfs_test_readdir(void)
 
 // Every record of /usr, as vfs_file_getdents packs it: the same in both boots (it holds only tests)
 static const char *const usr_names[] = {".", "..", "tests"};
-static const uint16_t usr_lengths[] = {16, 16, 24}; // 11-byte header + name + '\0', rounded to 8
+static const uint16_t usr_lengths[] = {24, 24, 32}; // 19-byte header + name + '\0', rounded to 8
 #define USR_COUNT 3
-#define USR_RECORDS 56
+#define USR_RECORDS 80
 #define TESTS_INDEX 2
 
 static void vfs_test_getdents(void)
@@ -264,19 +264,19 @@ static void vfs_test_getdents(void)
         if (vfs_file_getdents(file, buffer, sizeof(buffer), &next) != 0 || next != USR_COUNT)
             panic("VFS self-test: getdents at the end did not return 0\n");
 
-        // "tests" fills its 24 bytes exactly: nothing may be written after them
+        // "tests" fills its 32 bytes exactly: nothing may be written after them
         file->offset = TESTS_INDEX;
         memset(buffer, 0, sizeof(buffer));
-        buffer[24] = 0xA5;
-        n = vfs_file_getdents(file, buffer, 24, &next);
-        if (n != 24 || next != TESTS_INDEX + 1 || buffer[24] != 0xA5)
+        buffer[32] = 0xA5;
+        n = vfs_file_getdents(file, buffer, 32, &next);
+        if (n != 32 || next != TESTS_INDEX + 1 || buffer[32] != 0xA5)
             panic("VFS self-test: getdents into an exact fit returned %ld, next %u, canary 0x%x\n", n,
                   (unsigned int)next, buffer[24]);
 
         // Not even one record fits
         file->offset = 0;
-        if (vfs_file_getdents(file, buffer, 15, &next) != -EINVAL)
-            panic("VFS self-test: getdents into 15 bytes did not return -EINVAL\n");
+        if (vfs_file_getdents(file, buffer, 23, &next) != -EINVAL)
+            panic("VFS self-test: getdents into 23 bytes did not return -EINVAL\n");
     }
 
     file_put(file);
@@ -358,10 +358,13 @@ static void vfs_test_stat(void)
         file->flags != (FILE_READ | FILE_WRITE))
         panic("VFS self-test: console_file() is not /dev/console opened read-write\n");
 
-    // The request encodes what sys_ioctl copies: TIOCGWINSZ reads 8 bytes out
-    if (MIHOS_IOC_DIR(MIHOS_TIOCGWINSZ) != MIHOS_IOC_READ ||
-        MIHOS_IOC_SIZE(MIHOS_TIOCGWINSZ) != sizeof(struct mihos_winsize))
-        panic("VFS self-test: TIOCGWINSZ does not encode a read of a winsize\n");
+    // TIOCGWINSZ is Linux's plain number (sys_ioctl lists its copy); new requests use the
+    // _IOC encoding, which carries the direction and size itself
+    if (MIHOS_TIOCGWINSZ != 0x5413 || MIHOS_IOC_DIR(MIHOS_TIOCGWINSZ) != MIHOS_IOC_NONE)
+        panic("VFS self-test: TIOCGWINSZ is not Linux's 0x5413\n");
+    if (MIHOS_IOC_DIR(MIHOS_IOR('T', 0x13, struct mihos_winsize)) != MIHOS_IOC_READ ||
+        MIHOS_IOC_SIZE(MIHOS_IOR('T', 0x13, struct mihos_winsize)) != sizeof(struct mihos_winsize))
+        panic("VFS self-test: MIHOS_IOR does not encode a read of a winsize\n");
 
     // The console answers the window size (into a kernel buffer) and refuses the rest
     struct mihos_winsize ws;

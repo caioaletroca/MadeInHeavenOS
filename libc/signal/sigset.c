@@ -22,7 +22,7 @@ int sigemptyset(sigset_t *set)
 
 int sigfillset(sigset_t *set)
 {
-    *set = ~0u;
+    *set = ~(sigset_t)0;
     return 0;
 }
 
@@ -31,7 +31,7 @@ int sigaddset(sigset_t *set, int signal)
     if (!signal_valid(signal))
         return -1;
 
-    *set |= 1u << signal;
+    *set |= MIHOS_SIGNAL_BIT(signal);
     return 0;
 }
 
@@ -40,7 +40,7 @@ int sigdelset(sigset_t *set, int signal)
     if (!signal_valid(signal))
         return -1;
 
-    *set &= ~(1u << signal);
+    *set &= ~MIHOS_SIGNAL_BIT(signal);
     return 0;
 }
 
@@ -49,5 +49,5 @@ int sigismember(const sigset_t *set, int signal)
     if (!signal_valid(signal))
         return -1;
 
-    return (*set >> signal) & 1;
+    return (*set & MIHOS_SIGNAL_BIT(signal)) != 0;
 }

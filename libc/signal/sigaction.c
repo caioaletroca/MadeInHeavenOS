@@ -12,6 +12,7 @@ int sigaction(int signal, const struct sigaction *action, struct sigaction *old)
     {
         copy = *action;
         copy.sa_restorer = __signal_restore;
+        copy.sa_flags |= SA_RESTORER;
         action = &copy;
     }
 

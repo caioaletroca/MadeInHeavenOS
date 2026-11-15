@@ -35,7 +35,7 @@ void arch_syscall_restart(void *stack, size_t stack_size, long number);
  * @return 0 on success, -1 if the stack cannot be written.
  */
 int arch_signal_frame_push(void *stack, size_t stack_size, struct address_space *space, int signal,
-                           uintptr_t handler, uintptr_t restorer, uint32_t blocked);
+                           uintptr_t handler, uintptr_t restorer, uint64_t blocked);
 
 /**
  * @brief Puts back what arch_signal_frame_push saved. Checks everything: the
@@ -49,6 +49,6 @@ int arch_signal_frame_push(void *stack, size_t stack_size, struct address_space 
  * @return 0 on success, -1 if the frame is unreadable or invalid.
  */
 int arch_signal_frame_pop(void *stack, size_t stack_size, struct address_space *space,
-                          uint32_t *blocked, long *result);
+                          uint64_t *blocked, long *result);
 
 #endif // _ARCH_SIGNAL_H_

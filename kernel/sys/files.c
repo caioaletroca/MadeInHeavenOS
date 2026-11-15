@@ -207,6 +207,46 @@ long sys_lseek(unsigned long fd, long offset, int whence)
     return (long)new;
 }
 
+/*
+ * Requests older than the _IOC encoding (Linux's tty ones): their copy direction and size,
+ * which the number does not carry. Linux copies inside each driver; one table keeps that here.
+ */
+static const struct
+{
+    unsigned long request;
+    unsigned int direction;
+    size_t size;
+} ioctl_legacy[] = {
+    {MIHOS_TCGETS, MIHOS_IOC_READ, sizeof(struct termios)},
+    {MIHOS_TCSETS, MIHOS_IOC_WRITE, sizeof(struct termios)},
+    {MIHOS_TCSETSW, MIHOS_IOC_WRITE, sizeof(struct termios)},
+    {MIHOS_TCSETSF, MIHOS_IOC_WRITE, sizeof(struct termios)},
+    {MIHOS_TIOCSCTTY, MIHOS_IOC_NONE, 0},
+    {MIHOS_TIOCGPGRP, MIHOS_IOC_READ, sizeof(int32_t)},
+    {MIHOS_TIOCSPGRP, MIHOS_IOC_WRITE, sizeof(int32_t)},
+    {MIHOS_TIOCSTI, MIHOS_IOC_WRITE, sizeof(char)},
+    {MIHOS_TIOCGWINSZ, MIHOS_IOC_READ, sizeof(struct mihos_winsize)},
+};
+
+/**
+ * What sys_ioctl copies for a request: from the table, or else from the _IOC bits.
+ */
+static void ioctl_argument(unsigned long request, unsigned int *direction, size_t *size)
+{
+    for (size_t i = 0; i < sizeof(ioctl_legacy) / sizeof(ioctl_legacy[0]); i++)
+    {
+        if (ioctl_legacy[i].request == request)
+        {
+            *direction = ioctl_legacy[i].direction;
+            *size = ioctl_legacy[i].size;
+            return;
+        }
+    }
+
+    *direction = MIHOS_IOC_DIR(request);
+    *size = MIHOS_IOC_SIZE(request);
+}
+
 long sys_ioctl(unsigned long fd, unsigned long request, uintptr_t arg)
 {
     file_t *file = sys_file(fd);
@@ -216,8 +256,9 @@ long sys_ioctl(unsigned long fd, unsigned long request, uintptr_t arg)
     if (file->ops->ioctl == NULL)
         return -ENOTTY;
 
-    // Determine the size of the ioctl argument based on the request code.
-    size_t size = MIHOS_IOC_SIZE(request);
+    unsigned int direction;
+    size_t size;
+    ioctl_argument(request, &direction, &size);
     if (size > IOCTL_ARG_MAX)
         return -EINVAL;
 
@@ -225,7 +266,7 @@ long sys_ioctl(unsigned long fd, unsigned long request, uintptr_t arg)
     memset(buffer, 0, IOCTL_ARG_MAX);
 
     // If the ioctl command expects data to be written from user space, read it into the buffer.
-    if ((MIHOS_IOC_DIR(request) & MIHOS_IOC_WRITE) && size > 0)
+    if ((direction & MIHOS_IOC_WRITE) && size > 0)
     {
         if (address_space_read(syscall_space(), arg, buffer, size) != 0)
             return -EFAULT;
@@ -235,7 +276,7 @@ long sys_ioctl(unsigned long fd, unsigned long request, uintptr_t arg)
     long ret = file->ops->ioctl(file, request, (void *)buffer);
 
     // If the ioctl command expects data to be read into user space, write it from the buffer.
-    if (ret >= 0 && (MIHOS_IOC_DIR(request) & MIHOS_IOC_READ) && size > 0)
+    if (ret >= 0 && (direction & MIHOS_IOC_READ) && size > 0)
     {
         if (address_space_write(syscall_space(), arg, buffer, size) != 0)
             return -EFAULT;

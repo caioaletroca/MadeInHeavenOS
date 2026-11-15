@@ -51,8 +51,8 @@ typedef struct
  */
 typedef struct
 {
-    uint32_t pending;               // one bit per signal sent and not yet acted on
-    uint32_t blocked;               // waits in pending while set here
+    sigset_t pending;               // one bit per signal sent and not yet acted on
+    sigset_t blocked;               // waits in pending while set here
     struct sigaction actions[NSIG]; // zeroed: every signal starts as SIG_DFL
 } process_signals_t;
 

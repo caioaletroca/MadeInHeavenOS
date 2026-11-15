@@ -12,10 +12,13 @@
 #define MIHOS_S_IFBLK 0060000 // block device (a disk)
 #define MIHOS_S_IFIFO 0010000 // FIFO (a pipe)
 
-// st_rdev: which device a device file is (major: the driver, minor: the instance)
-#define MIHOS_MKDEV(major, minor) (((uint64_t)(major) << 32) | (uint32_t)(minor))
-#define MIHOS_MAJOR(dev) ((uint32_t)((dev) >> 32))
-#define MIHOS_MINOR(dev) ((uint32_t)(dev))
+// st_rdev: which device a device file is, in Linux's encoding (the minor's low byte in bits 0-7,
+// the major's low 12 bits in 8-19, the rest above), so major()/minor() agree with mlibc's
+#define MIHOS_MKDEV(major, minor)                                                      \
+    ((((uint64_t)(major) & 0xFFFFF000u) << 32) | (((uint64_t)(major) & 0xFFFu) << 8) | \
+     (((uint64_t)(minor) & 0xFFFFFF00u) << 12) | ((uint64_t)(minor) & 0xFFu))
+#define MIHOS_MAJOR(dev) ((uint32_t)((((dev) >> 32) & 0xFFFFF000u) | (((dev) >> 8) & 0xFFFu)))
+#define MIHOS_MINOR(dev) ((uint32_t)((((dev) >> 12) & 0xFFFFFF00u) | ((dev) & 0xFFu)))
 
 /**
  * What stat and fstat write. Every field is fixed-width and the padding is

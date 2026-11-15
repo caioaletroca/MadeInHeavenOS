@@ -1,6 +1,7 @@
 #include <driver/partition.h>
 #include <driver/block.h>
 #include <mm/kmalloc.h>
+#include <mihos/stat.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -146,7 +147,7 @@ static void partition_add(block_device_t *disk, int slot, const mbr_entry_t *ent
 
     snprintf(partition->block.name, sizeof(partition->block.name), "%s%d", disk->name, slot);
     partition->block.private = partition;
-    partition->block.rdev = disk->rdev + slot;
+    partition->block.rdev = MIHOS_MKDEV(MIHOS_MAJOR(disk->rdev), MIHOS_MINOR(disk->rdev) + slot);
     partition->block.sector_count = entry->sector_count;
     partition->block.ops = &partition_ops;
 

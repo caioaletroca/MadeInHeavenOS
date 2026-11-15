@@ -5,7 +5,7 @@
 #include <sched/scheduler.h>
 #include <sched/thread.h>
 
-#define SIGNAL_STOPS ((1u << SIGSTOP) | (1u << SIGTSTP) | (1u << SIGTTIN) | (1u << SIGTTOU))
+#define SIGNAL_STOPS (MIHOS_SIGNAL_BIT(SIGSTOP) | MIHOS_SIGNAL_BIT(SIGTSTP) | MIHOS_SIGNAL_BIT(SIGTTIN) | MIHOS_SIGNAL_BIT(SIGTTOU))
 
 static bool signal_ignored_by_default(int signal)
 {
@@ -56,12 +56,12 @@ void signal_send(process_t *p, int signal)
         wait_queue_wake_all(&p->stop.resume_waiters);
     }
 
-    uint32_t bit = 1u << signal;
+    sigset_t bit = MIHOS_SIGNAL_BIT(signal);
 
     if (signal == SIGCONT)
         p->signals.pending &= ~SIGNAL_STOPS;
     else if ((SIGNAL_STOPS & bit) != 0)
-        p->signals.pending &= ~(1u << SIGCONT);
+        p->signals.pending &= ~MIHOS_SIGNAL_BIT(SIGCONT);
 
     // A blocked signal stays: the action may change before it is unblocked
     if ((p->signals.blocked & bit) == 0 && signal_does_nothing(p, signal))
@@ -77,7 +77,7 @@ void signal_send(process_t *p, int signal)
 void signal_force(int signal)
 {
     process_t *p = scheduler_current()->process;
-    uint32_t bit = 1u << signal;
+    sigset_t bit = MIHOS_SIGNAL_BIT(signal);
 
     guard(spinlock, &p->lock);
 
@@ -98,7 +98,7 @@ bool signal_pending(process_t *p)
 
 bool signal_refused(process_t *p, int signal)
 {
-    return (p->signals.blocked & (1u << signal)) != 0 || p->signals.actions[signal].sa_handler == SIG_IGN;
+    return (p->signals.blocked & MIHOS_SIGNAL_BIT(signal)) != 0 || p->signals.actions[signal].sa_handler == SIG_IGN;
 }
 
 void signal_action_set(process_t *p, int signal, const struct sigaction *action)
@@ -109,7 +109,7 @@ void signal_action_set(process_t *p, int signal, const struct sigaction *action)
     p->signals.actions[signal].sa_mask &= ~SIGNAL_UNBLOCKABLE;
 
     if (signal_does_nothing(p, signal))
-        p->signals.pending &= ~(1u << signal);
+        p->signals.pending &= ~MIHOS_SIGNAL_BIT(signal);
 }
 
 void signal_inherit(process_t *child, process_t *parent)
@@ -134,16 +134,17 @@ void signal_deliver(void)
 
     while (signal_pending(p))
     {
-        int signal = __builtin_ctz(p->signals.pending & ~p->signals.blocked);
+        // Bit 0 is signal 1
+        int signal = __builtin_ctzll(p->signals.pending & ~p->signals.blocked) + 1;
         struct sigaction action = p->signals.actions[signal];
-        p->signals.pending &= ~(1u << signal);
+        p->signals.pending &= ~MIHOS_SIGNAL_BIT(signal);
 
         if (signal_does_nothing(p, signal))
             continue;
 
         if (action.sa_handler == SIG_DFL)
         {
-            if ((SIGNAL_STOPS & (1u << signal)) == 0)
+            if ((SIGNAL_STOPS & MIHOS_SIGNAL_BIT(signal)) == 0)
                 process_exit_signal(signal);
 
             // Nothing of the program runs, so it must not see EINTR
@@ -168,7 +169,7 @@ void signal_deliver(void)
         // Its own signal too, so a handler is not entered again while it runs
         sigset_t block = action.sa_mask;
         if ((action.sa_flags & SA_NODEFER) == 0)
-            block |= 1u << signal;
+            block |= MIHOS_SIGNAL_BIT(signal);
 
         p->signals.blocked |= block & ~SIGNAL_UNBLOCKABLE;
 

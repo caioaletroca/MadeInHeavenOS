@@ -45,7 +45,7 @@ long sys_sigaction(int signal, uintptr_t action, uintptr_t old)
     if (signal <= 0 || signal >= NSIG)
         return -EINVAL;
 
-    if (action != 0 && (SIGNAL_UNBLOCKABLE & (1u << signal)) != 0)
+    if (action != 0 && (SIGNAL_UNBLOCKABLE & MIHOS_SIGNAL_BIT(signal)) != 0)
         return -EINVAL;
 
     struct sigaction incoming;
@@ -109,7 +109,7 @@ long sys_sigreturn(void)
 {
     thread_t *thread = scheduler_current();
     process_t *p = thread->process;
-    uint32_t blocked;
+    uint64_t blocked;
     long result;
 
     // No system call of the program ends here, whatever the restored rax says

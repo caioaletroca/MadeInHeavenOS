@@ -61,7 +61,7 @@ void arch_syscall_restart(void *stack, size_t stack_size, long number)
 }
 
 int arch_signal_frame_push(void *stack, size_t stack_size, struct address_space *space, int signal,
-                           uintptr_t handler, uintptr_t restorer, uint32_t blocked)
+                           uintptr_t handler, uintptr_t restorer, uint64_t blocked)
 {
     isr_context_t *context = user_frame(stack, stack_size);
 
@@ -94,7 +94,7 @@ int arch_signal_frame_push(void *stack, size_t stack_size, struct address_space 
 }
 
 int arch_signal_frame_pop(void *stack, size_t stack_size, struct address_space *space,
-                          uint32_t *blocked, long *result)
+                          uint64_t *blocked, long *result)
 {
     isr_context_t *context = user_frame(stack, stack_size);
     signal_frame_t frame;
@@ -117,7 +117,7 @@ int arch_signal_frame_pop(void *stack, size_t stack_size, struct address_space *
     fpu_restore(&frame.fpu);
 
     *context = frame.registers;
-    *blocked = (uint32_t)frame.blocked;
+    *blocked = frame.blocked;
     *result = (long)frame.registers.rax;
 
     return 0;

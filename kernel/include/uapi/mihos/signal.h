@@ -1,6 +1,8 @@
 #ifndef _UAPI_MIHOS_SIGNAL_H_
 #define _UAPI_MIHOS_SIGNAL_H_
 
+#include <stdint.h>
+
 #define NSIG 32 // valid signals are 1..31
 
 #define SIGHUP 1
@@ -41,14 +43,22 @@
 #define SIG_UNBLOCK 1
 #define SIG_SETMASK 2
 
-typedef unsigned int sigset_t; // bit n = signal n
+// sa_flags (Linux's values)
+#define SA_RESTART 0x10000000   // system calls continue after the handler, no EINTR
+#define SA_NODEFER 0x40000000   // the handler's own signal is not blocked while it runs
+#define SA_RESETHAND 0x80000000 // back to SIG_DFL once the handler is entered
+#define SA_RESTORER 0x04000000  // sa_restorer is set (libc always sets it; the kernel requires it)
+
+typedef uint64_t sigset_t; // bit n-1 = signal n (Linux's layout)
+
+#define MIHOS_SIGNAL_BIT(signal) (1ull << ((signal) - 1))
 
 struct sigaction
 {
     void (*sa_handler)(int);
-    sigset_t sa_mask;          // also blocked while the handler runs
-    int sa_flags;              // SA_*
+    unsigned long sa_flags;    // SA_*
     void (*sa_restorer)(void); // set by libc: where the handler returns to
+    sigset_t sa_mask;          // also blocked while the handler runs
 };
 
 #define SIGNAL_EXIT_STATUS(signal) (128 + (signal))

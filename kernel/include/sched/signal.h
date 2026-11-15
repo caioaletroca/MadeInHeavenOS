@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <sched/process.h>
 
-#define SIGNAL_UNBLOCKABLE ((1u << SIGKILL) | (1u << SIGSTOP))
+#define SIGNAL_UNBLOCKABLE (MIHOS_SIGNAL_BIT(SIGKILL) | MIHOS_SIGNAL_BIT(SIGSTOP))
 
 /**
  * @brief Sends a fault to the current process. A fault cannot be refused: the

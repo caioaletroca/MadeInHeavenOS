@@ -438,6 +438,7 @@ long vfs_file_getdents(file_t *file, void *buffer, size_t size, uint64_t *next)
 
         struct mihos_dirent *record = (struct mihos_dirent *)((char *)buffer + used);
         record->d_ino = entry.ino;
+        record->d_off = (int64_t)(index + 1);
         record->d_reclen = (uint16_t)length;
         record->d_type = vfs_dirent_type(entry.type);
         memcpy(record->d_name, entry.name, entry.length + 1);

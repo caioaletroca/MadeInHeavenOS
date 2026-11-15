@@ -29,14 +29,15 @@ struct mihos_winsize
     uint16_t ws_ypixel;
 };
 
-#define MIHOS_TIOCGWINSZ MIHOS_IOR('T', 0x13, struct mihos_winsize) // get the window size
-#define MIHOS_TIOCSCTTY MIHOS_IOC(MIHOS_IOC_NONE, 'T', 0x0E, 0)     // make this terminal the session's
-#define MIHOS_TIOCGPGRP MIHOS_IOR('T', 0x0F, int32_t)               // get the foreground group
-#define MIHOS_TIOCSPGRP MIHOS_IOW('T', 0x10, int32_t)               // set the foreground group
-#define MIHOS_TIOCSTI MIHOS_IOW('T', 0x12, char)                    // push a byte into the input
-#define MIHOS_TCGETS MIHOS_IOR('T', 0x01, struct termios)           // get the settings
-#define MIHOS_TCSETS MIHOS_IOW('T', 0x02, struct termios)           // set them now
-#define MIHOS_TCSETSW MIHOS_IOW('T', 0x03, struct termios)          // set them once output is written
-#define MIHOS_TCSETSF MIHOS_IOW('T', 0x04, struct termios)          // same, dropping input
+// Linux's tty numbers: older than the _IOC encoding, so they carry no size (sys_ioctl lists them)
+#define MIHOS_TCGETS 0x5401     // get the settings
+#define MIHOS_TCSETS 0x5402     // set them now
+#define MIHOS_TCSETSW 0x5403    // set them once output is written
+#define MIHOS_TCSETSF 0x5404    // same, dropping input
+#define MIHOS_TIOCSCTTY 0x540E  // make this terminal the session's
+#define MIHOS_TIOCGPGRP 0x540F  // get the foreground group
+#define MIHOS_TIOCSPGRP 0x5410  // set the foreground group
+#define MIHOS_TIOCSTI 0x5412    // push a byte into the input
+#define MIHOS_TIOCGWINSZ 0x5413 // get the window size
 
 #endif /* _UAPI_MIHOS_IOCTL_H_ */
