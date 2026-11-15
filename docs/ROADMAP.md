@@ -248,8 +248,8 @@ docs/                     # handoff, roadmap
    porting platform first, real disks after; QEMU's ATA disks serve until then). Order: ~~D1
    `mmap`/`munmap`~~ (done: anonymous memory, a list of regions per address space, pages mapped as
    touched), ~~D2 `mprotect`~~ (done), ~~D3 NX on~~ (done: pages not executable unless asked), ~~D4
-   system calls with IRQs on~~ (done); then what mlibc needs first (decided 2026-11-14): D5
-   TLS (a thread pointer per thread: mlibc's startup sets one even with one thread), D6 a
+   system calls with IRQs on~~ (done); then what mlibc needs first (decided 2026-11-14): ~~D5
+   TLS~~ (done: a thread pointer per thread: mlibc's startup sets one even with one thread), D6 a
    futex (mlibc's internal locks call it); then mlibc's sysdeps, the toolchain rebuilt with
    libstdc++, Lua through `ports/lua/`, busybox for the commands (`mkdir`, `rm`, `cp` …).
    Threads (`clone`, pthreads) when a port needs them (Python, Node.js; not Lua, GCC or

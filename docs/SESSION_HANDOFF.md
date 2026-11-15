@@ -40,7 +40,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`, `streams`, `memory`, `interrupts`, `concurrent`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`, `streams`, `memory`, `interrupts`, `concurrent`, `tls`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -89,6 +89,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+bcaeccd test: cover the thread pointer
+8a19003 feat(sched): add a thread pointer per thread for TLS
 7794757 test: cover system calls with IRQs on
 ecc9760 feat(x86): run system calls with IRQs on
 9015f92 test: cover no-execute pages
@@ -798,6 +800,18 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `interrupts` test (a long write to `/dev/null` against the cycle counter: the monotonic clock
   and CPU time keep up) and the `concurrent` test (four processes creating, checking and
   deleting files in one ext2 directory and appending to one `O_APPEND` file).
+- **The thread pointer** (D5, TLS): `thread_t.thread_pointer`, x86-64's FS base, the block a
+  thread's `%fs`-relative loads reach (`__thread` variables, `errno` in mlibc; the ABI puts a
+  pointer to the block itself in its first word). `set_thread_pointer(pointer)`
+  (`SYS_SET_THREAD_POINTER` 46, `sys/processes.c`; Linux's `arch_prctl(ARCH_SET_FS)`, mlibc's
+  `sys_tcb_set`) refuses `USER_TOP` and above with `EINVAL` (a non-canonical address makes
+  `wrmsr` fault inside the kernel), 0 clears it. It writes the field, then the MSR
+  (`cpu_thread_pointer_load` in `<asm/cpu.h>`, `MSR_FS_BASE` 0xC0000100): an IRQ between the
+  two switches back in with the field's new value. `scheduler_on_interrupt` loads it when a user
+  thread switches in, next to the vector registers; nothing saves it at switch-out, since user
+  mode cannot change it (`wrfsbase` is off). A new process starts with 0, `fork` copies the
+  parent's (its memory is a copy), `process_exec` clears it (the old block is gone). No libc
+  wrapper: our libc has no TLS. The `tls` test (switches, fork, a signal handler, exec).
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
   `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_FORK` 3, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20, `SYS_FTRUNCATE` 21, `SYS_TRUNCATE` 22, `SYS_UNLINK` 23, `SYS_MKDIR` 24, `SYS_RMDIR` 25, `SYS_CHDIR` 26, `SYS_GETCWD` 27, `SYS_DUP` 28, `SYS_DUP2` 29 (4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
@@ -3138,10 +3152,10 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - **D4, system calls with IRQs on (done):** the locks were already there; the call enables
     IRQs itself, and a spinlock left held panics.
   - Then what mlibc needs first (decided 2026-11-14; threads and SMP are not needed by it):
-    - **D5, TLS (next):** a thread pointer per thread (x86-64: the FS base), set by a system
+    - **D5, TLS (done):** a thread pointer per thread (x86-64: the FS base), set by a system
       call, switched with the thread, kept at fork, cleared at exec. mlibc's startup sets one
       even in a program with one thread (`errno` lives there).
-    - **D6, futex:** wait while a word holds a value, and wake. mlibc's internal locks call
+    - **D6, futex (next):** wait while a word holds a value, and wake. mlibc's internal locks call
       it; with one thread per process it is never contended, but the calls must exist.
     - Then mlibc's sysdeps, the toolchain rebuilt with libstdc++, Lua through `ports/lua/`,
       busybox for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as the
@@ -3287,6 +3301,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 **Debt:**
 
+- TLS: no `wrfsbase`/`rdfsbase` for user mode (CR4.FSGSBASE off: changing the pointer is a
+  system call), no user GS, no call to read the pointer back (Linux's `ARCH_GET_FS`); the
+  MSR is written at every switch into a user thread, even when the value is unchanged.
 - NX: the kernel half stays executable (its boot tables have no bit 63: the kernel's data,
   stacks and direct map could run; Linux maps them NX); no SMEP/SMAP (the kernel may run or,
   outside the copy helpers, touch user pages by accident); `EFER.NXE` is set on the boot CPU
