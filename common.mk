@@ -118,14 +118,16 @@ clean:
 purge:
 	$(RM) $(PROJECT_ROOT)/build/*/objects/$(COMPONENT)
 
+# -MD, not -MMD: the sysroot's headers come in with -isystem, and -MMD leaves system headers out
+# of the .d files, so a changed uapi header (<mihos/*.h>) would rebuild nothing outside the kernel
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.c
 	mkdir -p $(@D)
-	$(CC) -MMD -MP -c $< -o $@ $(CPPFLAGS) $(CFLAGS)
+	$(CC) -MD -MP -c $< -o $@ $(CPPFLAGS) $(CFLAGS)
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.S
 	mkdir -p $(@D)
-	$(CC) -MMD -MP -c $< -o $@ $(CPPFLAGS) $(CFLAGS)
+	$(CC) -MD -MP -c $< -o $@ $(CPPFLAGS) $(CFLAGS)
 
 $(BINARY_DIR)/%.o: $(SOURCE_DIR)/%.cpp
 	mkdir -p $(@D)
-	$(CXX) -MMD -MP -c $< -o $@ $(CPPFLAGS) $(CXXFLAGS)
+	$(CXX) -MD -MP -c $< -o $@ $(CPPFLAGS) $(CXXFLAGS)
