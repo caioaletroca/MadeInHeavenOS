@@ -1,0 +1,16 @@
+# Meson cross file for building mlibc (mlibc/) with the x86_64-mihos toolchain.
+# Used by the top Makefile's mlibc targets: config/$(HOST).cross.
+# system = 'mihos' makes mlibc's meson.build pick sysdeps/mihos.
+
+[host_machine]
+system = 'mihos'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
+
+[binaries]
+c = 'x86_64-mihos-gcc'
+cpp = 'x86_64-mihos-g++'
+ar = 'x86_64-mihos-ar'
+strip = 'x86_64-mihos-strip'
+ld = 'x86_64-mihos-ld'
