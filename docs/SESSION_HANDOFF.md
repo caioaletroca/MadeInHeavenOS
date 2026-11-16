@@ -106,6 +106,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+e79277e build(mlibc): move to the sysdeps for files, memory and time
+a670fda build(user): link mlibc programs with -z separate-code
+667ef0b docs(architecture): record D10 batch 2 and what the mlibc run shows in handoff
 b9f300a build(mlibc): move to the sysdeps for posix_spawn, signals and the shell
 8657ad9 test(shell): fit a static mlibc program in the binary pipe test
 5f8f4d3 fix(abi): drop the old sa_flags values from signal.h
@@ -3340,9 +3343,22 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
            files, fork, groups, hello, history, ioctl, mlibc_hello, signal, ...), most others
            stop at batch 3's sysdeps (Stat by far the most). The live run then stalls in
            `stdin` (below), so the disk run never starts.
-        3. **next:** files, memory, time: Stat (a path, an fd, or `AT_FDCWD` + path), Mkdir,
-           Rmdir, Unlinkat (`AT_REMOVEDIR` → rmdir), Truncate, Ftruncate, VmProtect,
-           Brk (reports the break: `sbrk(0)`), Sleep (the time left written back).
+        3. ~~files, memory, time~~ (done): Stat (mlibc's `fsfd_target`: a path → `SYS_STAT`,
+           an fd or `AT_EMPTY_PATH` + `""` → `SYS_FSTAT`, `AT_FDCWD` or an absolute path →
+           `SYS_STAT`, relative to another directory → `ENOSYS`; mlibc's struct passed
+           through, zeroed first, with a `static_assert` on `st_ctim`'s offset since the
+           kernel's struct is its first 120 bytes; `AT_SYMLINK_NOFOLLOW` ignored: no
+           symlinks), Mkdir, Rmdir, Unlinkat (`AT_REMOVEDIR` → rmdir, other directories
+           `ENOSYS`), Truncate, Ftruncate, VmProtect, Brk (`SYS_BRK` with 0 reports the
+           break), Sleep (the time left written back on success and on `EINTR`; mlibc's
+           Linux port skips it on `EINTR`). mlibc's log names no missing sysdep any more;
+           23 tests pass up to `stat`, then `stdin` stalls the run. The mlibc programs link
+           with `-z separate-code` since: the default script put `.rodata` in the code's
+           segment, so `memory` saw it run.
+        4. **next:** two fixes from the run: Reboot checks the command before the kernel
+           checks the caller, so `reboot(12345)` is `EINVAL` where Linux (and the test) say
+           `EPERM` (pass the kernel an invalid command instead); Sigaction hides
+           `SA_RESTORER` from the old action, which glibc and mlibc's Linux port show.
       - **D10c, the tests that check our libc rather than the standard:** run on the
         mlibc build and rewrite (`malloc` checks our allocator's heap layout through
         `sbrk(0)`; others show in the baseline). Seen after batch 2: `stdin` stalls the
@@ -3351,8 +3367,17 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
         mlibc may turn into a read of the console); mlibc's `ungetc` returns a negative
         `char` as negative (C says `unsigned char`); its `strerror` adds the name (`No such
         file or directory (ENOENT)`), which the `shell` cases compare against; its `free`
-        does not detect `malloc_abort`'s double free. Each is a test to rewrite or an mlibc
-        fix to send upstream, decided here.
+        does not detect `malloc_abort`'s double free. After batch 3: `args` (mlibc's start-up
+        hands `main` its own copies of the argv/envp vectors, the strings stay on the
+        stack), `brk` (mlibc's `.bss` follows the program's, so `bss` is not the last thing
+        before the heap), `calendar` (`gmtime` of a huge time does not give `EOVERFLOW`,
+        `timegm` normalizes differently, and `strftime("%s")` is unknown to mlibc and
+        panics), `ext2` (`strerror(ENOTEMPTY)`'s wording), `malloc` (our allocator's
+        layout, `malloc(0) == NULL`, `ENOMEM` for huge sizes), `printf` (`%p` prints `0x`
+        as glibc does, and a conversion mlibc does not know, `%q`, panics), `sigaction`
+        (`signal()` installs without `SA_RESTART`, BSD/glibc install with it; `fwrite`
+        under signals fails where ours retries), `spawn` (file actions are not `ENOSYS` on
+        mlibc). Each is a test to rewrite or an mlibc fix to send upstream, decided here.
       - **D10d, the cut:** GCC's `STARTFILE_SPEC` moves from our `crt0.o` to mlibc's
         `crt1.o`, mlibc's headers take `sysroot/usr/include` (the kernel then needs its
         own include folder for `libk`), the stage 1 image is built from mlibc's headers
