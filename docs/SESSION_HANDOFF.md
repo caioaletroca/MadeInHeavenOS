@@ -106,6 +106,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+34d8217 build(mlibc): move to the reboot and sigaction fixes
+472b964 docs(architecture): record D10 batch 3 and the mlibc run's findings in handoff
 e79277e build(mlibc): move to the sysdeps for files, memory and time
 a670fda build(user): link mlibc programs with -z separate-code
 667ef0b docs(architecture): record D10 batch 2 and what the mlibc run shows in handoff
@@ -3321,7 +3323,7 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
       - **D10a, `make LIBC=mlibc` (done):** every program built against mlibc, the tests
         made to build on either libc, `part.img` grown to hold the programs. Baseline:
         `init` starts on mlibc, then `fork` and `reboot` are `ENOSYS`.
-      - **D10b, the sysdeps (in progress), in three batches,** each unblocking the next:
+      - **D10b, the sysdeps (done), in three batches and a fix-up,** each unblocking the next:
         1. ~~booting to the test runner~~ (done): Fork, Execve, Waitpid, Ioctl, SetSid,
            Reboot (takes Linux's `RB_HALT_SYSTEM`, asks the kernel for `REBOOT_HALT`; other
            commands `EINVAL`), OpenDir (`O_RDONLY | O_DIRECTORY | O_CLOEXEC`: the kernel's
@@ -3355,11 +3357,13 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
            23 tests pass up to `stat`, then `stdin` stalls the run. The mlibc programs link
            with `-z separate-code` since: the default script put `.rodata` in the code's
            segment, so `memory` saw it run.
-        4. **next:** two fixes from the run: Reboot checks the command before the kernel
-           checks the caller, so `reboot(12345)` is `EINVAL` where Linux (and the test) say
-           `EPERM` (pass the kernel an invalid command instead); Sigaction hides
-           `SA_RESTORER` from the old action, which glibc and mlibc's Linux port show.
-      - **D10c, the tests that check our libc rather than the standard:** run on the
+        4. ~~two fixes from the run~~ (done): Reboot passes another command to the kernel
+           as an invalid one, so the caller is checked first (`EPERM`, as Linux), then the
+           command (`EINVAL`); Sigaction keeps `SA_RESTORER` in the old action, as glibc
+           and mlibc's Linux port. D10b is done: on mlibc 25 tests pass up to `stat`
+           (`memory` and `reboot` among them), the 10 failing ones are D10c's, and `stdin`
+           stalls the run.
+      - **D10c, next: the tests that check our libc rather than the standard:** run on the
         mlibc build and rewrite (`malloc` checks our allocator's heap layout through
         `sbrk(0)`; others show in the baseline). Seen after batch 2: `stdin` stalls the
         live run on mlibc (no failure printed after its `ungetc` check; the likely spot is
