@@ -11,6 +11,7 @@
 #define O_TRUNC 0x200  // open(): truncate a regular file opened for writing to 0 (Linux's 01000)
 #define O_APPEND 0x400 // open(): every write goes to the end of the file (Linux's 02000)
 #define O_DIRECTORY 0x10000
+#define O_CLOEXEC 0x80000 // open(): the new fd is closed by a successful exec (Linux's 02000000)
 
 // lseek() whence
 #define SEEK_SET 0 // offset from the start

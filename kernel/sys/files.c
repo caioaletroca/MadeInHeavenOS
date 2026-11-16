@@ -150,7 +150,7 @@ long sys_open(uintptr_t path, int flags, uint32_t mode)
         return error;
 
     file_t *file = NULL;
-    long ret = vfs_open(buffer, flags, mode, &file);
+    long ret = vfs_open(buffer, flags & ~O_CLOEXEC, mode, &file);
 
     kfree(buffer);
     if (ret < 0)
@@ -159,6 +159,8 @@ long sys_open(uintptr_t path, int flags, uint32_t mode)
     int fd = process_fd_install(current, file);
     if (fd < 0)
         file_put(file);
+    else if (flags & O_CLOEXEC)
+        current->files.close_on_exec |= 1u << fd;
 
     return fd;
 }
