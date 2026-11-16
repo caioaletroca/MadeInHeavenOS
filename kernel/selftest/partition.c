@@ -11,8 +11,8 @@
 
 // part.img's layout (disk-tools/partition-disk.sh): partition 1 holds the root
 // file system, partition 4 only markers
-#define PART1_SECTORS 24576
-#define PART4_FIRST 28672
+#define PART1_SECTORS 262144
+#define PART4_FIRST 266240
 #define PART4_SECTORS 2047
 
 #define WRITE_SECTOR 100 // inside hdb4: disk sector PART4_FIRST + 100, no marker there

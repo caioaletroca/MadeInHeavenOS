@@ -46,7 +46,7 @@ image=${IMAGE:-mihos-compiler}
 fsck=${FSCK:-auto}
 disk_copy=$test_dir/test-disk.img
 part_copy=$test_dir/test-part.img
-part1_dd="skip=1 count=12" # partition 1 in MiB (disk-tools/partition-disk.sh): sector 2048, 24576 sectors
+part1_dd="skip=1 count=128" # partition 1 in MiB (disk-tools/partition-disk.sh): sector 2048, 262144 sectors
 
 if [ ! -f "$iso" ]; then
     echo "run-tests: $iso not found (build it first: make all, in Docker)" >&2

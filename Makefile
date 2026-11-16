@@ -55,7 +55,7 @@ $(DISK_IMAGE): $(DISK_FILES) Makefile
 
 # The partitioned disk, attached as the second disk next to disk.img: an MBR
 # and the self-test's markers (the script lists its layout), and on partition
-# 1 (sector 2048, 12 MiB) the installed system: an ext2 holding the initrd's
+# 1 (sector 2048, 128 MiB) the installed system: an ext2 holding the initrd's
 # tree, the root of the "from disk" boot. mke2fs -E offset writes the file
 # system inside the partition and leaves the rest of the image as it is.
 $(PART_IMAGE): disk-tools/partition-disk.sh $(INITRD) Makefile
@@ -64,7 +64,7 @@ $(PART_IMAGE): disk-tools/partition-disk.sh $(INITRD) Makefile
 	tar -xf $(INITRD) -C $(PART_ROOT_STAGING)
 	sh disk-tools/partition-disk.sh $@
 	mke2fs -q -F -t ext2 -b 1024 -L mihos-root -E offset=$$((2048 * 512)),root_owner=0:0 \
-	    -d $(PART_ROOT_STAGING) $@ 12288
+	    -d $(PART_ROOT_STAGING) $@ 131072
 
 # Made by grub/ (the "grub" target, before this disk in "all")
 $(INITRD):
