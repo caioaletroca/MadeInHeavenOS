@@ -13,14 +13,18 @@ Working x86-64 PC kernel with:
   `mihos-2.47`, binutils 2.47: each a release tarball import plus the target patch;
   `cross-compiler/Dockerfile` clones them as `mihos-gcc`/`mihos-binutils`) and `mlibc` (a fork of managarm/mlibc for phase D's sysdeps).
   This repository stays under `caioaletroca`.
-- mlibc is a git submodule at `libc/mlibc` (2026-11-15), inside the repository because the
-  build container mounts only this repository. The fork's `master` follows managarm
-  (`upstream` remote); our sysdeps go on `mihos` (`branch = mihos` in `.gitmodules`). A fresh
-  clone needs `--recursive` (or `git submodule update --init`), and the submodule then sits on
-  a bare commit: `git checkout mihos` inside it before committing there. A change is two
-  commits: one in `libc/mlibc` (pushed to the fork), then the new pointer here. The submodule
-  has `core.autocrlf false`: its scripts run in the Linux container. libc's own build compiles
-  only the directories in `libc/subdir.mk`, so it does not pick mlibc up.
+- mlibc is a git submodule at `mlibc/` (2026-11-15), a component next to `kernel/`, `libc/`
+  and `user/` (after the switch `libc/` builds only the kernel's `libk.a`), inside the
+  repository because the build container mounts only this repository. The fork's `master`
+  follows managarm (`upstream` remote); our sysdeps go on `mihos` (`branch = mihos` in
+  `.gitmodules`). A fresh clone needs `--recursive` (or `git submodule update --init`), and the
+  submodule then sits on a bare commit: `git checkout mihos` inside it before committing there.
+  A change is two commits: one in `mlibc/` (pushed to the fork), then the new pointer here.
+  Submodule settings on Windows: `core.autocrlf false` (its scripts run in the Linux
+  container) and `core.symlinks true` (each port's `include/abi-bits/*.h` are symlinks into
+  `abis/`; without it git writes them as text files holding the path). Real symlinks need
+  Windows Developer Mode; the container follows them through the mount. After turning
+  `core.symlinks` on in a clone that has the text files, `git checkout -- sysdeps` rewrites them.
 - GRUB/Multiboot2 boot, higher-half kernel
 - Physical memory map, zones, buddy allocator, early boot allocator
 - `kmalloc`/`kfree` on slab size classes (16–1024 B) with buddy pages above that
@@ -102,6 +106,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+e7212a2 build: move the mlibc submodule to the repository root
+d9a822e docs(architecture): document the mlibc submodule in handoff
 988c6de build(libc): add the mlibc fork as a submodule
 c91059f docs(architecture): document the GCC 16.2 toolchain in handoff
 caf2b43 build(toolchain): move to GCC 16.2 and binutils 2.47
