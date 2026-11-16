@@ -11,9 +11,16 @@ Working x86-64 PC kernel with:
 - Companion repositories in the GitHub organization `MiH-Operating-System` (2026-11-14):
   `gcc` and `binutils` (the `x86_64-mihos` target on branches `mihos-16`, GCC 16.2.0, and
   `mihos-2.47`, binutils 2.47: each a release tarball import plus the target patch;
-  `cross-compiler/Dockerfile` clones them as `mihos-gcc`/`mihos-binutils`) and `mlibc` (a fork of managarm/mlibc for phase D's sysdeps;
-  local clone `../mlibc`, `origin` the fork, `upstream` managarm). This repository stays under
-  `caioaletroca`.
+  `cross-compiler/Dockerfile` clones them as `mihos-gcc`/`mihos-binutils`) and `mlibc` (a fork of managarm/mlibc for phase D's sysdeps).
+  This repository stays under `caioaletroca`.
+- mlibc is a git submodule at `libc/mlibc` (2026-11-15), inside the repository because the
+  build container mounts only this repository. The fork's `master` follows managarm
+  (`upstream` remote); our sysdeps go on `mihos` (`branch = mihos` in `.gitmodules`). A fresh
+  clone needs `--recursive` (or `git submodule update --init`), and the submodule then sits on
+  a bare commit: `git checkout mihos` inside it before committing there. A change is two
+  commits: one in `libc/mlibc` (pushed to the fork), then the new pointer here. The submodule
+  has `core.autocrlf false`: its scripts run in the Linux container. libc's own build compiles
+  only the directories in `libc/subdir.mk`, so it does not pick mlibc up.
 - GRUB/Multiboot2 boot, higher-half kernel
 - Physical memory map, zones, buddy allocator, early boot allocator
 - `kmalloc`/`kfree` on slab size classes (16–1024 B) with buddy pages above that
@@ -95,6 +102,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+988c6de build(libc): add the mlibc fork as a submodule
+c91059f docs(architecture): document the GCC 16.2 toolchain in handoff
 caf2b43 build(toolchain): move to GCC 16.2 and binutils 2.47
 f673c9d test: run a real idiv in the sigaction divide test
 fe5ef05 docs(architecture): document the Linux ABI values in handoff
