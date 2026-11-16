@@ -255,9 +255,10 @@ docs/                     # handoff, roadmap
    `abis/linux`: `getdents` records with `d_off`, Linux's tty ioctl numbers, `SA_*` flags and
    a 64-bit signal set with bit n-1 for signal n, Linux's `dev_t` encoding); ~~D8 the toolchain
    on GCC 13 or newer~~ (done: GCC 16.2.0 and binutils 2.47; mlibc is C++23 and refuses
-   older GCC); D9 mlibc's sysdeps in the
-   `MiH-Operating-System/mlibc` fork (16 required: exit, futex, open/read/write/seek/close,
-   a clock, log/panic, anonymous memory, `mmap`/`munmap`, the thread pointer), static first;
+   older GCC); ~~D9 mlibc's sysdeps in the
+   `MiH-Operating-System/mlibc` fork~~ (done: the 16 required (exit, futex,
+   open/read/write/seek/close, a clock, log/panic, anonymous memory, `mmap`/`munmap`, the
+   thread pointer) plus isatty and dup2, a static `libc.a`, a hello world on MiHOS);
    D10 the switch: user programs on mlibc, libstdc++, then Lua through `ports/lua/`, busybox
    for the commands (`mkdir`, `rm`, `cp` …).
    Threads (`clone`, pthreads) when a port needs them (Python, Node.js; not Lua, GCC or

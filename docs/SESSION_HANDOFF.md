@@ -57,7 +57,7 @@ Working x86-64 PC kernel with:
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
-  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`, `streams`, `memory`, `interrupts`, `concurrent`, `tls`, `futex`; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
+  `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`, `streams`, `memory`, `interrupts`, `concurrent`, `tls`, `futex`; `mlibc_hello` from `user/mlibc/`, on mlibc; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
   history with `!!`/`!n`/`!-n`, quotes and `\` escapes, `$?`/`$$`/`$NAME`, `PATH` search,
@@ -106,6 +106,12 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+5435a38 test: run a first program on mlibc
+f3e58e2 build(user): link the programs in user/mlibc against mlibc
+6949413 build(toolchain): drop nasm from the image
+d838f24 build(mlibc): give the sysdeps the kernel's system call numbers
+95d1c93 build(mlibc): build mlibc with meson beside our libc
+2070a7a docs(architecture): document the mlibc submodule's place and settings in handoff
 e7212a2 build: move the mlibc submodule to the repository root
 d9a822e docs(architecture): document the mlibc submodule in handoff
 988c6de build(libc): add the mlibc fork as a submodule
@@ -887,7 +893,29 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   error since GCC 14). The build scripts run under `set -e`: before, a failed libgcc left
   an image with no `crtbegin.o`. GCC 14+ makes implicit declarations errors (one missing
   include in `mmap.c`), and GCC 16 drops a division by zero it can see (`1 / x` became
-  compares), so the `sigaction` test runs its `idivl` in inline asm.
+  compares), so the `sigaction` test runs its `idivl` in inline asm. `mihos.h` defines
+  `_GNU_SOURCE` for C++ (`CPLUSPLUS_CPP_SPEC`, as `gnu-user.h` on Linux): mlibc's C++ and
+  libstdc++ use the GNU extensions of the C headers.
+- **mlibc's MiHOS port** (D9, `mlibc/sysdeps/mihos/` on the fork's `mihos` branch): mlibc's
+  top `meson.build` picks it for `system = 'mihos'` (`config/x86_64-mihos.cross`). Options
+  posix, glibc and bsd (every port enables the last two; mlibc's posix code assumes them),
+  not linux. ABI headers: symlinks into `abis/linux` (54, ethereal's set), except
+  `abi-bits/ioctls.h`, ours: Linux's port takes the tty numbers from Linux's headers under
+  the linux option, so the x86-64 values are listed (the ones `<mihos/ioctl.h>` uses).
+  `crt1.S` hands the entry stack to `__mlibc_entry`; `syscall.cpp` is `int $0x80` with
+  Linux's argument registers, results as is (`-errno`); `sysdeps.cpp` has the 16 mandatory
+  sysdeps plus `Isatty` (stdio asks it for every stream) and `Dup2` (`openpty`), each on its
+  MiHOS call, the numbers from the kernel's `<mihos/syscall.h>` (`-I kernel/include/uapi`
+  on the meson setup line: mlibc builds with `-nostdinc`). `make mlibc` (meson + ninja,
+  before `user`) builds a static `libc.a` into `build/<target>/mlibc-sysroot`, apart from
+  our libc's sysroot; `make mlibc-clean` starts over (needed after changing the setup line
+  or the compiler). The first build downloads mlibc's meson subprojects (frigg,
+  libsmarter, the freestanding headers) into `mlibc/subprojects/`. Programs on mlibc live
+  in `user/mlibc/<name>/`, linked `crt1.o crti.o crtbegin.o … -lc -lgcc crtend.o crtn.o`
+  (`crtbegin.o` defines `__dso_handle`) with the toolchain's default linker script, not
+  `user.ld` (mlibc's static startup reads the program headers through `__ehdr_start`,
+  which needs the ELF header in a loaded segment), `-z noexecstack`, installed as
+  `/usr/tests/mlibc_<name>` without debug info (1.4 MB instead of 23).
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
   `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_FORK` 3, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20, `SYS_FTRUNCATE` 21, `SYS_TRUNCATE` 22, `SYS_UNLINK` 23, `SYS_MKDIR` 24, `SYS_RMDIR` 25, `SYS_CHDIR` 26, `SYS_GETCWD` 27, `SYS_DUP` 28, `SYS_DUP2` 29 (4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
@@ -3242,11 +3270,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
     - **D8, the toolchain on GCC 13 or newer (done):** mlibc builds as C++23 and its
       `meson.build` refuses GCC below 13.1; GCC 16.2.0 and binutils 2.47 now, the target
       patch moved over (branches `mihos-16`, `mihos-2.47`).
-    - **D9, mlibc's sysdeps (next)** in `sysdeps/mihos/` of the fork: the 16 required ones first
-      (all have a call already), a static `libc.a`, hello world. Static startup reads the
-      program headers from `__ehdr_start`, and our initial stack already ends with an empty
-      auxiliary vector.
-    - **D10, the switch:** user programs on mlibc, libstdc++,
+    - **D9, mlibc's sysdeps (done):** `sysdeps/mihos/` of the fork, the 16 required ones plus
+      `Isatty` and `Dup2`, a static `libc.a`, and `mlibc_hello` running on MiHOS.
+    - **D10, the switch (next):** GCC's `STARTFILE_SPEC` moves from our `crt0.o` to mlibc's
+      `crt1.o`, mlibc's headers take `sysroot/usr/include` (the kernel then needs its own
+      include folder for `libk`), user programs on mlibc, libstdc++,
       Lua through `ports/lua/`,
       busybox for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as the
       roadmap says).
@@ -3387,10 +3415,24 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 ## Known technical debt
 
-**Open bugs:** none known.
+**Open bugs:**
+
+- The thread reaper (kernel thread 2) spends seconds of CPU freeing exited processes: a
+  probe in `scheduler_tick` counted ~1,250 ticks (~12 s) on it during the first dozen tests.
+  A CPU-time test that overlaps it gets half the CPU (round robin with the reaper): since
+  `mlibc_hello` shifted the timing, `time` fails every live run (159 ms of CPU in 319 ms),
+  and `interrupts` did in some builds. The cost is somewhere under `process_release` →
+  `address_space_destroy` → `arch_mmu_root_destroy` (page tables, frame frees); not
+  found yet.
 
 **Debt:**
 
+- mlibc port (D9): `Dup2` with `O_CLOEXEC` is `dup2` then `fcntl`, not atomic (matters with
+  threads); `Read` and `Seek` pass their out-pointer as an extra, ignored system call
+  argument; mlibc programs link the kernel-model libgcc and `crtbegin.o` (see the toolchain
+  entry); GCC still names our `crt0.o` (D10), so mlibc programs list their startup files
+  by hand; the first `make mlibc` needs the network for the subprojects; the installed
+  programs carry no debug info (the `.elf` in the build tree does).
 - Toolchain (D8): libgcc is built once with `-mcmodel=kernel -mno-red-zone` for every
   multilib, so user programs link a kernel-model libgcc (works while they sit below 2 GiB;
   split the flags per multilib before PIE or high load addresses); libstdc++'s `configure`
