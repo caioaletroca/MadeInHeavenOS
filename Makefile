@@ -93,14 +93,17 @@ install: libc
 # mlibc (mlibc/, a submodule; roadmap D9), built with meson beside our libc and
 # not used by programs yet. It installs into a sysroot of its own, so our
 # libc's headers in sysroot/ stay as they are until the switch (D10). meson
-# reconfigures by itself when a meson.build changes; mlibc-clean starts over.
+# reconfigures by itself when a meson.build changes; mlibc-clean starts over
+# (needed after changing the setup line). The sysdeps take the system call
+# numbers from the kernel's own <mihos/syscall.h> (-I the uapi folder).
 MLIBC_BUILD_DIR := $(OUTPUT_DIR)/objects/mlibc
 MLIBC_SYSROOT := $(OUTPUT_DIR)/mlibc-sysroot
 MLIBC_CROSS_FILE := config/$(HOST).cross
 
 mlibc:
 	[ -f $(MLIBC_BUILD_DIR)/build.ninja ] || meson setup --cross-file $(MLIBC_CROSS_FILE) \
-	    --prefix=/usr -Ddefault_library=static $(MLIBC_BUILD_DIR) mlibc
+	    --prefix=/usr -Ddefault_library=static -Dcpp_args=-I$(abspath kernel/include/uapi) \
+	    $(MLIBC_BUILD_DIR) mlibc
 	ninja -C $(MLIBC_BUILD_DIR)
 	DESTDIR=$(abspath $(MLIBC_SYSROOT)) ninja -C $(MLIBC_BUILD_DIR) install
 
