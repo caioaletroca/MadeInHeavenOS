@@ -20,7 +20,7 @@
 
 #define PIPE_SIZE 4096 // the kernel's buffer: a script must fit, nobody reads it while it is written
 #define OUTPUT_MAX 1024
-#define BINARY_MAX 65536 // a program piped through cat
+#define BINARY_MAX (4 << 20) // a program piped through cat (a static mlibc one is ~1.4 MiB)
 #define BINARY_PATH "/usr/tests/hello"
 
 typedef struct shell_case
@@ -250,6 +250,9 @@ static void test_binary(void)
     long size = read_all(fd, want, sizeof(want));
     close(fd);
     CHECK(size > PIPE_SIZE && size < BINARY_MAX);
+    // A program too big for got would never finish: the cats wait for a reader that stopped
+    if (size >= BINARY_MAX)
+        return;
 
     long length = 0;
     pid_t pid;
