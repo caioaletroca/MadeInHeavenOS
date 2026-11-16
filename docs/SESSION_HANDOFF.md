@@ -9,8 +9,9 @@ Working x86-64 PC kernel with:
 
 - Docker generic → custom MiHOS cross-toolchain pipeline (build only runs inside the Docker image)
 - Companion repositories in the GitHub organization `MiH-Operating-System` (2026-11-14):
-  `gcc` and `binutils` (the `x86_64-mihos` target; `cross-compiler/Dockerfile` clones them as
-  `mihos-gcc`/`mihos-binutils`) and `mlibc` (a fork of managarm/mlibc for phase D's sysdeps;
+  `gcc` and `binutils` (the `x86_64-mihos` target on branches `mihos-16`, GCC 16.2.0, and
+  `mihos-2.47`, binutils 2.47: each a release tarball import plus the target patch;
+  `cross-compiler/Dockerfile` clones them as `mihos-gcc`/`mihos-binutils`) and `mlibc` (a fork of managarm/mlibc for phase D's sysdeps;
   local clone `../mlibc`, `origin` the fork, `upstream` managarm). This repository stays under
   `caioaletroca`.
 - GRUB/Multiboot2 boot, higher-half kernel
@@ -94,6 +95,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+caf2b43 build(toolchain): move to GCC 16.2 and binutils 2.47
+f673c9d test: run a real idiv in the sigaction divide test
+fe5ef05 docs(architecture): document the Linux ABI values in handoff
 e3a3516 test: cover the Linux ABI values
 faa3937 feat(abi): move the kernel ABI to Linux's values for mlibc
 b2bdfc4 build: track sysroot headers in dependency files
@@ -858,6 +862,17 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `sigaction`, `devices` and `ioctl`. The build tracks the sysroot's headers now (`-MD`, not
   `-MMD`: those come in with `-isystem`, and a changed uapi header rebuilt only the kernel;
   D7 showed it as a stale `readdir.o` spinning in `/usr/tests/run`).
+- **The toolchain on GCC 16.2 and binutils 2.47** (D8: mlibc is C++23 and refuses GCC below
+  13.1). The target patch moved over from GCC 11.2: `mihos.h` (`-lc`, `crt0.o crti.o
+  crtbegin.o` / `crtend.o crtn.o`, `__mihos__`), the `no-red-zone` multilib, libgcc's entry
+  in `config.host`'s main table (in 16.2 the anchor line also sits in a small
+  `enable_execute_stack` case, where configure reported the target unsupported), and
+  `crtstuff` without the pic fragments (libgcc is built with `-mcmodel=kernel`, which refuses
+  `-fpic`). gcov is off (`--disable-gcov`: libgcov calls `sprintf`/`strcat` undeclared, an
+  error since GCC 14). The build scripts run under `set -e`: before, a failed libgcc left
+  an image with no `crtbegin.o`. GCC 14+ makes implicit declarations errors (one missing
+  include in `mmap.c`), and GCC 16 drops a division by zero it can see (`1 / x` became
+  compares), so the `sigaction` test runs its `idivl` in inline asm.
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
   `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_FORK` 3, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20, `SYS_FTRUNCATE` 21, `SYS_TRUNCATE` 22, `SYS_UNLINK` 23, `SYS_MKDIR` 24, `SYS_RMDIR` 25, `SYS_CHDIR` 26, `SYS_GETCWD` 27, `SYS_DUP` 28, `SYS_DUP2` 29 (4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
@@ -3209,10 +3224,10 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
       ioctl numbers in the `_IOC` encoding (Linux's tty ones are plain 0x54xx), `SA_*` values,
       a 32-bit signal set with bit n for signal n (Linux: 64 bits, bit n-1), the `dev_t`
       encoding.
-    - **D8, the toolchain on GCC 13 or newer (next):** mlibc builds as C++23 and its `meson.build`
-      refuses GCC below 13.1; our target patch (`MiH-Operating-System/gcc`, ~70 lines) moves
-      over, binutils with it.
-    - **D9, mlibc's sysdeps** in `sysdeps/mihos/` of the fork: the 16 required ones first
+    - **D8, the toolchain on GCC 13 or newer (done):** mlibc builds as C++23 and its
+      `meson.build` refuses GCC below 13.1; GCC 16.2.0 and binutils 2.47 now, the target
+      patch moved over (branches `mihos-16`, `mihos-2.47`).
+    - **D9, mlibc's sysdeps (next)** in `sysdeps/mihos/` of the fork: the 16 required ones first
       (all have a call already), a static `libc.a`, hello world. Static startup reads the
       program headers from `__ehdr_start`, and our initial stack already ends with an empty
       auxiliary vector.
@@ -3361,6 +3376,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 **Debt:**
 
+- Toolchain (D8): libgcc is built once with `-mcmodel=kernel -mno-red-zone` for every
+  multilib, so user programs link a kernel-model libgcc (works while they sit below 2 GiB;
+  split the flags per multilib before PIE or high load addresses); libstdc++'s `configure`
+  is not regenerated for our `crossconfig.m4` entry (autoconf 2.69 run needed in D10);
+  gcov is disabled; `mihos-16`/`mihos-2.47` are not yet the default branches on GitHub.
 - ABI (D7): no real-time signals (`NSIG` 32 in a 64-bit set); the kernel ignores
   `SA_RESTORER` and always uses `sa_restorer`; the tty ioctls' copy sizes live in one table in
   `sys_ioctl`, not in the driver; `SA_SIGINFO`, `SA_ONSTACK`, `SA_NOCLDSTOP` are not there; no
