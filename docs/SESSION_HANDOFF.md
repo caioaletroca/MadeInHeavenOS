@@ -106,6 +106,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+ae13082 build(mlibc): move to the sysdeps for init and the test runner
+f4fa1f9 test(exec): check that O_CLOEXEC marks the fd at open
+e405079 feat(sys): accept O_CLOEXEC in open
+34318b5 docs(architecture): document D10a, the LIBC=mlibc test bed, in handoff
 18c1474 build(user): build every program against mlibc with LIBC=mlibc
 d5ff394 test: make the tests build on mlibc too
 b35c9f8 build(disk): grow the root partition to 128 MiB
@@ -984,7 +988,9 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   any other command. The flag is a bit per fd in `process_t.close_on_exec`, not in `file_t`: it
   belongs to the slot, so two fds of one open file differ. `process_fd_install` and `dup2` clear
   it, `process_files_inherit` copies it. libc `fcntl` in `<fcntl.h>` reads its third argument
-  only for `F_SETFD`.
+  only for `F_SETFD`. `open` sets it too with `O_CLOEXEC` (Linux's `02000000`, D10): `sys_open`
+  keeps the flag from `vfs_open` (it is the fd's, not the file's) and marks the new fd in the
+  same call, so no fork and exec come between.
 - **`spawn(path, argv, envp)`** → child pid or `-ENOENT`/`-ENOEXEC`/`-E2BIG`/`-EFAULT`/`-ENOMEM`.
   `program_load` (shared with `exec`, touches nothing of the caller) copies into a `kmalloc`'d
   `spawn_args_t`: the path (≤ 64 bytes, `-E2BIG` beyond), then each
@@ -3308,11 +3314,15 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
       - **D10a, `make LIBC=mlibc` (done):** every program built against mlibc, the tests
         made to build on either libc, `part.img` grown to hold the programs. Baseline:
         `init` starts on mlibc, then `fork` and `reboot` are `ENOSYS`.
-      - **D10b, the sysdeps (next), in three batches,** each unblocking the next:
-        1. booting to the test runner (`init`, `/usr/tests/run`): Fork, Execve, Waitpid,
-           Ioctl, SetSid, Reboot (mlibc passes Linux's `RB_*` magic numbers), OpenDir,
-           ReadEntries;
-        2. the shell and the process model: Sigaction (the kernel's struct is Linux's
+      - **D10b, the sysdeps (in progress), in three batches,** each unblocking the next:
+        1. ~~booting to the test runner~~ (done): Fork, Execve, Waitpid, Ioctl, SetSid,
+           Reboot (takes Linux's `RB_HALT_SYSTEM`, asks the kernel for `REBOOT_HALT`; other
+           commands `EINVAL`), OpenDir (`O_RDONLY | O_DIRECTORY | O_CLOEXEC`: the kernel's
+           `open` took no `O_CLOEXEC` until then), ReadEntries. On mlibc `init` forks, execs
+           the runner, waits and halts; the runner lists the tests, and every `posix_spawn`
+           stops at `ENOSYS`: it needs Pipe (`pipe2(O_CLOEXEC)`, how the parent learns the
+           exec failed) and Sigprocmask, then Fcntl, Dup, Sigaction and SetPgid (batch 2).
+        2. **next:** the shell and the process model: Sigaction (the kernel's struct is Linux's
            kernel layout, mlibc's the userland one: translate, and set `sa_restorer` to a
            stub calling `SYS_SIGRETURN`, as mlibc's Linux port), Sigprocmask, Sigpending,
            Pause, Kill, GetPid, GetPpid, SetPgid, GetPgid, GetSid, Pipe (flags: then
