@@ -736,11 +736,17 @@ static void fault_write(void)
     *(volatile int *)16 = 1;
 }
 
+// Dividing by zero is undefined in C, so the compiler may drop the idiv (GCC 16 turns 1 / x into
+// compares): the instruction is written out so it really runs
 static void fault_divide(void)
 {
-    volatile int zero = 0;
-    volatile int result = 1 / zero;
-    (void)result;
+    __asm__ __volatile__("movl $1, %%eax\n\t"
+                         "cltd\n\t"
+                         "xorl %%ecx, %%ecx\n\t"
+                         "idivl %%ecx"
+                         :
+                         :
+                         : "eax", "ecx", "edx");
 }
 
 // A fault goes to the program's handler, like any signal
