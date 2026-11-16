@@ -106,6 +106,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+b9f300a build(mlibc): move to the sysdeps for posix_spawn, signals and the shell
+8657ad9 test(shell): fit a static mlibc program in the binary pipe test
+5f8f4d3 fix(abi): drop the old sa_flags values from signal.h
+3564e9f docs(architecture): record D10 batch 1 and O_CLOEXEC in handoff
 ae13082 build(mlibc): move to the sysdeps for init and the test runner
 f4fa1f9 test(exec): check that O_CLOEXEC marks the fd at open
 e405079 feat(sys): accept O_CLOEXEC in open
@@ -3322,18 +3326,33 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
            the runner, waits and halts; the runner lists the tests, and every `posix_spawn`
            stops at `ENOSYS`: it needs Pipe (`pipe2(O_CLOEXEC)`, how the parent learns the
            exec failed) and Sigprocmask, then Fcntl, Dup, Sigaction and SetPgid (batch 2).
-        2. **next:** the shell and the process model: Sigaction (the kernel's struct is Linux's
-           kernel layout, mlibc's the userland one: translate, and set `sa_restorer` to a
-           stub calling `SYS_SIGRETURN`, as mlibc's Linux port), Sigprocmask, Sigpending,
-           Pause, Kill, GetPid, GetPpid, SetPgid, GetPgid, GetSid, Pipe (flags: then
-           `fcntl`, as `Dup2`), Dup, Fcntl, Tcgetattr, Tcsetattr (`TCGETS`/`TCSETS*`: the
-           kernel's termios is a prefix of mlibc's), Tcgetpgrp, Tcsetpgrp, Chdir, GetCwd;
-        3. files, memory, time: Stat (a path, an fd, or `AT_FDCWD` + path), Mkdir,
+        2. ~~the shell and the process model~~ (done): Sigaction (the kernel's struct is
+           Linux's kernel layout, mlibc's the userland one: translated, `sa_restorer` set to
+           `__mihos_signal_restore`, a stub calling `SYS_SIGRETURN`; `SA_SIGINFO` answers
+           `ENOSYS`, which makes mlibc's start-up skip pthread cancellation's `SIGCANCEL`
+           handler: any other error fails its `__ensure` in every program), Sigprocmask and
+           Sigpending (the kernel's set is the first 64 bits of mlibc's 1024, the rest
+           zeroed), Pause, Kill, GetPid, GetPpid, SetPgid, GetPgid, GetSid, Pipe and Dup
+           (`O_CLOEXEC` set afterwards with `fcntl`, other flags `EINVAL`), Fcntl (`F_GETFD`,
+           `F_SETFD`; others `EINVAL`), Tcgetattr, Tcsetattr (`TCGETS`/`TCSETS*`: the
+           kernel's termios is a prefix of mlibc's), Tcgetpgrp, Tcsetpgrp (the group through
+           a pointer), Chdir, GetCwd. On mlibc every test now starts: 12 pass (editing, exec,
+           files, fork, groups, hello, history, ioctl, mlibc_hello, signal, ...), most others
+           stop at batch 3's sysdeps (Stat by far the most). The live run then stalls in
+           `stdin` (below), so the disk run never starts.
+        3. **next:** files, memory, time: Stat (a path, an fd, or `AT_FDCWD` + path), Mkdir,
            Rmdir, Unlinkat (`AT_REMOVEDIR` → rmdir), Truncate, Ftruncate, VmProtect,
            Brk (reports the break: `sbrk(0)`), Sleep (the time left written back).
       - **D10c, the tests that check our libc rather than the standard:** run on the
         mlibc build and rewrite (`malloc` checks our allocator's heap layout through
-        `sbrk(0)`; others show in the baseline).
+        `sbrk(0)`; others show in the baseline). Seen after batch 2: `stdin` stalls the
+        live run on mlibc (no failure printed after its `ungetc` check; the likely spot is
+        `test_write_only`, `fgetc(stdout)`, which our stdio refuses by the stream's mode and
+        mlibc may turn into a read of the console); mlibc's `ungetc` returns a negative
+        `char` as negative (C says `unsigned char`); its `strerror` adds the name (`No such
+        file or directory (ENOENT)`), which the `shell` cases compare against; its `free`
+        does not detect `malloc_abort`'s double free. Each is a test to rewrite or an mlibc
+        fix to send upstream, decided here.
       - **D10d, the cut:** GCC's `STARTFILE_SPEC` moves from our `crt0.o` to mlibc's
         `crt1.o`, mlibc's headers take `sysroot/usr/include` (the kernel then needs its
         own include folder for `libk`), the stage 1 image is built from mlibc's headers
@@ -3498,7 +3517,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   linker's machinery, used statically for TLS and `dlopen`; the locale parser; wide
   printf/scanf), `--gc-sections` saves nothing. 50 programs fill ~75 MB, so `part.img`
   grew to 132 MiB and the initrd holds as much in RAM. The fix is dynamic linking (one
-  `libc.so` and mlibc's `ld.so`); until then each new program costs ~1.4 MB.
+  `libc.so` and mlibc's `ld.so`); until then each new program costs ~1.4 MB. Loading
+  them also makes the mlibc test run slower than `run-tests.sh`'s default 120 s per run:
+  use `TIMEOUT=600` until the switch (or until dynamic linking).
 - Toolchain (D8): libgcc is built once with `-mcmodel=kernel -mno-red-zone` for every
   multilib, so user programs link a kernel-model libgcc (works while they sit below 2 GiB;
   split the flags per multilib before PIE or high load addresses); libstdc++'s `configure`
@@ -3699,8 +3720,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   real mask with `fxsave` at boot). Saved on every switch between user threads, even when the
   same user thread comes back after a kernel thread.
 - `exec`: `SYS_SPAWN` stays a system call (`posix_spawn` could become `fork` + `exec` in libc, with
-  file actions). `fcntl` has only `F_GETFD` and `F_SETFD`; no `O_CLOEXEC` or `pipe2`, so setting
-  the flag after `open` or `pipe` leaves a gap once threads exist. No `execl` family, no
+  file actions). `fcntl` has only `F_GETFD` and `F_SETFD`; `open` takes `O_CLOEXEC`, but there is no
+  `pipe2` and `dup` takes no flags, so mlibc's sysdeps set the flag after `pipe` or `dup`,
+  which leaves a gap once threads exist. No `execl` family, no
   `#!` scripts, no `ENOEXEC` test. `exec` must stop other threads when threads exist. Stdio buffers die with the old program, as on POSIX.
 - Pipelines: at most `PIPELINE_MAX` (8) commands (bash: no limit), no `pipefail` or `PIPESTATUS`.
   A syntax error does not set `$?` (bash: 2). A failed `dup2` in a stage's child is not checked.
