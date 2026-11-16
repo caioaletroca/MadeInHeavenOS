@@ -95,7 +95,10 @@ install: libc
 # libc's headers in sysroot/ stay as they are until the switch (D10). meson
 # reconfigures by itself when a meson.build changes; mlibc-clean starts over
 # (needed after changing the setup line). The sysdeps take the system call
-# numbers from the kernel's own <mihos/syscall.h> (-I the uapi folder).
+# numbers from the kernel's own <mihos/syscall.h> (-I the uapi folder). The
+# kernel's headers go into mlibc's sysroot too, beside mlibc's, as Linux's
+# <linux/...> sit beside glibc's: programs that make system calls themselves
+# include them. `make LIBC=mlibc` builds every program against this sysroot.
 MLIBC_BUILD_DIR := $(OUTPUT_DIR)/objects/mlibc
 MLIBC_SYSROOT := $(OUTPUT_DIR)/mlibc-sysroot
 MLIBC_CROSS_FILE := config/$(HOST).cross
@@ -106,6 +109,7 @@ mlibc:
 	    $(MLIBC_BUILD_DIR) mlibc
 	ninja -C $(MLIBC_BUILD_DIR)
 	DESTDIR=$(abspath $(MLIBC_SYSROOT)) ninja -C $(MLIBC_BUILD_DIR) install
+	$(MAKE) -C kernel install-headers SYSROOT_DIR=$(abspath $(MLIBC_SYSROOT))
 
 mlibc-clean:
 	rm -rf $(MLIBC_BUILD_DIR) $(MLIBC_SYSROOT)

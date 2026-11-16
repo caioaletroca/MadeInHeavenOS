@@ -17,11 +17,12 @@ include $(ARCH_CONFIG)
 #   objects/  one folder per component: kernel/, libc/, user/, grub/
 #   staging/  trees that become images: iso/, initrd/, disk/, root/
 #   test/     run-tests.sh's log and disk copies
-# The component is the directory this Makefile runs in (kernel, libc, ...).
+# The component is the directory this Makefile runs in (kernel, libc, ...),
+# unless the Makefile names another before including this file (user/ on mlibc).
 TARGET := $(ARCH)-$(PLATFORM)
 PROJECT_ROOT ?= $(abspath ..)
 OUTPUT_DIR := $(PROJECT_ROOT)/build/$(TARGET)
-COMPONENT := $(notdir $(CURDIR))
+COMPONENT ?= $(notdir $(CURDIR))
 BINARY_DIR := $(OUTPUT_DIR)/objects/$(COMPONENT)
 IMAGES_DIR := $(OUTPUT_DIR)/images
 STAGING_DIR := $(OUTPUT_DIR)/staging
