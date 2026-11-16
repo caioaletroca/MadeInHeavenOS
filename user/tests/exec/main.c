@@ -294,6 +294,34 @@ static void test_files(void)
     child_passed(child);
 }
 
+// O_CLOEXEC marks the fd in open itself: no fork and exec can come between the open and an fcntl
+static void test_open_cloexec(void)
+{
+    int plain = open(HELLO, O_RDONLY);
+    int marked = open(HELLO, O_RDONLY | O_CLOEXEC);
+    CHECK(plain >= 0 && marked >= 0);
+    CHECK(fcntl(plain, F_GETFD) == 0);
+    CHECK(fcntl(marked, F_GETFD) == FD_CLOEXEC);
+
+    pid_t child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+    {
+        char bytes[4];
+        CHECK(read(plain, bytes, sizeof(bytes)) == 4);
+        exec_self("files", plain, marked);
+        _exit(EXEC_FAILED);
+    }
+    child_passed(child);
+
+    // The mark belongs to the fd: the next file opened under that number starts without it
+    close(marked);
+    int reused = open(HELLO, O_RDONLY);
+    CHECK(reused == marked && fcntl(reused, F_GETFD) == 0);
+    close(reused);
+    close(plain);
+}
+
 // spawn is fork and exec in one: it honours the flag too
 static void test_spawn(void)
 {
@@ -457,6 +485,7 @@ int main(int argc, char **argv)
     test_failed_exec();
     test_flag();
     test_files();
+    test_open_cloexec();
     test_spawn();
     test_eof();
     test_directory();
