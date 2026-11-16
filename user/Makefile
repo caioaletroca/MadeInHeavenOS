@@ -64,7 +64,9 @@ $(foreach library,$(libraries),$(eval $(call library_rule,$(library))))
 # static startup finds the program headers through __ehdr_start, which needs
 # the ELF header in a loaded segment. -z noexecstack: some of mlibc's objects
 # lack the .note.GNU-stack section, and without it the linker asks for an
-# executable stack.
+# executable stack. -z separate-code: the default script for x86_64-mihos
+# otherwise puts .rodata in the code's segment, which makes it executable
+# (Linux targets turn it on by default; user.ld separates them itself).
 
 MLIBC_SYSROOT := $(OUTPUT_DIR)/mlibc-sysroot
 comma := ,
@@ -84,7 +86,7 @@ define mlibc_program_rule
 $(call program_elf,$1): $(mlibc_lib_dir)/crt1.o $(mlibc_lib_dir)/libc.a $(call program_objects,$1) $3
 	mkdir -p $$(@D)
 	$$(CC) -o $$@ --sysroot=$(MLIBC_SYSROOT) -L$(mlibc_lib_dir) -nostdlib -static -no-pie \
-	    -Wl,-z,max-page-size=4096 -Wl,--build-id=none -Wl,-z,noexecstack \
+	    -Wl,-z,max-page-size=4096 -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,separate-code \
 	    $(mlibc_start_files) $(call program_objects,$1) \
 	    $(if $3,-Wl$(comma)--start-group $3 -Wl$(comma)--end-group) -lc -lgcc $(mlibc_end_files)
 
