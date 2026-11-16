@@ -1,7 +1,8 @@
 # Build & Run
 
 All build paths assume the Docker mount `repo -> /root/env` (`cross-compiler/docker-run.bat`).
-Native Windows `make` fails (`cp --preserve`, `grub-mkrescue`, `mke2fs`).
+Native Windows `make` fails (`cp --preserve`, `grub-mkrescue`, `mke2fs`). Starting from a
+fresh clone, with no toolchain image yet: `BOOTSTRAP.md`.
 
 ## Output layout
 

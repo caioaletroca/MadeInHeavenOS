@@ -62,4 +62,5 @@ Leaky / missing:
 - `CONSOLE.md` — kprintf path
 - `LIBC_LIBK.md` — runtime boundary
 - `BUILD_RUN.md` — Docker, sysroot, QEMU/Bochs
+- `BOOTSTRAP.md` — from a fresh clone to a toolchain: generic cross-compiler, MiHOS toolchain, OS
 - `KNOWN_BUGS.md` — backlog with file:line
