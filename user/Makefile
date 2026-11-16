@@ -74,6 +74,50 @@ installed := $(foreach program,$(programs),$(call program_installed,$(program)))
 user_objects := $(foreach program,$(programs) $(addprefix lib/,$(libraries)),$(call program_objects,$(program)))
 
 ###########################################
+# Programs on mlibc (roadmap D9, until the switch in D10): mlibc/<name>/,
+# compiled against mlibc's sysroot (made by the top Makefile's mlibc target)
+# instead of ours, installed among the tests as mlibc_<name> so /usr/tests/run
+# runs them too. mlibc's crt1.o holds _start. Linked with the toolchain's
+# default script, not user.ld: mlibc's static startup finds the program
+# headers through __ehdr_start, which needs the ELF header in a loaded segment.
+# -z noexecstack: some of mlibc's objects lack the .note.GNU-stack section, and
+# without it the linker asks for an executable stack.
+
+MLIBC_SYSROOT := $(OUTPUT_DIR)/mlibc-sysroot
+mlibc_lib_dir := $(MLIBC_SYSROOT)/usr/lib
+mlibc_programs := $(patsubst %/,%,$(wildcard mlibc/*/))
+mlibc_objects := $(foreach program,$(mlibc_programs),$(call program_objects,$(program)))
+mlibc_installed = $(install_dir_tests)/mlibc_$(notdir $1)
+# GCC's startup files around the program, in the usual order (crtbegin.o
+# defines __dso_handle, which mlibc's C++ code registers destructors with)
+mlibc_start_files := $(mlibc_lib_dir)/crt1.o $(shell $(CC) -print-file-name=crti.o) \
+                     $(shell $(CC) -print-file-name=crtbegin.o)
+mlibc_end_files := $(shell $(CC) -print-file-name=crtend.o) $(shell $(CC) -print-file-name=crtn.o)
+
+# Hosted C: mlibc's headers, not our libc's (no -isystem of our sysroot)
+$(mlibc_objects): CPPFLAGS := -Iinclude --sysroot=$(MLIBC_SYSROOT)
+$(mlibc_objects): CFLAGS := -std=gnu11 -O2 -g -Wall -Wextra -fno-pie -fno-stack-protector
+
+define mlibc_program_rule
+$(call program_elf,$1): $(mlibc_lib_dir)/crt1.o $(mlibc_lib_dir)/libc.a $(call program_objects,$1)
+	mkdir -p $$(@D)
+	$$(CC) -o $$@ --sysroot=$(MLIBC_SYSROOT) -L$(mlibc_lib_dir) -nostdlib -static -no-pie \
+	    -Wl,-z,max-page-size=4096 -Wl,--build-id=none -Wl,-z,noexecstack \
+	    $(mlibc_start_files) $(call program_objects,$1) -lc -lgcc $(mlibc_end_files)
+
+# Without the debug info (mlibc's is ~20 MB per program, too big for the disk
+# images); the .elf in the build tree keeps it
+$(call mlibc_installed,$1): $(call program_elf,$1)
+	mkdir -p $$(@D)
+	$(HOST)-strip --strip-debug -o $$@ $$<
+endef
+
+$(foreach program,$(mlibc_programs),$(eval $(call mlibc_program_rule,$(program))))
+
+installed += $(foreach program,$(mlibc_programs),$(call mlibc_installed,$(program)))
+user_objects += $(mlibc_objects)
+
+###########################################
 
 .PHONY: all install
 

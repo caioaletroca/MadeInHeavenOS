@@ -80,8 +80,8 @@ libc: headers
 kernel: libc
 	$(MAKE) -C kernel
 
-# After kernel and libc: programs link against the sysroot
-user: kernel
+# After kernel and libc: programs link against the sysroot (and mlibc's, for user/mlibc/)
+user: kernel mlibc
 	$(MAKE) -C user
 
 grub: kernel user
