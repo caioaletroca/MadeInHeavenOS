@@ -4,6 +4,9 @@ All build paths assume the Docker mount `repo -> /root/env` (`cross-compiler/doc
 Native Windows `make` fails (`cp --preserve`, `grub-mkrescue`, `mke2fs`). Starting from a
 fresh clone, with no toolchain image yet: `BOOTSTRAP.md`.
 
+`make LIBC=mlibc all` builds every user program against mlibc instead of our libc (roadmap
+D10, until the switch), into `objects/user-mlibc/`; changing `LIBC` reinstalls every program.
+
 ## Output layout
 
 Everything built goes under `build/<target>/`, one folder per target. The target is

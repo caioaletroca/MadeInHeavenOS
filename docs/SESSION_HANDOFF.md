@@ -106,6 +106,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+18c1474 build(user): build every program against mlibc with LIBC=mlibc
+d5ff394 test: make the tests build on mlibc too
+b35c9f8 build(disk): grow the root partition to 128 MiB
+aa4c9fb docs(architecture): record the exit-time memory free in handoff
 222a556 fix(sched): free a process's memory when it exits
 b61ebda docs(build): add a bootstrap guide from a fresh clone
 03bcd8f docs(architecture): document the mlibc port in handoff
@@ -918,7 +922,28 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   (`crtbegin.o` defines `__dso_handle`) with the toolchain's default linker script, not
   `user.ld` (mlibc's static startup reads the program headers through `__ehdr_start`,
   which needs the ELF header in a loaded segment), `-z noexecstack`, installed as
-  `/usr/tests/mlibc_<name>` without debug info (1.4 MB instead of 23).
+  `/usr/tests/mlibc_<name>` without debug info (1.4 MB instead of 23). Options also
+  `linux-reboot` (`<sys/reboot.h>`, Linux's `RB_*` values, as zinnia), and the port ships
+  `<sys/sysmacros.h>` (the linux option's copy, as ethereal and zinnia: `major`/`minor`;
+  our `dev_t` is Linux's encoding). The kernel's `<mihos/...>` headers are installed into
+  mlibc's sysroot too, beside mlibc's (as `<linux/...>` beside glibc's).
+- **`make LIBC=mlibc`** (D10, the switch's test bed): every program in `bin/`, `sbin/`,
+  `tests/` and the libraries in `lib/` built against mlibc instead of ours, objects in
+  `objects/user-mlibc/` (`COMPONENT` set before `common.mk`), installed stripped of debug
+  info into the same sysroot paths; the default stays ours. `objects/user-libc` holds the
+  last `LIBC` and every installed program depends on it, so switching reinstalls them
+  all. `tests/cxx` waits for libstdc++ (its runtime is our libc's `cxx/`): on mlibc it is
+  not built and its old copy is removed, so the image never mixes two libcs.
+  `./run-tests.sh` on that build is the gate for the switch; mlibc logs each sysdep it
+  misses (`__ensure(Library function fails due to missing sysdep)` and the tag).
+- **Tests on either libc** (D10): `test.h` has `test_syscall` (`int $0x80`, `-errno` →
+  `errno`), `test_directory_records` (the kernel's getdents: ours calls it `getdents`,
+  mlibc `getdents64`) and `test_break_set`/`test_break_move` (brk/sbrk on the kernel's
+  brk: mlibc's `sbrk` only reports the break, its malloc maps memory). Tests declare
+  `environ` themselves (POSIX), take `struct winsize` from `<termios.h>`, and the ioctl
+  test spells the kernel's request encoding itself (`<mihos/ioctl.h>` brings
+  `<mihos/termios.h>`, whose `struct termios` would meet mlibc's). sigaction reads a
+  set's first 64 bits (mlibc's `sigset_t` is 1024 bits, as glibc's).
 - `SYS_EXIT` 0 (`process_exit`), `SYS_WRITE` 1 (256-byte chunks), `SYS_READ` 2 (one chunk),
   `SYS_WAIT` 5, `SYS_CLOSE` 10, `SYS_BRK` 11, `SYS_SPAWN` 12, `SYS_REBOOT` 13, `SYS_FORK` 3, `SYS_GETPID` 6, `SYS_GETPPID` 14, `SYS_OPEN` 15, `SYS_LSEEK` 16, `SYS_GETDENTS` 17, `SYS_STAT` 18, `SYS_FSTAT` 19, `SYS_IOCTL` 20, `SYS_FTRUNCATE` 21, `SYS_TRUNCATE` 22, `SYS_UNLINK` 23, `SYS_MKDIR` 24, `SYS_RMDIR` 25, `SYS_CHDIR` 26, `SYS_GETCWD` 27, `SYS_DUP` 28, `SYS_DUP2` 29 (4, 7–9 reserved). Read and write
   look the fd up in the process's table and call the file's ops; an empty slot, an out-of-range fd
@@ -1994,17 +2019,18 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   `0x3`, one group, root directory in block 276. QEMU (`run-tests.sh`, and `run.bat` for
   interactive runs): IDE primary master (`hda`), `-snapshot`. Bochs (local `.bochsrc`):
   `ata0-slave: type=disk, path=disk.img, mode=flat` (`hdb`: the CD is `ata0-master` there).
-- **Partitioned disk** (`Makefile`, `disk-tools/partition-disk.sh`): `part.img`, 16 MiB
-  (32768 sectors), an MBR written with `printf` (octal escapes: dash has no `\x`) and `dd` (the
-  build image has no `sfdisk`). Slot 1 Linux (`0x83`) at 2048, 24576 sectors (12 MiB): **the
+- **Partitioned disk** (`Makefile`, `disk-tools/partition-disk.sh`): `part.img`, 132 MiB
+  (270336 sectors, sparse), an MBR written with `printf` (octal escapes: dash has no `\x`) and `dd` (the
+  build image has no `sfdisk`). Slot 1 Linux (`0x83`) at 2048, 262144 sectors (128 MiB, since
+  programs link mlibc statically, ~1.4 MB each): **the
   installed system**, an ext2 (1 KiB blocks, label `mihos-root`, owner 0) holding the
   initrd's tree (`initrd.tar` unpacked into `staging/root`, then `mke2fs -E offset=1048576 -d`,
   which writes inside the partition and leaves the rest of the image alone); the root of the
-  "from disk" boot (`root=hdb1`). Slot 2 empty; slot 3 extended (`0x05`) at 26624; slot 4 Linux at
-  28672, 2047 sectors, text markers at its first and last sector (`mihos-part4 first`/`last`);
-  sectors 30719 and up are in none. Rebuilt when the initrd changes. e2fsck reads the
+  "from disk" boot (`root=hdb1`). Slot 2 empty; slot 3 extended (`0x05`) at 264192; slot 4 Linux at
+  266240, 2047 sectors, text markers at its first and last sector (`mihos-part4 first`/`last`);
+  sectors 268287 and up are in none. Rebuilt when the initrd changes. e2fsck reads the
   partition as `'part.img?offset=1048576'`; dumpe2fs takes that for a `LABEL=`-style tag, so
-  `run-tests.sh` copies the partition out with `dd` (`skip=1 count=12` MiB) and checks the
+  `run-tests.sh` copies the partition out with `dd` (`skip=1 count=128` MiB) and checks the
   copy. QEMU: the primary slave (`hdb`), a fresh copy per run in `run-tests.sh`
   (`test/test-part.img`), `-snapshot` in `run.bat`. Bochs: `ata1-master` (`hdc`) if added to the
   local `.bochsrc`; without it the partition self-test skips.
@@ -2073,7 +2099,7 @@ block cache, on a miss ─▶ block_read(dev, sector, count, buf) ─range check
   sectors, starting at or past the disk's end, or `sector_count > disk sectors - first`
   (a subtraction: no wrap) → logged, skipped. Else a `kzalloc`'d partition (lives forever)
   named `<disk><slot>` (`hdb1`), `rdev` = the disk's + slot (minor 64 + 1 for `hdb1`: the 64
-  minors per IDE drive), registered, logged (`partition: hdb1, 12 MiB at sector 2048`).
+  minors per IDE drive), registered, logged (`partition: hdb1, 128 MiB at sector 2048`).
 - **Partition self-test** (`selftest/partition.c`, after the block one): the first of
   `hda`…`hdd` that has a `<name>1` (none → logged, skipped). `hdb1` 24576 sectors, `hdb4`
   2047, each `rdev` = the disk's + slot, same major; no `hdb2` (empty) or `hdb3` (extended).
@@ -3277,12 +3303,34 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
       patch moved over (branches `mihos-16`, `mihos-2.47`).
     - **D9, mlibc's sysdeps (done):** `sysdeps/mihos/` of the fork, the 16 required ones plus
       `Isatty` and `Dup2`, a static `libc.a`, and `mlibc_hello` running on MiHOS.
-    - **D10, the switch (next):** GCC's `STARTFILE_SPEC` moves from our `crt0.o` to mlibc's
-      `crt1.o`, mlibc's headers take `sysroot/usr/include` (the kernel then needs its own
-      include folder for `libk`), user programs on mlibc, libstdc++,
-      Lua through `ports/lua/`,
-      busybox for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as the
-      roadmap says).
+    - **D10, the switch (in progress).** Our programs use ~120 libc functions, which reach
+      36 sysdeps the port lacks; every one has a MiHOS call. Steps:
+      - **D10a, `make LIBC=mlibc` (done):** every program built against mlibc, the tests
+        made to build on either libc, `part.img` grown to hold the programs. Baseline:
+        `init` starts on mlibc, then `fork` and `reboot` are `ENOSYS`.
+      - **D10b, the sysdeps (next), in three batches,** each unblocking the next:
+        1. booting to the test runner (`init`, `/usr/tests/run`): Fork, Execve, Waitpid,
+           Ioctl, SetSid, Reboot (mlibc passes Linux's `RB_*` magic numbers), OpenDir,
+           ReadEntries;
+        2. the shell and the process model: Sigaction (the kernel's struct is Linux's
+           kernel layout, mlibc's the userland one: translate, and set `sa_restorer` to a
+           stub calling `SYS_SIGRETURN`, as mlibc's Linux port), Sigprocmask, Sigpending,
+           Pause, Kill, GetPid, GetPpid, SetPgid, GetPgid, GetSid, Pipe (flags: then
+           `fcntl`, as `Dup2`), Dup, Fcntl, Tcgetattr, Tcsetattr (`TCGETS`/`TCSETS*`: the
+           kernel's termios is a prefix of mlibc's), Tcgetpgrp, Tcsetpgrp, Chdir, GetCwd;
+        3. files, memory, time: Stat (a path, an fd, or `AT_FDCWD` + path), Mkdir,
+           Rmdir, Unlinkat (`AT_REMOVEDIR` → rmdir), Truncate, Ftruncate, VmProtect,
+           Brk (reports the break: `sbrk(0)`), Sleep (the time left written back).
+      - **D10c, the tests that check our libc rather than the standard:** run on the
+        mlibc build and rewrite (`malloc` checks our allocator's heap layout through
+        `sbrk(0)`; others show in the baseline).
+      - **D10d, the cut:** GCC's `STARTFILE_SPEC` moves from our `crt0.o` to mlibc's
+        `crt1.o`, mlibc's headers take `sysroot/usr/include` (the kernel then needs its
+        own include folder for `libk`), the stage 1 image is built from mlibc's headers
+        (`BOOTSTRAP.md`), mlibc becomes the default and our libc's user side goes.
+      - **D10e–g:** libstdc++ (then `cxx` moves over), Lua through `ports/lua/`, busybox
+        for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as the roadmap
+        says).
     - Threads (`clone`, pthreads) when a port needs them (Python, Node.js), with real locks
       for what one thread per process covers today (fd table, address space, regions,
       `brk`); SMP last.
@@ -3436,6 +3484,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   entry); GCC still names our `crt0.o` (D10), so mlibc programs list their startup files
   by hand; the first `make mlibc` needs the network for the subprojects; the installed
   programs carry no debug info (the `.elf` in the build tree does).
+- Program size on mlibc (D10): static mlibc costs ~1 MB of code per program (its dynamic
+  linker's machinery, used statically for TLS and `dlopen`; the locale parser; wide
+  printf/scanf), `--gc-sections` saves nothing. 50 programs fill ~75 MB, so `part.img`
+  grew to 132 MiB and the initrd holds as much in RAM. The fix is dynamic linking (one
+  `libc.so` and mlibc's `ld.so`); until then each new program costs ~1.4 MB.
 - Toolchain (D8): libgcc is built once with `-mcmodel=kernel -mno-red-zone` for every
   multilib, so user programs link a kernel-model libgcc (works while they sit below 2 GiB;
   split the flags per multilib before PIE or high load addresses); libstdc++'s `configure`
