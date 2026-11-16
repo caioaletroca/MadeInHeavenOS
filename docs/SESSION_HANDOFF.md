@@ -106,6 +106,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+222a556 fix(sched): free a process's memory when it exits
+b61ebda docs(build): add a bootstrap guide from a fresh clone
+03bcd8f docs(architecture): document the mlibc port in handoff
 5435a38 test: run a first program on mlibc
 f3e58e2 build(user): link the programs in user/mlibc against mlibc
 6949413 build(toolchain): drop nasm from the image
@@ -1090,12 +1093,14 @@ process_create(space) ──▶ process_fd_install(p, file) ×N ──▶ proces
 - Create and start are split so fds are installed before the program can run. `process_start` takes
   the thread's reference *before* creating the thread (it can exit before `thread_create_user`
   returns) and drops it again if creation fails; the process is then still valid and not running.
-- `process_exit(status)`: records the status, closes every fd (at exit, not release, so pipes can see
-  EOF later), wakes waiters, `thread_exit()`. It never touches the space: this thread still runs on it.
+- `process_exit(status)`: first destroys the address space (Linux's `exit_mm`): clears
+  `thread->space` and `p->space`, switches to the kernel root (the active tables must not be
+  destroyed), then `address_space_destroy`, on the process's own CPU time and before the parent can
+  see it exited. Then records the status, closes every fd (at exit, not release, so pipes can see
+  EOF later), wakes waiters, `thread_exit()`.
 - The **reaper** drops the thread's reference after freeing stack and struct. `process_release` at
-  `refs == 0` closes any remaining fds (a process that never ran), destroys the space and frees the
-  struct; only the decrement runs with IRQs off. The last release is always on a kernel thread, so the
-  space is never active when destroyed.
+  `refs == 0` closes any remaining fds and destroys any space left (a process that never ran; NULL
+  after an exit) and frees the struct; only the decrement runs with IRQs off.
 - `process_wait(p)` (kernel callers waiting for a parentless process: `init_start`, self-tests):
   Mesa loop on `waiters` until `EXITED` (`wait_queue_sleep_locked` on `p->lock`),
   returns `exit_status`. The struct and space stay valid until the caller's `process_release`, so tests
@@ -3415,17 +3420,15 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 ## Known technical debt
 
-**Open bugs:**
-
-- The thread reaper (kernel thread 2) spends seconds of CPU freeing exited processes: a
-  probe in `scheduler_tick` counted ~1,250 ticks (~12 s) on it during the first dozen tests.
-  A CPU-time test that overlaps it gets half the CPU (round robin with the reaper): since
-  `mlibc_hello` shifted the timing, `time` fails every live run (159 ms of CPU in 319 ms),
-  and `interrupts` did in some builds. The cost is somewhere under `process_release` →
-  `address_space_destroy` → `arch_mmu_root_destroy` (page tables, frame frees); not
-  found yet.
+**Open bugs:** none known.
 
 **Debt:**
+
+- `frame_free` costs ~18 µs per frame under QEMU: it checks every zone (9) instead of
+  stopping at the one that holds the frame, and saves and restores IRQs once per frame.
+  Tearing down a big address space pays it per page (the `cow` test's children: ~530,000
+  frees, ~10 s, now on each child's own CPU time since `process_exit` frees the space).
+  Stop at the matching zone; later, free a page table's frames as one batch.
 
 - mlibc port (D9): `Dup2` with `O_CLOEXEC` is `dup2` then `fcntl`, not atomic (matters with
   threads); `Read` and `Seek` pass their out-pointer as an extra, ignored system call
@@ -3693,10 +3696,6 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   and after `user_selftest` to catch a missing `process_release` / `file_put`.
 - Fault messages print the thread id, not the pid.
 - `process_wait(NULL)` returns -1, which is also a valid exit status (should assert).
-- A zombie keeps its whole address space until its parent waits: `process_release` is the only
-  place that destroys it, so a parent that never waits holds every child's memory (Linux frees
-  it at exit and keeps only the small struct). A running thread cannot destroy the space it is
-  on, so the reaper is the natural place, once the thread is gone.
 - `wait` has no `WCONTINUED`; waking every waiter on any child's exit or stop is fine with one
   thread per process.
 - Stops: no `SA_NOCLDSTOP`. `pause` returns `EINTR` after a stop and a resume, where Linux keeps
