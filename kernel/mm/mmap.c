@@ -1,5 +1,6 @@
 #include <mm.h>
 #include <mm/mmap.h>
+#include <mm/boot_alloc.h>
 #include <util.h>
 #include <kprintf.h>
 #include <panic.h>

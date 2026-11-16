@@ -1,4 +1,6 @@
 #!/bin/bash
+# Stop at the first failing step: the image build must fail with it
+set -e
 
 export PREFIX="/usr/local"
 export VOLUME="/root/env"

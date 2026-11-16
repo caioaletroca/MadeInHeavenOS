@@ -1,4 +1,4 @@
-# gcc 11.2.0 x86_64-mihos cross-compiler container
+# gcc 16.2.0 / binutils 2.47 x86_64-mihos cross-compiler container
 
 FROM debian:latest
 
@@ -6,7 +6,7 @@ FROM debian:latest
 RUN set -x \
 	&& apt-get update \
 	&& apt-get upgrade -y \
-	&& apt-get install -y wget gcc libgmp3-dev libmpfr-dev libisl-dev \
+	&& apt-get install -y wget gcc libgmp-dev libmpfr-dev libisl-dev \
 		libmpc-dev texinfo bison flex make bzip2 patch \
 		build-essential git-all
 
@@ -14,8 +14,8 @@ RUN set -x \
 RUN set -x \
 	&& mkdir -p /usr/local/src \
 	&& cd /usr/local/src \
-	&& git clone https://github.com/MiH-Operating-System/binutils.git mihos-binutils \
-	&& git clone https://github.com/MiH-Operating-System/gcc.git mihos-gcc \
+	&& git clone --depth 1 --branch mihos-2.47 https://github.com/MiH-Operating-System/binutils.git mihos-binutils \
+	&& git clone --depth 1 --branch mihos-16 https://github.com/MiH-Operating-System/gcc.git mihos-gcc \
 	&& chown -R root:root mihos-binutils \
 	&& chown -R root:root mihos-gcc \
 	&& chmod -R o-w,g+w,g+x mihos-binutils \
