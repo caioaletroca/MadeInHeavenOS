@@ -1,4 +1,4 @@
-[submodule "libc/mlibc"]
-	path = libc/mlibc
+[submodule "mlibc"]
+	path = mlibc
 	url = https://github.com/MiH-Operating-System/mlibc.git
 	branch = mihos
