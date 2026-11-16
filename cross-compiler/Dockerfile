@@ -37,7 +37,7 @@ RUN sed -i 's/\r$//' /usr/local/src/build-gcc.sh \
 CMD ["/bin/bash"]
 
 # Install tools for grub
-RUN apt-get install -y nasm xorriso grub-pc-bin grub-common
+RUN apt-get install -y xorriso grub-pc-bin grub-common
 
 # mke2fs (-d) builds the test disk image (disk.img) from disk/
 RUN apt-get update && apt-get install -y e2fsprogs
