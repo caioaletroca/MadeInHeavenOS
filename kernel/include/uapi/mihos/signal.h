@@ -33,11 +33,6 @@
 #define SIG_IGN ((void (*)(int))1)    // do nothing
 #define SIG_ERR ((void (*)(int)) - 1) // signal() failed
 
-// sa_flags
-#define SA_RESTART 0x1   // system calls continue after the handler, no EINTR
-#define SA_NODEFER 0x2   // the handler's own signal is not blocked while it runs
-#define SA_RESETHAND 0x4 // back to SIG_DFL once the handler is entered
-
 // sigprocmask's how
 #define SIG_BLOCK 0
 #define SIG_UNBLOCK 1
