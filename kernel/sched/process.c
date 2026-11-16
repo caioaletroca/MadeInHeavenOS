@@ -533,7 +533,18 @@ uint32_t process_parent_pid(process_t *p)
 
 __attribute__((noreturn)) void process_exit(int status)
 {
-    process_t *current = scheduler_current()->process;
+    thread_t *thread = scheduler_current();
+    process_t *current = thread->process;
+
+    // The memory goes now, on this process's own CPU time and before its parent can see it
+    // exited (Linux's exit_mm). Left for the last process_release, it ran on the reaper:
+    // after a fork of a big heap, seconds later and charged to whatever ran next.
+    // The kernel root first: the active page tables must not be destroyed.
+    address_space_t *space = current->space;
+    thread->space = NULL;
+    current->space = NULL;
+    address_space_activate(NULL);
+    address_space_destroy(space);
 
     scoped_guard(spinlock, &current->lock)
     {
