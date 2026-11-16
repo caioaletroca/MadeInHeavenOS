@@ -8,6 +8,8 @@
 #include <fcntl.h>
 #include <test.h>
 
+extern char **environ; // POSIX: the program declares it, no header has to
+
 /*
  * posix_spawn, waitpid, wait, getpid and getppid. The test spawns itself: argv[1] picks what the
  * child does, so no other program has to be on the boot modules.

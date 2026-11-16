@@ -7,6 +7,8 @@
 #include <dirent.h>
 #include <sys/wait.h>
 
+extern char **environ; // POSIX: the program declares it, no header has to
+
 /*
  * Test runner: spawns every test of a set in order and compares its exit
  * status with the expected one. /sbin/init starts it from grub.cfg:

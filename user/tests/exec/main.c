@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <test.h>
 
+extern char **environ; // POSIX: the program declares it, no header has to
+
 /*
  * execve: the same process, a new program. Most cases fork a child that
  * prepares something and execs this test again with a mode in argv[1]; the new
@@ -77,7 +79,7 @@ static int child_main(int argc, char **argv)
     // The heap starts over, below where the old program left its break
     else if (strcmp(mode, "break") == 0)
     {
-        CHECK((char *)sbrk(0) < (char *)(uintptr_t)first);
+        CHECK((char *)test_break_move(0) < (char *)(uintptr_t)first);
     }
     // first: a pipe end kept across the exec
     else if (strcmp(mode, "write") == 0)
@@ -160,7 +162,7 @@ static void test_fresh(void)
     CHECK(child >= 0);
     if (child == 0)
     {
-        char *grown = sbrk(GROWTH); // the old end: the new one is GROWTH above it
+        char *grown = test_break_move(GROWTH); // the old end: the new one is GROWTH above it
         exec_self("break", (long)(uintptr_t)(grown + GROWTH), 0);
         _exit(EXEC_FAILED);
     }

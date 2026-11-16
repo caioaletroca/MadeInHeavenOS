@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <test.h>
 
+extern char **environ; // POSIX: the program declares it, no header has to
+
 /*
  * The current directory: chdir, relative paths from it (across the /mnt mount
  * both ways), relative creates and removals, the errors that leave it where

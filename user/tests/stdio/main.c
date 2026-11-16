@@ -6,6 +6,8 @@
 #include <errno.h>
 #include <test.h>
 
+extern char **environ; // POSIX: the program declares it, no header has to
+
 /*
  * stdio buffering and return values. The body runs twice:
  *

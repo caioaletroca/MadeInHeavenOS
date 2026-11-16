@@ -3,6 +3,8 @@
 #include <unistd.h>
 #include <test.h>
 
+extern char **environ; // POSIX: the program declares it, no header has to
+
 /*
  * The initial stack as crt0 hands it to main: the test runner starts every
  * program with argv = {its path} and envp = {"PATH=/bin" (init's), "TEST_ROOT=..."}.

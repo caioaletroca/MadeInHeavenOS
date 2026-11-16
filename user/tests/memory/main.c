@@ -64,7 +64,7 @@ static void test_map(void)
         return;
 
     CHECK(((uintptr_t)a & (PAGE - 1)) == 0);
-    CHECK((uintptr_t)a >= (uintptr_t)sbrk(0));
+    CHECK((uintptr_t)a >= (uintptr_t)test_break_move(0));
     CHECK((uintptr_t)a + 3 * PAGE <= STACK_TOP - STACK_MAX);
     CHECK(all_zero(a, 3 * PAGE));
 
@@ -198,7 +198,7 @@ static void test_fixed(void)
 // The heap stops below a region instead of growing over it
 static void test_brk(void)
 {
-    char *end = sbrk(0);
+    char *end = test_break_move(0);
     char *heap_end = (char *)(((uintptr_t)end + PAGE - 1) & ~(PAGE - 1));
     char *region = mmap(heap_end + 2 * PAGE, PAGE, PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
@@ -207,11 +207,11 @@ static void test_brk(void)
         return;
     region[0] = 'r';
 
-    CHECK(sbrk((intptr_t)PAGE) == end); // still below
+    CHECK(test_break_move((intptr_t)PAGE) == end); // still below
     errno = 0;
-    CHECK(sbrk((intptr_t)(2 * PAGE)) == (void *)-1 && errno == ENOMEM);
-    CHECK(sbrk(0) == end + PAGE && region[0] == 'r');
-    CHECK(sbrk(-(intptr_t)PAGE) == end + PAGE);
+    CHECK(test_break_move((intptr_t)(2 * PAGE)) == (void *)-1 && errno == ENOMEM);
+    CHECK(test_break_move(0) == end + PAGE && region[0] == 'r');
+    CHECK(test_break_move(-(intptr_t)PAGE) == end + PAGE);
 
     // Nor does a hint put a region over the heap
     char *below = mmap(heap_end - PAGE, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <mihos/dirent.h>
 #include <test.h>
 
 /*
@@ -169,22 +170,22 @@ static void test_getdents(void)
 
     // Too small for one record
     errno = 0;
-    CHECK(getdents(fd, buffer, 8) == -1 && errno == EINVAL);
+    CHECK(test_directory_records(fd, buffer, 8) == -1 && errno == EINVAL);
 
     // Exactly one record, then the rest, then the end (again and again)
-    CHECK(getdents(fd, buffer, 24) == 24);
+    CHECK(test_directory_records(fd, buffer, 24) == 24);
     CHECK(records_match(buffer, 24, usr, 1) == 1);
-    long n = getdents(fd, buffer, sizeof(buffer));
+    long n = test_directory_records(fd, buffer, sizeof(buffer));
     CHECK(n == USR_RECORDS - 24);
     CHECK(records_match(buffer, n, usr + 1, USR_COUNT - 1) == USR_COUNT - 1);
-    CHECK(getdents(fd, buffer, sizeof(buffer)) == 0);
-    CHECK(getdents(fd, buffer, sizeof(buffer)) == 0);
+    CHECK(test_directory_records(fd, buffer, sizeof(buffer)) == 0);
+    CHECK(test_directory_records(fd, buffer, sizeof(buffer)) == 0);
 
     // lseek to 0 rewinds; a bad pointer fails and loses nothing
     CHECK(lseek(fd, 0, SEEK_SET) == 0);
     errno = 0;
-    CHECK(getdents(fd, (void *)8, sizeof(buffer)) == -1 && errno == EFAULT);
-    n = getdents(fd, buffer, sizeof(buffer));
+    CHECK(test_directory_records(fd, (void *)8, sizeof(buffer)) == -1 && errno == EFAULT);
+    n = test_directory_records(fd, buffer, sizeof(buffer));
     CHECK(n == USR_RECORDS);
     CHECK(records_match(buffer, n, usr, USR_COUNT) == USR_COUNT);
 
@@ -216,7 +217,7 @@ static void test_getdents(void)
     CHECK(offsets_grow);
 
     CHECK(lseek(fd, offsets[0], SEEK_SET) == offsets[0]);
-    n = getdents(fd, buffer, sizeof(buffer));
+    n = test_directory_records(fd, buffer, sizeof(buffer));
     CHECK(n == USR_RECORDS - 24 && records_match(buffer, n, usr + 1, USR_COUNT - 1) == USR_COUNT - 1);
 
     CHECK(close(fd) == 0);
@@ -226,7 +227,7 @@ static void test_getdents(void)
     int records = 0;
     for (;;)
     {
-        n = getdents(fd, buffer, 56); // one or two records per call
+        n = test_directory_records(fd, buffer, 56); // one or two records per call
         if (n <= 0)
             break;
         for (long used = 0; used < n; records++)
@@ -244,15 +245,15 @@ static void test_getdents(void)
 
     // Not a directory, not open
     errno = 0;
-    CHECK(getdents(0, buffer, sizeof(buffer)) == -1 && errno == ENOTDIR); // the console
+    CHECK(test_directory_records(0, buffer, sizeof(buffer)) == -1 && errno == ENOTDIR); // the console
     fd = open("/sbin/init", O_RDONLY);
     errno = 0;
-    CHECK(getdents(fd, buffer, sizeof(buffer)) == -1 && errno == ENOTDIR);
+    CHECK(test_directory_records(fd, buffer, sizeof(buffer)) == -1 && errno == ENOTDIR);
     close(fd);
     errno = 0;
-    CHECK(getdents(fd, buffer, sizeof(buffer)) == -1 && errno == EBADF);
+    CHECK(test_directory_records(fd, buffer, sizeof(buffer)) == -1 && errno == EBADF);
     errno = 0;
-    CHECK(getdents(99, buffer, sizeof(buffer)) == -1 && errno == EBADF);
+    CHECK(test_directory_records(99, buffer, sizeof(buffer)) == -1 && errno == EBADF);
 }
 
 // /dev is another file system mounted on the root's dev/: listing it lists devfs

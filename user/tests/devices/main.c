@@ -174,7 +174,7 @@ static void test_refusals(void)
     errno = 0;
     CHECK(lseek(fd, 0, SEEK_SET) == -1 && errno == ESPIPE); // a stream, not a file with positions
     errno = 0;
-    CHECK(getdents(fd, buffer, sizeof(buffer)) == -1 && errno == ENOTDIR);
+    CHECK(test_directory_records(fd, buffer, sizeof(buffer)) == -1 && errno == ENOTDIR);
     close(fd);
 
     errno = 0;

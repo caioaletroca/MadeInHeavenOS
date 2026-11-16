@@ -9,7 +9,10 @@
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
+#include <termios.h>
 #include <test.h>
+
+extern char **environ; // POSIX: the program declares it, no header has to
 
 /*
  * Pipes: the two ends, data in order across the ring buffer's wrap, short
@@ -288,7 +291,7 @@ static void test_refused(void)
     CHECK(ftruncate(fds[1], 0) == -1 && errno == EINVAL);
     char records[64];
     errno = 0;
-    CHECK(getdents(fds[0], records, sizeof(records)) == -1 && errno == ENOTDIR);
+    CHECK(test_directory_records(fds[0], records, sizeof(records)) == -1 && errno == ENOTDIR);
     struct winsize size;
     errno = 0;
     CHECK(ioctl(fds[0], TIOCGWINSZ, &size) == -1 && errno == ENOTTY);

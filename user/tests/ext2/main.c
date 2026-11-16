@@ -603,7 +603,7 @@ static void test_refusals(void)
     errno = 0;
     CHECK(write(fd, "x", 1) == -1 && errno == EBADF);
     errno = 0;
-    CHECK(getdents(fd, buffer, sizeof(buffer)) == -1 && errno == ENOTDIR);
+    CHECK(test_directory_records(fd, buffer, sizeof(buffer)) == -1 && errno == ENOTDIR);
     close(fd);
 }
 

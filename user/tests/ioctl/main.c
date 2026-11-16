@@ -3,7 +3,13 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <termios.h>
 #include <test.h>
+
+// A request number in the kernel's encoding (Linux's _IOC): direction, argument size, type, number
+#define REQUEST_READ 2u // the result is copied out
+#define REQUEST(direction, type, number, size) \
+    (((unsigned)(direction) << 30) | ((unsigned)(size) << 16) | ((unsigned)(type) << 8) | (unsigned)(number))
 
 /*
  * ioctl: TIOCGWINSZ on the console, ENOTTY from everything that is no
@@ -30,7 +36,7 @@ static void test_winsize(void)
 
     // A request the console does not know
     errno = 0;
-    CHECK(ioctl(fd, MIHOS_IOR('T', 0xFF, int), &ws) == -1 && errno == ENOTTY);
+    CHECK(ioctl(fd, REQUEST(REQUEST_READ, 'T', 0xFF, sizeof(int)), &ws) == -1 && errno == ENOTTY);
     close(fd);
 }
 
@@ -59,7 +65,7 @@ static void test_errors(void)
 
     // An argument bigger than the syscall layer copies
     errno = 0;
-    CHECK(ioctl(0, MIHOS_IOC(MIHOS_IOC_READ, 'T', 0x13, 1000), &ws) == -1 && errno == EINVAL);
+    CHECK(ioctl(0, REQUEST(REQUEST_READ, 'T', 0x13, 1000), &ws) == -1 && errno == EINVAL);
 
     // Not open
     errno = 0;

@@ -173,21 +173,21 @@ static void test_memory(void)
 // Each process has its own break, starting from the same place
 static void test_break(void)
 {
-    void *before = sbrk(0);
+    void *before = test_break_move(0);
     pid_t child = fork_flushed();
     CHECK(child >= 0);
     if (child == 0)
     {
-        CHECK(sbrk(0) == before);
-        char *grown = sbrk(PAGE * 4);
+        CHECK(test_break_move(0) == before);
+        char *grown = test_break_move(PAGE * 4);
         CHECK(grown != (char *)-1);
         grown[PAGE * 4 - 1] = 1;
-        CHECK(sbrk(0) == (char *)before + PAGE * 4);
+        CHECK(test_break_move(0) == (char *)before + PAGE * 4);
         child_done();
     }
 
     child_passed(child);
-    CHECK(sbrk(0) == before);
+    CHECK(test_break_move(0) == before);
 }
 
 // A page the program cannot write stays that way in the child: flags are copied too

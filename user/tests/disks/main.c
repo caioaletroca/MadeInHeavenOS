@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <termios.h>
 #include <test.h>
 
 /*
@@ -225,7 +226,7 @@ static void test_refusals(void)
     CHECK(isatty(fd) == 0);
     char buffer[64];
     errno = 0;
-    CHECK(getdents(fd, buffer, sizeof(buffer)) == -1 && errno == ENOTDIR);
+    CHECK(test_directory_records(fd, buffer, sizeof(buffer)) == -1 && errno == ENOTDIR);
     close(fd);
 }
 

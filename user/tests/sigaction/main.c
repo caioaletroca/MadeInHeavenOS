@@ -9,6 +9,14 @@
 #include <mihos/syscall.h>
 #include <test.h>
 
+// A signal set's first 64 bits: what the kernel reads
+static uint64_t first_bits(const sigset_t *set)
+{
+    uint64_t bits;
+    memcpy(&bits, set, sizeof(bits));
+    return bits;
+}
+
 /*
  * Signal handlers: sigaction, sigprocmask and sigreturn. The kernel pauses the
  * program, runs its handler on the program's own stack, and sigreturn puts
@@ -373,12 +381,13 @@ static void test_set_functions(void)
     CHECK(sigfillset(&set) == 0);
     CHECK(sigismember(&set, SIGTERM) == 1 && sigismember(&set, 31) == 1);
 
-    // Linux's layout, which mlibc writes too: 64 bits, bit n-1 for signal n
-    CHECK(sizeof(sigset_t) == 8);
-    CHECK(sigemptyset(&set) == 0 && sigaddset(&set, SIGHUP) == 0 && set == 1);
-    CHECK(sigemptyset(&set) == 0 && sigaddset(&set, SIGUSR1) == 0 && set == (1ull << 9));
-    CHECK(sigemptyset(&set) == 0 && sigaddset(&set, 31) == 0 && set == (1ull << 30));
-    CHECK(sigfillset(&set) == 0 && set == ~0ull);
+    // Linux's layout, the kernel's: bit n-1 for signal n in the first 64 bits (mlibc's
+    // sigset_t is bigger, as glibc's: the kernel reads only those)
+    CHECK(sizeof(sigset_t) >= 8);
+    CHECK(sigemptyset(&set) == 0 && sigaddset(&set, SIGHUP) == 0 && first_bits(&set) == 1);
+    CHECK(sigemptyset(&set) == 0 && sigaddset(&set, SIGUSR1) == 0 && first_bits(&set) == (1ull << 9));
+    CHECK(sigemptyset(&set) == 0 && sigaddset(&set, 31) == 0 && first_bits(&set) == (1ull << 30));
+    CHECK(sigfillset(&set) == 0 && first_bits(&set) == ~0ull);
 }
 
 // The kernel's struct sigaction is Linux's (rt_sigaction): handler, flags, restorer, mask

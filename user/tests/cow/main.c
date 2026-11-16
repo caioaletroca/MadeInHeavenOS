@@ -68,7 +68,7 @@ static int all_bytes(const char *data, size_t size, char byte)
 static void test_many_children(void)
 {
     size_t size = (size_t)BLOCK_PAGES * PAGE;
-    char *block = sbrk((intptr_t)size);
+    char *block = test_break_move((intptr_t)size);
     CHECK(block != (char *)-1);
     if (block == (char *)-1)
         return;
@@ -116,7 +116,7 @@ static void test_many_children(void)
     for (size_t page = 0; page < CHILDREN; page++)
         CHECK(*(size_t *)(block + page * PAGE) == page + 1);
 
-    CHECK(sbrk(-(intptr_t)size) != (void *)-1);
+    CHECK(test_break_move(-(intptr_t)size) != (void *)-1);
 }
 
 // The parent writes first, to a page it just used: without a TLB flush at the fork, that write
@@ -292,7 +292,7 @@ static void test_kernel_address(void)
 static void test_break(void)
 {
     size_t size = HEAP_PAGES * PAGE;
-    char *heap = sbrk((intptr_t)size);
+    char *heap = test_break_move((intptr_t)size);
     CHECK(heap != (char *)-1);
     memset(heap, 'h', size);
 
@@ -300,15 +300,15 @@ static void test_break(void)
     CHECK(child >= 0);
     if (child == 0)
     {
-        CHECK(sbrk(-(intptr_t)size) != (void *)-1);
-        CHECK(sbrk((intptr_t)size) == heap);
+        CHECK(test_break_move(-(intptr_t)size) != (void *)-1);
+        CHECK(test_break_move((intptr_t)size) == heap);
         CHECK(all_bytes(heap, size, 0)); // new pages, not the old ones back
         child_done();
     }
 
     child_passed(child);
     CHECK(all_bytes(heap, size, 'h'));
-    CHECK(sbrk(-(intptr_t)size) != (void *)-1);
+    CHECK(test_break_move(-(intptr_t)size) != (void *)-1);
 }
 
 // An exec gives its shares back; each round the parent is left with its page and keeps writing
