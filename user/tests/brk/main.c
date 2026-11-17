@@ -12,7 +12,8 @@
 
 #define PAGE_SIZE 4096
 
-static volatile int bss; // the last thing before the heap
+// The program's end (end(3)): the last byte of .bss, its libc's included, is before it
+extern char _end[];
 
 // True if every byte of [p, p + n) is zero
 static int all_zero(const volatile unsigned char *p, size_t n)
@@ -25,11 +26,12 @@ static int all_zero(const volatile unsigned char *p, size_t n)
 
 static void test_brk(void)
 {
-    // Initial break: on the page right after .bss
+    // Initial break: on the page right after the program's end. Not after a variable of
+    // the test: the libc's own .bss may follow it (mlibc's does)
     uintptr_t start = (uintptr_t)test_break_move(0);
     CHECK((start & (PAGE_SIZE - 1)) == 0);
-    CHECK(start > (uintptr_t)&bss);
-    CHECK(start - (uintptr_t)&bss <= PAGE_SIZE);
+    CHECK(start >= (uintptr_t)_end);
+    CHECK(start - (uintptr_t)_end < PAGE_SIZE);
 
     // Grow one page: returns the old break, memory is zeroed and writable
     volatile unsigned char *page = test_break_move(PAGE_SIZE);

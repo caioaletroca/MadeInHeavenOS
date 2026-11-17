@@ -47,6 +47,10 @@ SECTIONS
 
     .bss : { *(.bss*) *(COMMON) } :data
 
+    /* The program's end, as the default script marks it (end(3)): the heap starts on the next page */
+    PROVIDE(_end = .);
+    PROVIDE(end = .);
+
     /* No unwinder, debugger notes or toolchain comments in the image */
     /DISCARD/ : { *(.eh_frame*) *(.note*) *(.comment) }
 }
