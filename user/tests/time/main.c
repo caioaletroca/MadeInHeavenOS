@@ -113,8 +113,11 @@ static void test_clock_errors(void)
     CHECK(clock_gettime(3, &t) == -1 && errno == EINVAL); // CLOCK_THREAD_CPUTIME_ID: not yet
     errno = 0;
     CHECK(clock_gettime(-1, &t) == -1 && errno == EINVAL);
+    // The kernel's check, made raw: a libc may write the result through the pointer
+    // itself (mlibc does), and a bad pointer then faults in the program, as C allows
     errno = 0;
-    CHECK(clock_gettime(CLOCK_MONOTONIC, NOT_USER_ADDRESS) == -1 && errno == EFAULT);
+    CHECK(test_syscall(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (long)NOT_USER_ADDRESS, 0) == -1 &&
+          errno == EFAULT);
 }
 
 static void test_sleep_lasts(void)
@@ -156,8 +159,9 @@ static void test_sleep_errors(void)
         CHECK(nanosleep(&bad[i], NULL) == -1 && errno == EINVAL);
     }
 
+    // Raw, as for clock_gettime: mlibc reads the request itself first
     errno = 0;
-    CHECK(nanosleep(NOT_USER_ADDRESS, NULL) == -1 && errno == EFAULT);
+    CHECK(test_syscall(SYS_NANOSLEEP, (long)NOT_USER_ADDRESS, 0, 0) == -1 && errno == EFAULT);
 }
 
 // Spins until `ms` of wall time have passed: all of it on the CPU
@@ -258,7 +262,8 @@ static void test_signal_ends_sleep(int flags)
     reap(sender);
 }
 
-// sleep(): the whole seconds left, rounded up
+// sleep(): the whole seconds left. POSIX leaves the rounding open: ours rounds 4.9 s
+// up to 5, mlibc (as musl) truncates it to 4
 static void test_signal_ends_sleep_seconds(void)
 {
     handle(0);
@@ -267,7 +272,7 @@ static void test_signal_ends_sleep_seconds(void)
     unsigned left = sleep(LONG_SLEEP_S);
 
     CHECK(handled == 1);
-    CHECK(left == LONG_SLEEP_S); // 4.9 s left rounds up to 5
+    CHECK(left == LONG_SLEEP_S || left == LONG_SLEEP_S - 1);
 
     reap(sender);
 }
