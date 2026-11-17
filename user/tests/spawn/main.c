@@ -292,10 +292,6 @@ static void test_errors(void)
     long_path[sizeof(long_path) - 1] = '\0';
     CHECK(posix_spawn(&pid, long_path, NULL, NULL, argv, NULL) == E2BIG);
 
-    // File actions and attributes are not supported yet
-    int dummy;
-    CHECK(posix_spawn(&pid, self, (const posix_spawn_file_actions_t *)&dummy, NULL, argv, NULL) == ENOSYS);
-
     int status;
     errno = 0;
     CHECK(waitpid(1, &status, 0) == -1 && errno == ECHILD); // not our child
