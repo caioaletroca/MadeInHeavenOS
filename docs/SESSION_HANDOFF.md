@@ -106,6 +106,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+7a420a9 fix(mlibc): take the fork's calendar fixes
+9c272ef test(calendar): check C's fields and bytes, not a libc's layout choices
+7fae839 docs(architecture): record the mlibc stream fixes in handoff
 8f6c186 fix(mlibc): take the fork's stream fixes
 e13a6b6 test(streams): accept either libc's flush of a filled setvbuf buffer
 e0cfdd2 docs(architecture): record the mlibc stdio fixes in handoff
@@ -3432,10 +3435,18 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           (C: a filled buffer goes out; ours also sends the extra byte). Several failures
           were cascades: a forked child inherits the failure count, so `in_child` reports
           non-zero once anything earlier failed. On mlibc: 43 passed.
+        - Fixed on mlibc's side (fork `351a9ff3`), for `calendar`: `gmtime_r` sets
+          `tm_isdst` 0 (was -1); `gmtime_r`/`localtime_r` fail with `EOVERFLOW` when the
+          year does not fit `tm_year`; `timegm` (and `mktime`, UTC here) normalizes
+          out-of-range fields in `time_t` and writes the struct back; `strftime` gains `%s`,
+          `%G`, `%g`, two-digit `%W`/`%V`, keeps an unknown conversion as written and prints
+          "?" for an out-of-range name instead of panicking; the C locale's
+          `_NL_TIME_ERA_ENTRIES` was a string where `era_view` reads a byte span, so every
+          `%E` panicked. The test no longer `memcmp`s two `struct tm` (padding, the zone
+          pointer) nor checks the bytes of a `strftime` that did not fit (indeterminate in
+          C). On mlibc: 44 passed (`cxx` excluded, `sigaction`).
         - **next, mlibc's side** (each a bug to fix in the fork and send upstream, or a
           choice of ours to drop from the test):
-          - `calendar`: `gmtime` of a huge time without `EOVERFLOW`, `timegm`'s normalizing,
-            `mktime`, `strftime("%s")` unknown and panicking.
           - `sigaction`: `signal()` installs without `SA_RESTART` (glibc/BSD with it); `fwrite`
             under signals.
       - **D10d, the cut:** GCC's `STARTFILE_SPEC` moves from our `crt0.o` to mlibc's
@@ -3582,7 +3593,13 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 ## Known technical debt
 
-**Open bugs:** none known.
+**Open bugs:**
+
+- `exec` closes the close-on-exec fds before it marks the process as exec'd
+  (`kernel/sched/process.c`, `process_exec`: `process_files_close_on_exec(p)` comes before
+  `p->tree.exec_done = true`). A parent woken by that close (mlibc's `posix_spawn` waits on
+  a close-on-exec pipe) can `setpgid` the child in between and succeed instead of getting
+  `EACCES`: `groups` line 196 failed once on mlibc. Set `exec_done` first.
 
 **Debt:**
 
@@ -3611,7 +3628,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   pinned wrap, so the real checks belong upstream in managarm/frigg (and mlibc's
   `PTRDIFF_MAX` guard, the `map` nullptr and the `ENOMEM` upstream in mlibc). The stdio
   fixes (`unget`'s `unsigned char`, `ungetc` clearing EOF, `fread`'s error indicator)
-  also belong upstream in mlibc, as do the stream fixes of fork `a47a66b8`.
+  also belong upstream in mlibc, as do the stream fixes of fork `a47a66b8` and the
+  calendar fixes of fork `351a9ff3`. mlibc's `mktime` is still `timegm`: right while
+  everything is UTC, wrong once a `TZ` with an offset is set.
 - mlibc's `setvbuf` takes the caller's size but not the array itself (its buffer keeps
   an `ungetc` area in front); a caller's array of static data is never used. C allows it.
 - The kernel's `vsnprintf` (libk) after the cut (D10c/D10d): `tests/printf` checks it today
