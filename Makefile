@@ -20,7 +20,7 @@ PART_IMAGE := $(IMAGES_DIR)/part.img
 PART_ROOT_STAGING := $(STAGING_DIR)/root
 INITRD := $(OUTPUT_DIR)/objects/grub/initrd.tar
 
-.PHONY: all headers libk kernel user grub install mlibc mlibc-clean toolchain-headers clean purge dump print-config
+.PHONY: all headers libk kernel user ports grub install mlibc mlibc-clean toolchain-headers clean purge dump print-config
 
 all: grub $(DISK_IMAGE) $(PART_IMAGE)
 
@@ -85,7 +85,15 @@ kernel: libk
 user: kernel mlibc
 	$(MAKE) -C user
 
-grub: kernel user
+# Third-party programs (roadmap D10f): one folder each under ports/, whose
+# Makefile downloads a pinned release, checks its sha256, builds it on mlibc
+# and installs into the sysroot, where grub/ packs it like our own programs
+PORTS := $(patsubst %/,%,$(wildcard ports/*/))
+
+ports: mlibc
+	$(foreach port,$(PORTS),$(MAKE) -C $(port) OUTPUT_DIR=$(abspath $(OUTPUT_DIR)) HOST=$(HOST) &&) true
+
+grub: kernel user ports
 	$(MAKE) -C grub
 
 install: libk
