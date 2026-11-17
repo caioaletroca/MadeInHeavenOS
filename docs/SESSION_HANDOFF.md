@@ -106,6 +106,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+45a7580 test(tls): change the thread pointer only in raw-call children
+0dc6bf4 test(time): check EFAULT with raw calls and accept sleep's rounding
+630bb4e test(stdin): read a write-only file stream, not stdout
+f19e34d docs(architecture): record D10b as done in handoff
 34d8217 build(mlibc): move to the reboot and sigaction fixes
 472b964 docs(architecture): record D10 batch 3 and the mlibc run's findings in handoff
 e79277e build(mlibc): move to the sysdeps for files, memory and time
@@ -3363,25 +3367,34 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
            and mlibc's Linux port. D10b is done: on mlibc 25 tests pass up to `stat`
            (`memory` and `reboot` among them), the 10 failing ones are D10c's, and `stdin`
            stalls the run.
-      - **D10c, next: the tests that check our libc rather than the standard:** run on the
-        mlibc build and rewrite (`malloc` checks our allocator's heap layout through
-        `sbrk(0)`; others show in the baseline). Seen after batch 2: `stdin` stalls the
-        live run on mlibc (no failure printed after its `ungetc` check; the likely spot is
-        `test_write_only`, `fgetc(stdout)`, which our stdio refuses by the stream's mode and
-        mlibc may turn into a read of the console); mlibc's `ungetc` returns a negative
-        `char` as negative (C says `unsigned char`); its `strerror` adds the name (`No such
-        file or directory (ENOENT)`), which the `shell` cases compare against; its `free`
-        does not detect `malloc_abort`'s double free. After batch 3: `args` (mlibc's start-up
-        hands `main` its own copies of the argv/envp vectors, the strings stay on the
-        stack), `brk` (mlibc's `.bss` follows the program's, so `bss` is not the last thing
-        before the heap), `calendar` (`gmtime` of a huge time does not give `EOVERFLOW`,
-        `timegm` normalizes differently, and `strftime("%s")` is unknown to mlibc and
-        panics), `ext2` (`strerror(ENOTEMPTY)`'s wording), `malloc` (our allocator's
-        layout, `malloc(0) == NULL`, `ENOMEM` for huge sizes), `printf` (`%p` prints `0x`
-        as glibc does, and a conversion mlibc does not know, `%q`, panics), `sigaction`
-        (`signal()` installs without `SA_RESTART`, BSD/glibc install with it; `fwrite`
-        under signals fails where ours retries), `spawn` (file actions are not `ENOSYS` on
-        mlibc). Each is a test to rewrite or an mlibc fix to send upstream, decided here.
+      - **D10c, in progress: the tests that check our libc rather than the standard.** Each
+        failure on the mlibc build is a test to rewrite (it checks our libc's choice) or an
+        mlibc bug (it checks the standard), decided case by case.
+        - Done: `stdin` (`fgetc(stdout)` is refused by the stream's mode on ours and glibc;
+          mlibc read fd 1, the console, and stalled the run: the check reads a file opened
+          `"w"` instead), `time` (`EFAULT` checked with raw calls, mlibc uses the pointer
+          itself; `sleep()`'s rounding of the time left is open in POSIX: ours rounds up,
+          mlibc truncates), `tls` (mlibc keeps its thread block on FS: the checks that change
+          FS run in children making only raw calls; that exec clears FS is no longer seen
+          from a program, its libc sets its own before `main`). The mlibc run now goes to the
+          end: 31 passed, 15 failed (with `cxx`, excluded until libstdc++), so the disk run
+          is still never reached.
+        - Rewrites (our libc's choices): `args` (mlibc hands `main` its own copies of the
+          argv/envp vectors; the strings stay on the stack), `brk` (mlibc's `.bss` follows the
+          program's), `malloc` (our allocator's layout, `malloc(0) == NULL`), `malloc_abort`
+          (double free detection is not required), `printf` (`%p` prints `0x` as glibc does;
+          `%q` is no conversion, mlibc panics on it), `spawn` (file actions are `ENOSYS` only
+          on ours), `stdio` (`fputs` returns a nonnegative value, not 0), the `strerror`
+          wording in `ext2` and `shell` (mlibc adds the name: `No such file or directory
+          (ENOENT)`).
+        - mlibc's side, to look at before deciding: `ungetc` returns a negative `char` as
+          negative (C says the `unsigned char`); `getchar` after `close(0)` does not set the
+          error indicator (`stdin`); `streams` (bad `fopen` modes, `fdopen` of a closed fd,
+          `fputc` on a read-only stream, and `fseek(SEEK_CUR)` fails an `__ensure` and
+          panics); `calendar` (`gmtime` of a huge time without `EOVERFLOW`, `timegm`'s
+          normalizing, `mktime`, `strftime("%s")` unknown and panicking); `sigaction`
+          (`signal()` installs without `SA_RESTART`, glibc/BSD with it; `fwrite` under
+          signals).
       - **D10d, the cut:** GCC's `STARTFILE_SPEC` moves from our `crt0.o` to mlibc's
         `crt1.o`, mlibc's headers take `sysroot/usr/include` (the kernel then needs its
         own include folder for `libk`), the stage 1 image is built from mlibc's headers
