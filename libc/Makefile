@@ -27,6 +27,9 @@ crt0 := $(BINARY_DIR)/crt0.o
 # syscall_arch.h. Never installed: user code calls write(), not __syscall3.
 LIBC_PRIVATE_CPPFLAGS := -Iinternal -Iarch/$(ARCH)
 
+# libk.a sees only its own headers, never the sysroot (common.mk)
+LIBK_CPPFLAGS := -Iinclude $(FREESTANDING_CPPFLAGS)
+
 ###########################################
 
 .PHONY: all install install-headers install-libs
@@ -37,11 +40,11 @@ install: install-headers install-libs
 
 $(libk_dir)/%.o: $(SOURCE_DIR)/%.c
 	mkdir -p $(@D)
-	$(CC) -MD -MP -c $< -o $@ $(CPPFLAGS) -D__is_libk $(CFLAGS)
+	$(CC) -MD -MP -c $< -o $@ $(LIBK_CPPFLAGS) -D__is_libk $(CFLAGS)
 
 $(libk_dir)/%.o: $(SOURCE_DIR)/%.S
 	mkdir -p $(@D)
-	$(CC) -MD -MP -c $< -o $@ $(CPPFLAGS) -D__is_libk $(CFLAGS)
+	$(CC) -MD -MP -c $< -o $@ $(LIBK_CPPFLAGS) -D__is_libk $(CFLAGS)
 
 $(libc_dir)/%.o: $(SOURCE_DIR)/%.c
 	mkdir -p $(@D)

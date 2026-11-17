@@ -56,7 +56,17 @@ USER_CXXFLAGS := -std=gnu++20 $(USER_COMMON_FLAGS) -fno-exceptions -fno-rtti \
                  -fno-threadsafe-statics
 CPPFLAGS = -Iinclude --sysroot=$(SYSROOT_DIR) -isystem $(INCLUDE_DIR)
 LDFLAGS = -fno-PIC --sysroot=$(SYSROOT_DIR) -L$(LIB_DIR)
-LDFLAGS_EXTRA := -nostdlib -lk -lgcc
+LDFLAGS_EXTRA := -nostdlib -lgcc
+
+# The kernel and libk.a never look in the sysroot, which holds user space's
+# headers (mlibc's, from roadmap D10d): only libk's own headers, the kernel/user
+# contract (<mihos/...>) and GCC's freestanding ones (stddef.h, stdarg.h), as
+# Linux builds with -nostdinc. libk's come first: GCC has a stdint.h of its own.
+GCC_INCLUDE_DIR := $(shell $(CC) -print-file-name=include)
+LIBK_INCLUDE_DIR := $(PROJECT_ROOT)/libc/include
+UAPI_INCLUDE_DIR := $(PROJECT_ROOT)/kernel/include/uapi
+FREESTANDING_CPPFLAGS := -nostdinc -isystem $(LIBK_INCLUDE_DIR) -isystem $(UAPI_INCLUDE_DIR) \
+                         -isystem $(GCC_INCLUDE_DIR)
 
 #####################################################################
 # Folders and paths

@@ -3,7 +3,8 @@ include ../common.mk
 ###########################################
 # Folders and Flags
 ARCH_BINARY_DIR := $(BINARY_DIR)/arch/$(ARCH_FAMILY)/$(ARCH)
-CPPFLAGS += -D__is_kernel
+# Not the sysroot's headers (common.mk); libk.a is linked from its build folder
+CPPFLAGS := -Iinclude $(FREESTANDING_CPPFLAGS) -D__is_kernel
 
 # Header visibility
 #   Every object:            include/ (generic + arch/platform contracts)
