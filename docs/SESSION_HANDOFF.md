@@ -106,6 +106,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+8f6c186 fix(mlibc): take the fork's stream fixes
+e13a6b6 test(streams): accept either libc's flush of a filled setvbuf buffer
+e0cfdd2 docs(architecture): record the mlibc stdio fixes in handoff
 a5bb1e7 fix(mlibc): take the fork's ungetc and fread error fixes
 e3c1299 docs(architecture): record the mlibc allocator fix and frigg's overflow debt in handoff
 5fabcee fix(mlibc): take the fork's allocator fix for sizes that cannot be given
@@ -3416,11 +3419,21 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           `fread` set `errno` but not the error indicator when a read failed before the fd
           (a closed stdin fails in the stream's type check): now both, as `fwrite`. On
           mlibc: 42 passed.
+        - Fixed on mlibc's side (fork `a47a66b8`), for `streams`: a mode not starting with
+          r, w or a fails with `EINVAL` (`parse_modestring` returns -1; `""` read past the
+          string); a stream keeps the directions it was opened for (`_can_read`/
+          `_can_write`: the wrong one fails at once with `EBADF` and the error indicator,
+          not at the flush); `fdopen` of a closed fd fails with `EBADF`; an unknown
+          `whence` is `EINVAL`, not a panic; `fclose` of a standard stream leaves it closed
+          (fd -1, later I/O fails, so printf cannot reach a file that reuses fd 1); `ftell`
+          in append mode writes pending output first; `fflush` of an input stream counts
+          `ungetc`'s bytes; `setvbuf` uses the size given and flushes rather than panicking
+          after I/O. The test's 8-byte `setvbuf` check now accepts either libc's flush
+          (C: a filled buffer goes out; ours also sends the extra byte). Several failures
+          were cascades: a forked child inherits the failure count, so `in_child` reports
+          non-zero once anything earlier failed. On mlibc: 43 passed.
         - **next, mlibc's side** (each a bug to fix in the fork and send upstream, or a
           choice of ours to drop from the test):
-          - `streams`: bad `fopen` modes and `fdopen` of a closed fd are not refused, `fputc`
-            on a read-only stream succeeds, and `fseek(SEEK_CUR)` fails an `__ensure` and
-            panics.
           - `calendar`: `gmtime` of a huge time without `EOVERFLOW`, `timegm`'s normalizing,
             `mktime`, `strftime("%s")` unknown and panicking.
           - `sigaction`: `signal()` installs without `SA_RESTART` (glibc/BSD with it); `fwrite`
@@ -3598,7 +3611,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   pinned wrap, so the real checks belong upstream in managarm/frigg (and mlibc's
   `PTRDIFF_MAX` guard, the `map` nullptr and the `ENOMEM` upstream in mlibc). The stdio
   fixes (`unget`'s `unsigned char`, `ungetc` clearing EOF, `fread`'s error indicator)
-  also belong upstream in mlibc.
+  also belong upstream in mlibc, as do the stream fixes of fork `a47a66b8`.
+- mlibc's `setvbuf` takes the caller's size but not the array itself (its buffer keeps
+  an `ungetc` area in front); a caller's array of static data is never used. C allows it.
 - The kernel's `vsnprintf` (libk) after the cut (D10c/D10d): `tests/printf` checks it today
   because our libc shares it; on mlibc it checks mlibc's printf, and libk's has no test. A
   kernel self-test should take the conversions, flags, lengths and the cut, plus what libk does
