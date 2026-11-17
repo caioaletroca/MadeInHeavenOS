@@ -22,6 +22,9 @@
 #define OUTPUT_MAX 1024
 #define BINARY_MAX (4 << 20) // a program piped through cat (a static mlibc one is ~1.4 MiB)
 #define BINARY_PATH "/usr/tests/hello"
+// Stands for strerror(ENOENT) in an expected text: its words are the libc's
+// ("No such file or directory"; mlibc adds " (ENOENT)")
+#define ENOENT_TEXT "\x01"
 
 typedef struct shell_case
 {
@@ -41,9 +44,9 @@ static const shell_case_t cases[] = {
      "42\n127\n127\n0\n",
      "sh: nope: command not found\nsh: /no/such: command not found\n", 0},
     {"an aborted program",
-     "/usr/tests/malloc_abort\necho $?\n",
+     "/usr/tests/abort\necho $?\n",
      "134\n",
-     "free: invalid pointer or double free\nsh: /usr/tests/malloc_abort: killed by signal 6\n", 0},
+     "sh: /usr/tests/abort: killed by signal 6\n", 0},
     // pwd's output waits in the shell's buffer (a pipe is fully buffered) unless it is flushed before echo runs
     {"builtins and programs in order",
      "pwd\ncd /usr/tests\npwd\necho between\ncd ..\npwd\n",
@@ -51,7 +54,7 @@ static const shell_case_t cases[] = {
     {"failing builtins, the last status at EOF",
      "cd /nope\necho $?\ncd a b\n",
      "1\n",
-     "cd: /nope: No such file or directory\ncd: too many arguments\n", 1},
+     "cd: /nope: " ENOENT_TEXT "\ncd: too many arguments\n", 1},
     {"exit stops the script", "echo before\nexit 7\necho after\n", "before\n", "", 7},
     {"exit keeps the last status", "nope\nexit\n", "", "sh: nope: command not found\n", 127},
     {"blank lines, a last line without a newline", "\n   \n\techo tab\necho last", "tab\nlast\n", "", 0},
@@ -87,7 +90,7 @@ static const shell_case_t cases[] = {
     {"cat's errors",
      "cat /nope /dev/null\necho $?\n",
      "1\n",
-     "cat: /nope: No such file or directory\n", 0},
+     "cat: /nope: " ENOENT_TEXT "\n", 0},
     {"| with a command missing",
      "| cat\necho a |\necho a || cat\necho still running\n",
      "still running\n",
@@ -112,7 +115,7 @@ static const shell_case_t cases[] = {
     {"a builtin failing in a pipeline",
      "echo x | cd /nope\necho $?\n",
      "1\n",
-     "cd: /nope: No such file or directory\n", 0},
+     "cd: /nope: " ENOENT_TEXT "\n", 0},
     // Bigger than a pipe, so cat fills it and waits. Nothing but nope's stage may hold the read
     // end: its exit is what wakes cat, and SIGPIPE ends it silently, as in bash
     {"a reader that never starts",
@@ -211,6 +214,26 @@ static void expect_text(const char *name, const char *what, const char *got, con
     CHECK(strcmp(got, want) == 0);
 }
 
+// want with each ENOENT_TEXT replaced by this libc's strerror(ENOENT)
+static const char *expand(const char *want)
+{
+    static char text[OUTPUT_MAX];
+    const char *words = strerror(ENOENT);
+    size_t at = 0;
+    for (; *want != '\0' && at < sizeof(text) - 1; want++)
+    {
+        if (*want != ENOENT_TEXT[0])
+        {
+            text[at++] = *want;
+            continue;
+        }
+        for (const char *w = words; *w != '\0' && at < sizeof(text) - 1; w++)
+            text[at++] = *w;
+    }
+    text[at] = '\0';
+    return text;
+}
+
 static void test_case(const shell_case_t *c)
 {
     static char out[OUTPUT_MAX], err[OUTPUT_MAX];
@@ -223,7 +246,7 @@ static void test_case(const shell_case_t *c)
         printf("  %s: status %d, expected %d\n", c->name, status, c->status);
     CHECK(status == c->status);
     expect_text(c->name, "stdout", out, c->out);
-    expect_text(c->name, "stderr", err, c->err);
+    expect_text(c->name, "stderr", err, expand(c->err));
 }
 
 // $$ is the shell's own pid: only known once it is spawned

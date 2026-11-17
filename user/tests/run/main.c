@@ -43,7 +43,7 @@ typedef struct expectation
 // Tests that do not exit with 0
 static const expectation_t special[] = {
     {"hello", 42},         // returns a .data 42 plus a .bss 0
-    {"malloc_abort", 134}, // double free → abort: 128 + SIGABRT
+    {"abort", 134},        // abort: 128 + SIGABRT
     {"cxx", 42},           // its last global destructor exits with 42
     {NULL, 0},
 };

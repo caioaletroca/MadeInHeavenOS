@@ -559,7 +559,7 @@ static void test_dirs(void)
     close(fd);
     errno = 0;
     CHECK(rmdir(MNT "/grow/udir") == -1 && errno == ENOTEMPTY);
-    CHECK(strcmp(strerror(ENOTEMPTY), "Directory not empty") == 0);
+    // (strerror's words are the libc's: C fixes none; mlibc adds the name, "(ENOTEMPTY)")
     CHECK(unlink(MNT "/grow/udir/inside") == 0 && rmdir(MNT "/grow/udir/") == 0);
     errno = 0;
     CHECK(stat(MNT "/grow/udir", &st) == -1 && errno == ENOENT);
