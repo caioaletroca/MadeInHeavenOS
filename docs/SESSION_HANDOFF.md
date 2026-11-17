@@ -1741,10 +1741,14 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
   - `reboot`: `reboot` from a non-init process returns `EPERM`, also for an unknown command (a
     missing check halts the machine mid-run instead).
   - `cxx` (C++): global constructors in declaration order before `main`, a local static built
-    once, virtual calls and `delete` through a virtual destructor, 16-aligned `new`,
-    `new[]`/`delete[]` over 10 objects, an `atexit` handler from `main` running before the global
-    destructors, which run in reverse; the last one calls `_exit(42)` (1 on a failure), so
-    missing destructors show as `main`'s 0. Expected status 42.
+    once, virtual calls and `delete` through a virtual destructor, `dynamic_cast`/`typeid`,
+    `new` aligned for the object's size (C++17: mlibc gives an `int` 8 bytes, glibc 16),
+    `new[]`/`delete[]` over 10 objects; exceptions (caught by a base class, unwinding through
+    destructors 6 frames deep, rethrow, `std::bad_alloc` from a refused `new`,
+    `vector::at`); the library (`sort`, `string`, `map`, string streams, smart pointers,
+    `std::function`) and `thread_local`. An `atexit` handler from `main` runs before the
+    global destructors, which run in reverse; the last one calls `_exit(42)` (1 on a
+    failure), so missing destructors show as `main`'s 0. Expected status 42.
   - `fork`: stdout flushed before every fork, each child reporting through its exit status. Both
     returns, `getpid`/`getppid`, an exit status, `ECHILD` after the wait; `fork` 50 calls deep
     with both sides returning through every frame; a global, `.bss`, a local and an 8-page heap
@@ -3488,7 +3492,24 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           was only local). `b369090`: `user/Makefile` drops `-nostdlib` and its startup file
           list; GCC's specs link (`crt1.o crti.o crtbegin.o … -lgcc -lc -lgcc crtend.o
           crtn.o`). Gate from a clean build: 45 of 45 on both boots. **D10d is done.**
-      - **D10e–g:** libstdc++ (then `cxx` moves over), Lua through `ports/lua/`, busybox
+      - **D10e, libstdc++ (2026-11-17), done:**
+        - GCC fork `13f8717b7`: `crossconfig.m4` has a `*-mihos*` entry (the checks glibc
+          gets, minus `/dev/urandom`: `random_device` uses rdrand); `configure` regenerated
+          with autoconf 2.69 (Debian's respells `LARGE_OFF_T`, put back).
+        - `26a93b7`: the toolchain image builds mlibc from this repository into its sysroot,
+          then libstdc++ against it (`compilers/cross/src/build-libstdc++.sh`); the image is
+          built from the repository's root, `Dockerfile.dockerignore` lets in only what it
+          needs, and an mlibc change rebuilds only mlibc and libstdc++.
+        - GCC fork `dbb988fe1`: `gcc_cv_initfini_array=yes`, as Linux. Without it
+          `crtbegin.o` called `frame_dummy` (which registers `.eh_frame` with the unwinder)
+          from `_init`, which mlibc never calls in a static program: every `throw` ended in
+          `std::terminate`. Constructors hid it (the linker moves `.ctors` into
+          `.init_array`).
+        - `8029dd7`: programs with `.cpp` sources link with `g++` and get `CXXFLAGS`;
+          `tests/cxx` is back (exceptions, RTTI, the library, `thread_local`).
+        - Gate (with a trial image built from the fork's `dbb988fe1`): 46 of 46 on both
+          boots. **D10e is done** once the image is rebuilt from the pushed fork.
+      - **D10f–g:** Lua through `ports/lua/`, busybox
         for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as the roadmap
         says).
     - Threads (`clone`, pthreads) when a port needs them (Python, Node.js), with real locks
@@ -3636,8 +3657,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   `internal/`, the hosted headers), unbuilt since D10d: kept by choice for the least change.
   Deleting it leaves libk with what the kernel uses (`string`, `vsnprintf`, `stdint.h`,
   `stdbool.h`, `sys/list.h`, `sys/hashtable.h`).
-- `tests/cxx` is not built until libstdc++ (D10e); its runner line (`{"cxx", 42}`) comes
-  back with it, and C++ programs then need hosted C++ flags in `user/Makefile`.
+- libstdc++ (D10e): thread model `single`, so no `std::thread`, `std::mutex` or
+  `std::async` until kernel threads and pthreads (rebuild GCC with `--enable-threads=posix`
+  then); no `/dev/urandom`, so `std::random_device` only has rdrand; it is also built for
+  the `no-red-zone` multilib, which only the kernel uses (wasted build time); the image
+  keeps GCC's build tree in a layer (libstdc++ is built from it), making the image larger.
 - `-z separate-code` is passed by `user/Makefile`; binutils' `elf_x86_64_mihos` emulation
   could turn it on by default, as Linux targets do, so any program linked with the
   toolchain gets a non-executable `.rodata`.
@@ -3689,9 +3713,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   before `main`, so `tests/tls` cannot see it); a kernel self-test could.
 - Toolchain (D8): libgcc is built once with `-mcmodel=kernel -mno-red-zone` for every
   multilib, so user programs link a kernel-model libgcc (works while they sit below 2 GiB;
-  split the flags per multilib before PIE or high load addresses); libstdc++'s `configure`
-  is not regenerated for our `crossconfig.m4` entry (autoconf 2.69 run needed in D10);
-  gcov is disabled; `mihos-16`/`mihos-2.47` are not yet the default branches on GitHub.
+  split the flags per multilib before PIE or high load addresses); gcov is disabled; `mihos-16`/`mihos-2.47` are not yet the default branches on GitHub.
 - ABI (D7): no real-time signals (`NSIG` 32 in a 64-bit set); the kernel ignores
   `SA_RESTORER` and always uses `sa_restorer`; the tty ioctls' copy sizes live in one table in
   `sys_ioctl`, not in the driver; `SA_SIGINFO`, `SA_ONSTACK`, `SA_NOCLDSTOP` are not there; no

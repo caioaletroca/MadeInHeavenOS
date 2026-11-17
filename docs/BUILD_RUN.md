@@ -56,7 +56,7 @@ build/
 4. mlibc: meson + ninja in `objects/mlibc` → headers in `sysroot/usr/include`, `libc.a`,
    `crt1.o` and the empty `libm.a`, … in `sysroot/usr/lib`. `make mlibc-clean` starts over.
 5. user: one program per directory under `bin/`, `sbin/`, `tests/` → `sysroot/{bin,sbin,usr/tests}`,
-   static against mlibc, installed without debug info. `tests/cxx` waits for libstdc++ (D10e).
+   static against mlibc, installed without debug info. A program with `.cpp` sources links with `g++` (libstdc++).
 6. grub: `initrd.tar` (ustar of the programs plus the empty `dev/`, `mnt/`) and the ISO
    (`staging/iso` with `grub.cfg`, `mihos.kernel`, `initrd.tar`) → `images/mihos.iso`.
 7. `disk.img`: `disk/` plus generated files, `mke2fs -d`.

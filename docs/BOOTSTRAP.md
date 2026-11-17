@@ -107,7 +107,7 @@ GCC and binutils with an `x86_64-mihos` target, from two forks in the
 | Fork | Branch | Base | What the target patch adds |
 |---|---|---|---|
 | `binutils` | `mihos-2.47` | binutils 2.47 | `config.sub`, `bfd`/`gas`/`ld` target entries, `elf_x86_64_mihos` and `elf_i386_mihos` linker emulations |
-| `gcc` | `mihos-16` | GCC 16.2.0 | `gcc/config/mihos.h` (link `-lc`, startup files, `__mihos__`, `_GNU_SOURCE` for C++), a `no-red-zone` multilib, libgcc's crt files, libstdc++'s checks for mihos (`crossconfig.m4`, `configure` regenerated with autoconf 2.69) |
+| `gcc` | `mihos-16` | GCC 16.2.0 | `gcc/config/mihos.h` (link `-lc`, startup files, `__mihos__`, `_GNU_SOURCE` for C++), `.init_array`, a `no-red-zone` multilib, libgcc's crt files, libstdc++'s checks for mihos (`crossconfig.m4`, `configure` regenerated with autoconf 2.69) |
 
 Each branch is the release tarball imported as one commit, then the target patch on top, so
 `git log` shows exactly what MiHOS changes. To move to a newer release: import the new tarball
@@ -198,7 +198,8 @@ mlibc headers ─▶ binutils + GCC + libgcc ─▶ mlibc libc.a ─▶ libstdc+
 - Stage 1's input is mlibc's headers (`make toolchain-headers`), no longer our libc's.
 - GCC's startup files are mlibc's `crt1.o` (`STARTFILE_SPEC` in `gcc/config/mihos.h`), no
   longer our `crt0.o`.
-- libstdc++ is built after mlibc, against it (D10e, not yet).
+- libstdc++ is built after mlibc, against it (D10e). GCC uses `.init_array` on mihos
+  (`gcc_cv_initfini_array=yes`): mlibc never calls `_init` in a static program.
 - Stage 0 leaves MiHOS's critical path. It stays here: it is still how an OS starts before it
   has a libc that installs without a compiler.
 
