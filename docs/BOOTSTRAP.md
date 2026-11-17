@@ -202,9 +202,8 @@ what the cross compiler produced is the classic check that the loop is closed.
 
 ## Status
 
-- Stage 1: rebuilt 2026-11-15 (GCC 16.2.0, binutils 2.47, `_GNU_SOURCE` for C++). The `crt1.o`
-  startfile and the mlibc headers (D10d, 2026-11-17) wait for the next rebuild; until then the
-  build passes the startup files itself (`user/Makefile`), so the old image still works.
+- Stage 1: rebuilt 2026-11-17 (GCC 16.2.0, binutils 2.47), from mlibc's headers, with the
+  `crt1.o` startfile: programs link through GCC's specs (`user/Makefile`, no `-nostdlib`).
 - Stage 2: every build.
 - Stage 0, and the whole chain from an empty Docker: not re-run since the toolchain moved to the
   organization forks (2026-11-14), nor since stage 0 gained meson for mlibc's headers (the

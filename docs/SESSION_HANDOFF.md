@@ -3463,7 +3463,7 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           `SA_RESTART` (stdio retrying an interrupted write was our libc's choice), and a
           failing isolated test prints its name. **On mlibc every test passes but `cxx`
           (excluded until libstdc++): 45 of 46.** D10c is done; next is D10d.
-      - **D10d, the cut (2026-11-17), done but the toolchain image rebuild:**
+      - **D10d, the cut (2026-11-17), done:**
         - `23d4cf9`: the kernel and `libk.a` build with `-nostdinc` and see only libk's
           headers, the uapi and GCC's freestanding ones (`FREESTANDING_CPPFLAGS` in
           `common.mk`, as Linux); the kernel links `libk.a` from its build folder.
@@ -3480,11 +3480,14 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           `a90b4bf`: `BOOTSTRAP.md` builds stage 1 from `make toolchain-headers`; stage 0's
           image gains meson and ninja.
         - Gate: 45 of 45 on both boots (`cxx` parked).
-        - **Left:** rebuild the toolchain image (`make toolchain-headers` on a clean sysroot,
-          then `compilers/cross/docker-build.bat` with `--no-cache`, after pushing the fork:
-          the image clones it from GitHub; a first rebuild on 2026-11-17 still had `crt0.o`
-          because the commit was only local), then `user/Makefile` can drop `-nostdlib` and its explicit start files and let
-          GCC's specs link (`-static`), checked by the gate.
+        - `3843613`: the toolchain images moved to `compilers/elf/` (stage 0) and
+          `compilers/cross/` (stage 1); `docker-build.bat` mirrors only the sysroot's headers
+          (`/MIR`), so a rebuilt program no longer forces a GCC rebuild and stale headers go.
+        - The toolchain image was rebuilt from mlibc's headers and the pushed fork (a first
+          rebuild still had `crt0.o`: the image clones the fork from GitHub, and the commit
+          was only local). `b369090`: `user/Makefile` drops `-nostdlib` and its startup file
+          list; GCC's specs link (`crt1.o crti.o crtbegin.o … -lgcc -lc -lgcc crtend.o
+          crtn.o`). Gate from a clean build: 45 of 45 on both boots. **D10d is done.**
       - **D10e–g:** libstdc++ (then `cxx` moves over), Lua through `ports/lua/`, busybox
         for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as the roadmap
         says).
