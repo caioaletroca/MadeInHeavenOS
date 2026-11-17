@@ -1,26 +1,17 @@
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <errno.h>
 #include <test.h>
 
 /*
- * malloc, free, calloc and realloc. The double free check is its own
- * program (malloc_abort): it ends the process.
+ * malloc, free, calloc and realloc: what C and POSIX promise, on any
+ * allocator. Not how the heap is laid out (ours grows the break, mlibc maps
+ * memory), not malloc(0) and realloc(p, 0) (implementation-defined), not a
+ * double free (undefined: ours catches it and aborts, mlibc does not).
  */
-
-// sizeof(block_t) in libc/internal/malloc.h: one unit of header per block
-#define HEADER 32
-
-// First address of the heap, before any malloc
-static uintptr_t heap_base;
-
-static uintptr_t heap_end(void)
-{
-    return (uintptr_t)sbrk(0);
-}
 
 // True if every byte of [p, p + n) equals value
 static int all_equal(const unsigned char *p, size_t n, unsigned char value)
@@ -32,21 +23,16 @@ static int all_equal(const unsigned char *p, size_t n, unsigned char value)
 }
 
 /*
- * With everything freed and merged, the whole heap is one free block: a
- * request for all of it minus one header must fit exactly, at the bottom,
- * without growing the heap. Fragments left anywhere make it grow instead.
+ * The alignment C promises a block of size bytes: enough for any object that
+ * fits in it (C23's wording), so 16 (max_align_t) from 16 bytes on and the
+ * largest power of two up to the size below that.
  */
-static void check_one_free_block(int line)
+static uintptr_t promised_alignment(size_t size)
 {
-    uintptr_t end = heap_end();
-    void *all = malloc(end - heap_base - HEADER);
-
-    if (all != (void *)(heap_base + HEADER) || heap_end() != end)
-    {
-        test_failures++;
-        printf("FAIL line %d: heap is not one free block\n", line);
-    }
-    free(all);
+    uintptr_t alignment = 1;
+    while (alignment < _Alignof(max_align_t) && alignment * 2 <= size)
+        alignment *= 2;
+    return alignment;
 }
 
 static void test_alignment_and_overlap(void)
@@ -55,12 +41,16 @@ static void test_alignment_and_overlap(void)
     enum { COUNT = sizeof(sizes) / sizeof(sizes[0]) };
     unsigned char *blocks[COUNT];
 
-    // Every block 16-aligned, filled with its own byte
+    // Every block aligned as promised, filled with its own byte
     for (int i = 0; i < COUNT; i++)
     {
         blocks[i] = malloc(sizes[i]);
         CHECK(blocks[i] != NULL);
-        CHECK(((uintptr_t)blocks[i] & 15) == 0);
+        if (blocks[i] == NULL)
+            return;
+        if (((uintptr_t)blocks[i] & (promised_alignment(sizes[i]) - 1)) != 0)
+            printf("  malloc(%zu) gave %p\n", sizes[i], (void *)blocks[i]);
+        CHECK(((uintptr_t)blocks[i] & (promised_alignment(sizes[i]) - 1)) == 0);
         memset(blocks[i], i + 1, sizes[i]);
     }
 
@@ -68,58 +58,61 @@ static void test_alignment_and_overlap(void)
     for (int i = 0; i < COUNT; i++)
         CHECK(all_equal(blocks[i], sizes[i], i + 1));
 
-    // Free in a mixed order so merges happen in both directions
+    // Freed in a mixed order
     for (int i = 0; i < COUNT; i += 2)
         free(blocks[i]);
     for (int i = 1; i < COUNT; i += 2)
         free(blocks[i]);
-
-    check_one_free_block(__LINE__);
 }
 
 static void test_reuse(void)
 {
-    // Freed memory is used again: a thousand rounds never grow the heap
-    uintptr_t end = heap_end();
+    // A thousand rounds of malloc and free keep working (freed memory goes back)
     for (int i = 0; i < 1000; i++)
     {
-        void *p = malloc(1024);
+        unsigned char *p = malloc(1024);
         CHECK(p != NULL);
+        if (p == NULL)
+            return;
+        p[0] = p[1023] = (unsigned char)i;
         free(p);
     }
-    CHECK(heap_end() == end);
 }
 
 static void test_large(void)
 {
-    // More than the 64 KiB __morecore asks for at a time
+    // Bigger than any small-block class, and than ours asks the kernel for at a time
     size_t size = 100 * 1024;
     unsigned char *big = malloc(size);
     CHECK(big != NULL);
-    CHECK(((uintptr_t)big & 15) == 0);
+    if (big == NULL)
+        return;
+    CHECK(((uintptr_t)big & (_Alignof(max_align_t) - 1)) == 0);
     big[0] = 1;
     big[size - 1] = 2;
     CHECK(big[0] == 1 && big[size - 1] == 2);
     free(big);
-
-    check_one_free_block(__LINE__);
 }
 
 static void test_calloc(void)
 {
-    // Dirty the whole heap, free it, then calloc must still hand out zeros
-    uintptr_t end = heap_end();
-    size_t whole = end - heap_base - HEADER;
-    unsigned char *dirty = malloc(whole);
-    CHECK(dirty != NULL);
-    memset(dirty, 0xAB, whole);
-    free(dirty);
+    // Dirty memory, freed, then calloc of the same size must still hand out zeros
+    for (int round = 0; round < 8; round++)
+    {
+        unsigned char *dirty = malloc(4000);
+        CHECK(dirty != NULL);
+        if (dirty == NULL)
+            return;
+        memset(dirty, 0xAB, 4000);
+        free(dirty);
 
-    unsigned char *clean = calloc(1000, 4);
-    CHECK(clean != NULL);
-    CHECK(heap_end() == end); // came from the dirty memory, not fresh pages
-    CHECK(all_equal(clean, 4000, 0));
-    free(clean);
+        unsigned char *clean = calloc(1000, 4);
+        CHECK(clean != NULL);
+        if (clean == NULL)
+            return;
+        CHECK(all_equal(clean, 4000, 0));
+        free(clean);
+    }
 }
 
 static void test_realloc(void)
@@ -127,61 +120,61 @@ static void test_realloc(void)
     // NULL behaves like malloc
     unsigned char *p = realloc(NULL, 10);
     CHECK(p != NULL);
+    if (p == NULL)
+        return;
     for (int i = 0; i < 10; i++)
         p[i] = (unsigned char)i;
 
-    // Growing within the rounding slack stays in place (10 bytes use a whole unit)
-    CHECK(realloc(p, HEADER) == p);
-
-    // Growing beyond it moves the block and keeps the contents
+    // Growing keeps the contents, wherever the block ends up
     unsigned char *q = realloc(p, 5000);
-    CHECK(q != NULL && q != p);
+    CHECK(q != NULL);
+    if (q == NULL)
+    {
+        free(p);
+        return;
+    }
     int kept = 1;
     for (int i = 0; i < 10; i++)
         if (q[i] != (unsigned char)i)
             kept = 0;
     CHECK(kept);
+    q[4999] = 0x5A;
 
-    // Shrinking stays in place
-    CHECK(realloc(q, 100) == q);
-
-    // Size 0 frees and returns NULL
-    CHECK(realloc(q, 0) == NULL);
-
-    check_one_free_block(__LINE__);
+    // Shrinking keeps what fits
+    unsigned char *r = realloc(q, 5);
+    CHECK(r != NULL);
+    if (r == NULL)
+    {
+        free(q);
+        return;
+    }
+    CHECK(r[0] == 0 && r[4] == 4);
+    free(r);
 }
 
 static void test_failures_enomem(void)
 {
-    uintptr_t end = heap_end();
-
-    CHECK(malloc(0) == NULL);
-
+    // Sizes no allocator can give: NULL and ENOMEM (POSIX), never a small block
     errno = 0;
-    CHECK(malloc(SIZE_MAX) == NULL); // the size check in malloc
+    CHECK(malloc(SIZE_MAX) == NULL);
     CHECK(errno == ENOMEM);
 
     errno = 0;
-    CHECK(malloc((size_t)1 << 47) == NULL); // passes malloc, the kernel refuses the break
+    CHECK(malloc((size_t)1 << 47) == NULL); // the whole user half
     CHECK(errno == ENOMEM);
 
     errno = 0;
     CHECK(calloc(SIZE_MAX / 16 + 2, 16) == NULL); // the product would wrap to 16
     CHECK(errno == ENOMEM);
-
-    CHECK(heap_end() == end);
 }
 
 int main(void)
 {
-    heap_base = heap_end();
-
     test_alignment_and_overlap();
     test_reuse();
     test_large();
     test_calloc();
     test_realloc();
     test_failures_enomem();
-    check_one_free_block(__LINE__);
     return test_status();
 }
