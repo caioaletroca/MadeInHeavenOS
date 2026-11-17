@@ -16,5 +16,5 @@ make -j 4 all-target-libgcc CFLAGS_FOR_TARGET='-g -O2 -mcmodel=kernel -mno-red-z
 make install-gcc
 make install-target-libgcc
 
-cd $PREFIX/src
-rm -rf build-gcc mihos-gcc
+# The build tree stays: build-libstdc++.sh builds libstdc++ in it once mlibc
+# is in the sysroot, then deletes it

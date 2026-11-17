@@ -3,5 +3,6 @@
 @REM /MIR also deletes what is no longer there.
 robocopy ../../build/x86_64-pc/sysroot/usr/include ./sysroot/usr/include /MIR
 
-@REM Build docker image
-docker build . -t mihos-compiler
+@REM Build docker image from the repository's root: the image builds mlibc for libstdc++
+@REM (Dockerfile.dockerignore keeps the rest out)
+docker build -f Dockerfile -t mihos-compiler ../..

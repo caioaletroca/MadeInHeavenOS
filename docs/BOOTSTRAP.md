@@ -107,25 +107,33 @@ GCC and binutils with an `x86_64-mihos` target, from two forks in the
 | Fork | Branch | Base | What the target patch adds |
 |---|---|---|---|
 | `binutils` | `mihos-2.47` | binutils 2.47 | `config.sub`, `bfd`/`gas`/`ld` target entries, `elf_x86_64_mihos` and `elf_i386_mihos` linker emulations |
-| `gcc` | `mihos-16` | GCC 16.2.0 | `gcc/config/mihos.h` (link `-lc`, startup files, `__mihos__`, `_GNU_SOURCE` for C++), a `no-red-zone` multilib, libgcc's crt files, a libstdc++ entry |
+| `gcc` | `mihos-16` | GCC 16.2.0 | `gcc/config/mihos.h` (link `-lc`, startup files, `__mihos__`, `_GNU_SOURCE` for C++), a `no-red-zone` multilib, libgcc's crt files, libstdc++'s checks for mihos (`crossconfig.m4`, `configure` regenerated with autoconf 2.69) |
 
 Each branch is the release tarball imported as one commit, then the target patch on top, so
 `git log` shows exactly what MiHOS changes. To move to a newer release: import the new tarball
 on a new branch and cherry-pick the patch.
 
-`compilers/cross/Dockerfile` builds on Debian:
+`compilers/cross/Dockerfile` builds on Debian, from the repository's root (it also builds
+mlibc; `Dockerfile.dockerignore` lets in only `compilers/cross/`, `mlibc/`,
+`kernel/include/uapi` and the meson cross file):
 
-1. installs the build tools (GMP, MPFR, MPC, ISL, bison, flex, texinfo, …);
+1. installs the build tools (GMP, MPFR, MPC, ISL, bison, flex, texinfo, meson, ninja, …);
 2. clones both forks at their branches (`--depth 1`);
 3. copies `compilers/cross/sysroot/` (the headers from stage 0, nothing else: `/MIR` drops
    what stage 0 no longer makes) to `/root/env/sysroot`, the
    compiler's default sysroot (`--with-sysroot`);
 4. builds and installs binutils (`src/build-binutils.sh`);
-5. builds and installs GCC and libgcc only (`src/build-gcc.sh`): no libstdc++ yet, no gcov.
-   libgcc is built twice, with and without the red zone (the kernel needs it off);
-6. adds GRUB, xorriso, e2fsprogs, meson and ninja for stage 2.
+5. builds and installs GCC and libgcc (`src/build-gcc.sh`), no gcov, and keeps the build
+   tree. libgcc is built twice, with and without the red zone (the kernel needs it off);
+6. builds mlibc from the repository into the sysroot (headers, `libc.a`, `crt1.o`), then
+   libstdc++ in GCC's build tree against it, and deletes both trees
+   (`src/build-libstdc++.sh`). libstdc++'s configure links test programs to see what the C
+   library offers, which is why mlibc must come first. It installs under
+   `/usr/local/x86_64-mihos/` (`lib/libstdc++.a`, `include/c++/16.2.0/`), outside the
+   sysroot, so the OS build's own sysroot never needs it;
+7. adds GRUB, xorriso and e2fsprogs for stage 2.
 
-Both scripts run under `set -e`: a failed step fails the image build instead of leaving an
+The scripts run under `set -e`: a failed step fails the image build instead of leaving an
 image without libgcc.
 
 From `compilers/cross/`, Windows:
@@ -134,16 +142,18 @@ From `compilers/cross/`, Windows:
 robocopy ../../build/x86_64-pc/sysroot/usr/include ./sysroot/usr/include /MIR
 ```
 ```bash
-docker build . -t mihos-compiler
+docker build -f Dockerfile -t mihos-compiler ../..
 ```
 
-(`docker-build.bat` does both.) The GCC build takes around half an hour.
+(`docker-build.bat` does both.) The GCC build takes around half an hour, libstdc++ another
+quarter.
 
 Two Docker cache rules:
 
 - The copied headers come before the GCC build, so any header that changed since the last
-  image rebuilds GCC. After a change that is not about headers (a Dockerfile line after GCC,
-  say), run only `docker build`.
+  image rebuilds GCC. mlibc's sources are copied after it: a change there rebuilds only mlibc
+  and libstdc++. After a change that is not about headers (a Dockerfile line after GCC,
+  say), run only the `docker build` line.
 - `git clone` lines never change text, so Docker reuses the old clone after a fork moves.
   Pick up a new commit on `mihos-16` or `mihos-2.47` with `docker build --no-cache`, after
   pushing it: the image clones from GitHub, never from a local clone.

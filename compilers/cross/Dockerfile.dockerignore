@@ -1,0 +1,9 @@
+# The image is built from the repository's root (docker-build.bat): only what
+# the Dockerfile copies goes in, not build/ (gigabytes) nor the rest
+*
+!compilers/cross/sysroot
+!compilers/cross/src
+!mlibc
+!kernel/include/uapi
+!config/x86_64-mihos.cross
+mlibc/.git
