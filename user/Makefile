@@ -12,12 +12,6 @@ install_dir_tests := $(USR_DIR)/tests
 # e.g. tests/hello (a missing category directory just matches nothing)
 programs := $(patsubst %/,%,$(foreach category,$(categories),$(wildcard $(category)/*/)))
 
-# Waiting for libstdc++ (roadmap D10e): its operator new and C++ runtime came
-# from our libc's cxx/, which is no longer built. Removed from the sysroot
-# below, so an old build's copy does not linger in the image.
-waiting := tests/cxx
-programs := $(filter-out $(waiting),$(programs))
-
 program_sources = $(wildcard $(SOURCE_DIR)/$1/*.c $(SOURCE_DIR)/$1/*.cpp $(SOURCE_DIR)/$1/*.S)
 program_objects = $(call src_to_bin_dir,$(addsuffix .o,$(basename $(call program_sources,$1))))
 program_elf = $(BINARY_DIR)/$1.elf
@@ -63,12 +57,17 @@ $(foreach library,$(libraries),$(eval $(call library_rule,$(library))))
 comma := ,
 CPPFLAGS := -Iinclude -Ilib --sysroot=$(SYSROOT_DIR)
 CFLAGS := -std=gnu11 -O2 -g -Wall -Wextra -fno-pie -fno-stack-protector
+# Hosted C++ on libstdc++ (roadmap D10e): exceptions, RTTI and the standard library
+CXXFLAGS := -std=gnu++20 -O2 -g -Wall -Wextra -fno-pie -fno-stack-protector
+
+# A program with C++ sources links with g++, which adds libstdc++ and libm
+program_linker = $(if $(filter %.cpp,$(call program_sources,$1)),$(CXX),$(CC))
 
 # $1: the program, $2: where it is installed
 define program_rule
 $(call program_elf,$1): $(LIB_DIR)/crt1.o $(LIB_DIR)/libc.a $(call program_objects,$1) $(library_archives)
 	mkdir -p $$(@D)
-	$$(CC) -o $$@ --sysroot=$(SYSROOT_DIR) -static -no-pie \
+	$(call program_linker,$1) -o $$@ --sysroot=$(SYSROOT_DIR) -static -no-pie \
 	    -Wl,-z,max-page-size=4096 -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,separate-code \
 	    $(call program_objects,$1) \
 	    $(if $(library_archives),-Wl$(comma)--start-group $(library_archives) -Wl$(comma)--end-group)
@@ -89,7 +88,6 @@ $(foreach program,$(mlibc_programs),$(eval $(call program_rule,$(program),$(inst
 
 installed := $(foreach program,$(programs),$(call program_installed,$(program))) \
              $(foreach program,$(mlibc_programs),$(install_dir_tests)/mlibc_$(notdir $(program)))
-removed := $(foreach program,$(waiting),$(call program_installed,$(program)))
 # The libraries' objects too, for their .d files: a changed header rebuilds them
 user_objects := $(foreach program,$(programs) $(mlibc_programs) $(addprefix lib/,$(libraries)),$(call program_objects,$(program)))
 
@@ -100,7 +98,6 @@ user_objects := $(foreach program,$(programs) $(mlibc_programs) $(addprefix lib/
 all: install
 
 install: $(installed)
-	rm -f $(removed)
 
 ifeq ($(filter clean purge,$(MAKECMDGOALS)),)
 -include $(user_objects:.o=.d)

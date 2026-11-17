@@ -44,8 +44,7 @@ typedef struct expectation
 static const expectation_t special[] = {
     {"hello", 42},         // returns a .data 42 plus a .bss 0
     {"abort", 134},        // abort: 128 + SIGABRT
-    // cxx (its last global destructor exits with 42) waits for libstdc++ (roadmap
-    // D10e) and is not built: {"cxx", 42} comes back with it
+    {"cxx", 42},           // its last global destructor exits with 42
     {NULL, 0},
 };
 
