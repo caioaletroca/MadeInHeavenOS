@@ -27,8 +27,7 @@ BINARY_DIR := $(OUTPUT_DIR)/objects/$(COMPONENT)
 IMAGES_DIR := $(OUTPUT_DIR)/images
 STAGING_DIR := $(OUTPUT_DIR)/staging
 
-libc := $(OUTPUT_DIR)/objects/libc/libc.a
-libk := $(OUTPUT_DIR)/objects/libc/libk.a
+libk :=$(OUTPUT_DIR)/objects/libc/libk.a
 
 #####################################################################
 # Common Programs and Flags
@@ -43,17 +42,6 @@ CFLAGS := -O2 -g -std=gnu11 -Wall -Wextra $(ARCH_CFLAGS)
 # CFLAGS		+= -Wall -Werror -Wextra -Wparentheses -Wmissing-declarations -Wunreachable-code -Wunused 
 # CFLAGS		+= -Wmissing-field-initializers -Wmissing-prototypes -Wpointer-arith -Wswitch-enum
 # CFLAGS		+= -Wredundant-decls -Wshadow -Wstrict-prototypes -Wswitch-default -Wuninitialized
-# Code that runs in ring 3 (user programs, libc.a): not the kernel's ARCH_CFLAGS.
-# Linked at USER_BASE, so the default small code model; the red zone is fine
-# (int $0x80 switches to the kernel stack). No unwinder or stack protector yet.
-USER_COMMON_FLAGS := -O2 -g -Wall -Wextra -ffreestanding -fno-pie \
-                     -fno-stack-protector -fno-asynchronous-unwind-tables
-USER_CFLAGS := -std=gnu11 $(USER_COMMON_FLAGS)
-# Freestanding C++ until mlibc and libstdc++ (roadmap phase D): no exceptions
-# or RTTI (no unwinder, no typeinfo library), no thread-safe local statics
-# (no __cxa_guard_*: one thread per process). The runtime is in libc/cxx/.
-USER_CXXFLAGS := -std=gnu++20 $(USER_COMMON_FLAGS) -fno-exceptions -fno-rtti \
-                 -fno-threadsafe-statics
 CPPFLAGS = -Iinclude --sysroot=$(SYSROOT_DIR) -isystem $(INCLUDE_DIR)
 LDFLAGS = -fno-PIC --sysroot=$(SYSROOT_DIR) -L$(LIB_DIR)
 LDFLAGS_EXTRA := -nostdlib -lgcc

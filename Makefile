@@ -20,7 +20,7 @@ PART_IMAGE := $(IMAGES_DIR)/part.img
 PART_ROOT_STAGING := $(STAGING_DIR)/root
 INITRD := $(OUTPUT_DIR)/objects/grub/initrd.tar
 
-.PHONY: all headers libc kernel user grub install mlibc mlibc-clean clean purge dump print-config
+.PHONY: all headers libc kernel user grub install mlibc mlibc-clean toolchain-headers clean purge dump print-config
 
 all: grub $(DISK_IMAGE) $(PART_IMAGE)
 
@@ -70,17 +70,18 @@ $(PART_IMAGE): disk-tools/partition-disk.sh $(INITRD) Makefile
 $(INITRD):
 	$(MAKE) grub
 
-# The kernel/user contract (<mihos/...>) first: libc and user programs include it
+# The kernel/user contract (<mihos/...>) into the sysroot: mlibc and user programs include it
 headers:
 	$(MAKE) -C kernel install-headers
 
-libc: headers
+# libk.a, the kernel's own small C library; user space is on mlibc (roadmap D10d)
+libc:
 	$(MAKE) -C libc
 
 kernel: libc
 	$(MAKE) -C kernel
 
-# After kernel and libc: programs link against the sysroot (and mlibc's, for user/mlibc/)
+# Programs link against mlibc in the sysroot
 user: kernel mlibc
 	$(MAKE) -C user
 
@@ -90,29 +91,37 @@ grub: kernel user
 install: libc
 	$(MAKE) -C kernel install
 
-# mlibc (mlibc/, a submodule; roadmap D9), built with meson beside our libc and
-# not used by programs yet. It installs into a sysroot of its own, so our
-# libc's headers in sysroot/ stay as they are until the switch (D10). meson
-# reconfigures by itself when a meson.build changes; mlibc-clean starts over
-# (needed after changing the setup line). The sysdeps take the system call
-# numbers from the kernel's own <mihos/syscall.h> (-I the uapi folder). The
-# kernel's headers go into mlibc's sysroot too, beside mlibc's, as Linux's
-# <linux/...> sit beside glibc's: programs that make system calls themselves
-# include them. `make LIBC=mlibc` builds every program against this sysroot.
+# mlibc (mlibc/, a submodule), user space's libc since roadmap D10d, built with
+# meson and installed into the sysroot (headers in usr/include, libc.a and
+# crt1.o in usr/lib). meson reconfigures by itself when a meson.build changes;
+# mlibc-clean starts over (needed after changing the setup line). The sysdeps
+# take the system call numbers from the kernel's own <mihos/syscall.h> (-I the
+# uapi folder). The kernel's headers sit beside mlibc's (`headers`), as Linux's
+# <linux/...> beside glibc's: programs that make system calls themselves
+# include them.
 MLIBC_BUILD_DIR := $(OUTPUT_DIR)/objects/mlibc
-MLIBC_SYSROOT := $(OUTPUT_DIR)/mlibc-sysroot
 MLIBC_CROSS_FILE := config/$(HOST).cross
+SYSROOT_DIR := $(OUTPUT_DIR)/sysroot
 
-mlibc:
+mlibc: headers
 	[ -f $(MLIBC_BUILD_DIR)/build.ninja ] || meson setup --cross-file $(MLIBC_CROSS_FILE) \
 	    --prefix=/usr -Ddefault_library=static -Dcpp_args=-I$(abspath kernel/include/uapi) \
 	    $(MLIBC_BUILD_DIR) mlibc
 	ninja -C $(MLIBC_BUILD_DIR)
-	DESTDIR=$(abspath $(MLIBC_SYSROOT)) ninja -C $(MLIBC_BUILD_DIR) install
-	$(MAKE) -C kernel install-headers SYSROOT_DIR=$(abspath $(MLIBC_SYSROOT))
+	DESTDIR=$(abspath $(SYSROOT_DIR)) ninja -C $(MLIBC_BUILD_DIR) install
 
 mlibc-clean:
-	rm -rf $(MLIBC_BUILD_DIR) $(MLIBC_SYSROOT)
+	rm -rf $(MLIBC_BUILD_DIR) $(MLIBC_HEADERS_BUILD_DIR)
+
+# Stage 1's input (docs/BOOTSTRAP.md): the headers GCC and libgcc are built
+# against, made before any x86_64-mihos compiler exists. The uapi, then
+# mlibc's headers alone: with headers_only, meson adds no C or C++ compiler.
+MLIBC_HEADERS_BUILD_DIR := $(OUTPUT_DIR)/objects/mlibc-headers
+
+toolchain-headers: headers
+	[ -f $(MLIBC_HEADERS_BUILD_DIR)/build.ninja ] || meson setup --cross-file $(MLIBC_CROSS_FILE) \
+	    --prefix=/usr -Dheaders_only=true $(MLIBC_HEADERS_BUILD_DIR) mlibc
+	DESTDIR=$(abspath $(SYSROOT_DIR)) ninja -C $(MLIBC_HEADERS_BUILD_DIR) install
 
 # clean: this target's folder; purge: every target's
 clean:

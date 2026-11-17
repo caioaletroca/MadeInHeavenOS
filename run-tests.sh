@@ -28,7 +28,8 @@
 # volume clean; while mounted it is not), in the mihos-compiler Docker image.
 #
 # Environment: QEMU (default qemu-system-x86_64), TIMEOUT in seconds per run
-# (default 120), IMAGE (default mihos-compiler), FSCK: auto (default: check
+# (default 600: the boot from disk loads mlibc's static programs from ext2,
+# over two minutes), IMAGE (default mihos-compiler), FSCK: auto (default: check
 # when Docker and the image are there, else say it was skipped), 1 (the check
 # is required), 0 (no check).
 
@@ -41,7 +42,7 @@ iso=${1:-$images/mihos.iso}
 disk=${2:-$images/disk.img}
 part=${3:-$images/part.img}
 qemu=${QEMU:-qemu-system-x86_64}
-limit=${TIMEOUT:-120}
+limit=${TIMEOUT:-600}
 image=${IMAGE:-mihos-compiler}
 fsck=${FSCK:-auto}
 disk_copy=$test_dir/test-disk.img

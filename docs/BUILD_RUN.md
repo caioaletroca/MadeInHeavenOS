@@ -4,8 +4,8 @@ All build paths assume the Docker mount `repo -> /root/env` (`cross-compiler/doc
 Native Windows `make` fails (`cp --preserve`, `grub-mkrescue`, `mke2fs`). Starting from a
 fresh clone, with no toolchain image yet: `BOOTSTRAP.md`.
 
-`make LIBC=mlibc all` builds every user program against mlibc instead of our libc (roadmap
-D10, until the switch), into `objects/user-mlibc/`; changing `LIBC` reinstalls every program.
+User programs link against mlibc (`mlibc/`, a submodule) since roadmap D10d; the kernel
+links `libk.a` (`libc/`), which never sees the sysroot.
 
 ## Output layout
 
@@ -18,7 +18,7 @@ build/
 └── x86_64-pc/
     ├── images/      what runs: mihos.iso, disk.img (ext2 test disk), part.img (partitioned disk)
     ├── sysroot/     headers, libraries, installed programs (bin/, sbin/, usr/)
-    ├── objects/     one folder per component: kernel/, libc/, user/, grub/ (+ initrd.tar)
+    ├── objects/     one folder per component: kernel/, libc/ (libk.a), mlibc/, user/, grub/ (+ initrd.tar)
     ├── staging/     trees that become images: iso/, initrd/, disk/, root/
     ├── test/        run-tests.sh: run-tests-live.log, run-tests-disk.log, test-disk.img and test-part.img (the last run's disk copies)
     └── mihos.txt    make dump (kernel disassembly)
@@ -38,28 +38,35 @@ build/
   configured `--with-sysroot=/root/env/sysroot`. That path is only the compiler's default:
   every compile and link passes `--sysroot=$(SYSROOT_DIR)`.
 - `cross-compiler/docker-build.bat` copies `build/x86_64-pc/sysroot` into the image before
-  `docker build` (the GCC build needs the headers). After a Dockerfile change, run
+  `docker build` (the GCC build needs the headers: `make toolchain-headers` makes them, the
+  uapi and mlibc's, with no target compiler). GCC's startup files are mlibc's `crt1.o`, then
+  `crti.o crtbegin.o` (`gcc/config/mihos.h` in the GCC fork). After a Dockerfile change, run
   `docker build . -t mihos-compiler` alone: the copy invalidates the cache and rebuilds GCC.
 
 ## Source -> images
 
-`make all`: `headers -> libc -> kernel -> user -> grub`, then `disk.img` and `part.img`.
+`make all`: `headers -> libc -> kernel -> mlibc -> user -> grub`, then `disk.img` and `part.img`.
 
 1. headers: `kernel/include/uapi` → `sysroot/usr/include`.
-2. libc: `libk.a` (kernel flags) and `libc.a` + `crt0.o` (user flags) from one tree →
-   `sysroot/usr/lib`.
+2. libc: `libk.a` (kernel flags) → `objects/libc/libk.a`, not installed. Its headers
+   (`libc/include`) are the kernel's, with `-nostdinc` (`FREESTANDING_CPPFLAGS` in
+   `common.mk`). Our libc's user side stays in the tree, unbuilt.
 3. kernel: `crtbegin + objects + libk + -lgcc + crtend`, `-T linker.lds.i` →
    `sysroot/usr/boot/kernel`.
-4. user: one program per directory under `bin/`, `sbin/`, `tests/` → `sysroot/{bin,sbin,usr/tests}`.
-5. grub: `initrd.tar` (ustar of the programs plus the empty `dev/`, `mnt/`) and the ISO
+4. mlibc: meson + ninja in `objects/mlibc` → headers in `sysroot/usr/include`, `libc.a`,
+   `crt1.o` and the empty `libm.a`, … in `sysroot/usr/lib`. `make mlibc-clean` starts over.
+5. user: one program per directory under `bin/`, `sbin/`, `tests/` → `sysroot/{bin,sbin,usr/tests}`,
+   static against mlibc, installed without debug info. `tests/cxx` waits for libstdc++ (D10e).
+6. grub: `initrd.tar` (ustar of the programs plus the empty `dev/`, `mnt/`) and the ISO
    (`staging/iso` with `grub.cfg`, `mihos.kernel`, `initrd.tar`) → `images/mihos.iso`.
-6. `disk.img`: `disk/` plus generated files, `mke2fs -d`.
-7. `part.img`: `disk-tools/partition-disk.sh` (MBR, markers), then the initrd's tree as ext2
+7. `disk.img`: `disk/` plus generated files, `mke2fs -d`.
+8. `part.img`: `disk-tools/partition-disk.sh` (MBR, markers), then the initrd's tree as ext2
    on partition 1 (`mke2fs -E offset=`).
 
 ## Run / debug
 
-- `./run-tests.sh`: headless QEMU, the automatic tests, e2fsck of the disk copy.
+- `./run-tests.sh`: headless QEMU, the automatic tests, e2fsck of the disk copy (`TIMEOUT`
+  per boot, 600 s by default: the boot from disk takes over two minutes).
 - `run.bat`: QEMU with the window, both disks, `-snapshot`.
 - `run-debug.bat`: QEMU with `-d int -monitor stdio`.
 - Bochs: `.bochsrc` (local), paths into `build/x86_64-pc/images/`.
