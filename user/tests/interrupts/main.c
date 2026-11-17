@@ -18,12 +18,18 @@
  * size doubles until one call lasts LONG_MS by the cycle counter.
  *
  * CPU time is sampled per tick too: the call is charged to the process.
+ *
+ * The slack grows with the call: an emulator starved by its host (one 40 ms
+ * write took 5.7 s) drops timer ticks too, which no guest can tell from ticks
+ * its kernel lost. A few percent covers that; IRQs off through the call lose
+ * all but one tick, far past it.
  */
 
 #define NS_PER_MS 1000000LL
 #define CALIBRATION_MS 300
 #define LONG_MS 150
-#define SLACK_MS 30 // a few ticks, and the calibration's error
+#define SLACK_MS 30         // a few ticks: each reading of the clock is up to one off
+#define SLACK_PER_CENT 5    // and ticks a starved emulator drops
 #define FIRST_SIZE (8UL << 20)
 #define LAST_SIZE (128UL << 20)
 
@@ -41,15 +47,29 @@ static int64_t clock_ms(clockid_t clock)
     return (int64_t)now.tv_sec * 1000 + now.tv_nsec / NS_PER_MS;
 }
 
-// Cycles per millisecond, measured over a sleep
+// Spins until the monotonic clock ticks: the start of a tick, read at once. Its value
+static int64_t next_tick_ms(void)
+{
+    int64_t now = clock_ms(CLOCK_MONOTONIC);
+    int64_t next;
+    while ((next = clock_ms(CLOCK_MONOTONIC)) == now)
+        ;
+    return next;
+}
+
+/*
+ * Cycles per millisecond, measured over a sleep from one tick's start to
+ * another's: the clock moves in whole ticks, so readings at arbitrary moments
+ * would each be up to a tick off (3% over 300 ms, 170 ms over a 5.7 s call).
+ */
 static uint64_t calibrate(void)
 {
     struct timespec sleep = {0, CALIBRATION_MS * NS_PER_MS};
-    int64_t start_ms = clock_ms(CLOCK_MONOTONIC);
+    int64_t start_ms = next_tick_ms();
     uint64_t start = cycles();
     CHECK(nanosleep(&sleep, NULL) == 0);
+    int64_t elapsed_ms = next_tick_ms() - start_ms;
     uint64_t elapsed = cycles() - start;
-    int64_t elapsed_ms = clock_ms(CLOCK_MONOTONIC) - start_ms;
 
     CHECK(elapsed_ms >= CALIBRATION_MS);
     return elapsed_ms > 0 ? elapsed / (uint64_t)elapsed_ms : 1;
@@ -85,12 +105,12 @@ int main(void)
             continue; // too short to tell a lost tick from slack: twice the size
 
         checked = 1;
-        if (monotonic_ms < real_ms - SLACK_MS || monotonic_ms > real_ms + SLACK_MS ||
-            cpu_ms < real_ms - SLACK_MS)
+        int64_t slack = SLACK_MS + real_ms * SLACK_PER_CENT / 100;
+        if (monotonic_ms < real_ms - slack || monotonic_ms > real_ms + slack || cpu_ms < real_ms - slack)
             printf("  %lu MiB: %ld ms by the cycle counter, %ld ms monotonic, %ld ms of CPU time\n",
                    (unsigned long)(size >> 20), (long)real_ms, (long)monotonic_ms, (long)cpu_ms);
-        CHECK(monotonic_ms >= real_ms - SLACK_MS && monotonic_ms <= real_ms + SLACK_MS);
-        CHECK(cpu_ms >= real_ms - SLACK_MS);
+        CHECK(monotonic_ms >= real_ms - slack && monotonic_ms <= real_ms + slack);
+        CHECK(cpu_ms >= real_ms - slack);
     }
 
     if (!checked)
