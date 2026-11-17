@@ -106,6 +106,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+a5bb1e7 fix(mlibc): take the fork's ungetc and fread error fixes
+e3c1299 docs(architecture): record the mlibc allocator fix and frigg's overflow debt in handoff
 5fabcee fix(mlibc): take the fork's allocator fix for sizes that cannot be given
 cf35b6b test(malloc): keep the huge-size blocks in a volatile
 7e73d09 docs(architecture): record the D10c test rewrites and mlibc's side in handoff
@@ -3408,10 +3410,14 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           nullptr, and `malloc`/`realloc` set `ENOMEM`. The test's `malloc(1 << 47)` had
           never run: a hosted GCC knows `malloc` and dropped the call whose block was only
           compared with NULL; the blocks now go through a volatile. On mlibc: 41 passed.
+        - Fixed on mlibc's side (fork `56d0ec6f`): `abstract_file::unget` returned the
+          byte sign-extended (`ungetc((char)0xE9)` negative, and `ungetwc` took a 0xFF byte
+          for EOF): now as `unsigned char`, and `ungetc` clears the end-of-file indicator.
+          `fread` set `errno` but not the error indicator when a read failed before the fd
+          (a closed stdin fails in the stream's type check): now both, as `fwrite`. On
+          mlibc: 42 passed.
         - **next, mlibc's side** (each a bug to fix in the fork and send upstream, or a
           choice of ours to drop from the test):
-          - `stdin`: `ungetc` returns a negative `char` as negative (C: the `unsigned char`);
-            `getchar` after `close(0)` does not set the error indicator.
           - `streams`: bad `fopen` modes and `fdopen` of a closed fd are not refused, `fputc`
             on a read-only stream succeeds, and `fseek(SEEK_CUR)` fails an `__ensure` and
             panics.
@@ -3590,7 +3596,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   `map_aligned` (`size + alignment - 1 + page_size - 1`) can wrap. The fork only keeps
   sizes above `PTRDIFF_MAX` away from them (`MemoryAllocator`); frigg itself comes from a
   pinned wrap, so the real checks belong upstream in managarm/frigg (and mlibc's
-  `PTRDIFF_MAX` guard, the `map` nullptr and the `ENOMEM` upstream in mlibc).
+  `PTRDIFF_MAX` guard, the `map` nullptr and the `ENOMEM` upstream in mlibc). The stdio
+  fixes (`unget`'s `unsigned char`, `ungetc` clearing EOF, `fread`'s error indicator)
+  also belong upstream in mlibc.
 - The kernel's `vsnprintf` (libk) after the cut (D10c/D10d): `tests/printf` checks it today
   because our libc shares it; on mlibc it checks mlibc's printf, and libk's has no test. A
   kernel self-test should take the conversions, flags, lengths and the cut, plus what libk does
