@@ -31,10 +31,9 @@ int main(int argc, char **argv, char **envp)
     CHECK(envp[2] == NULL);
     CHECK(environ == envp);
 
-    // The vectors and their strings live on the stack, the strings above the vectors
-    CHECK(on_stack(argv) && on_stack(envp));
+    // The strings live on the stack, where exec put them. Not the vectors: a libc's
+    // start-up may hand main copies of them (mlibc does)
     CHECK(on_stack(argv[0]) && on_stack(envp[0]) && on_stack(envp[1]));
-    CHECK((uintptr_t)argv[0] > (uintptr_t)&envp[2]);
 
     // crt0 keeps the ABI alignment: GCC assumes it and does not realign the frame
     _Alignas(16) volatile char probe[16];
