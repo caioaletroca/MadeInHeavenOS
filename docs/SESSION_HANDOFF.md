@@ -3513,9 +3513,23 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           copies in the build folder had hidden it).
         - The image was rebuilt from the pushed fork. Gate from a clean build: 46 of 46 on
           both boots. **D10e is done.**
-      - **D10f–g:** Lua through `ports/lua/`, busybox
-        for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as the roadmap
-        says).
+      - **D10f, Lua (2026-11-17), done:**
+        - `2a1527f`: `ports/lua/Makefile` downloads Lua 5.5.1's tarball into
+          `build/downloads/`, checks its pinned sha256 (from lua.org/ftp) before every
+          unpack, and builds with Lua's own `make posix` on mlibc, linked as `user/Makefile`
+          links; no patch. `lua` and `luac` go stripped into the sysroot's `bin/`, so into the
+          initrd and `part.img`. The tree is cleaned whenever `libc.a` changes (Lua's Makefile
+          does not know mlibc). The top Makefile's `ports` target runs every `ports/*/` after
+          `mlibc`; `grub` depends on it.
+        - `9d41076`: the `lua` test runs chunks with `lua -e` (math, float printing and
+          parsing, patterns, metatables, `pcall` and coroutines, the collector giving memory
+          back, time, a file on `/mnt`, an uncaught error's status, `luac -v`).
+        - Left out (see the debt list): `io.popen` and `os.execute` (our shell has no `-c`),
+          `os.rename` (no `rename` in the kernel).
+        - Gate: 47 of 47 on both boots, e2fsck clean. The first run's disk boot panicked once
+          in the block self-test (`-EIO`, see "Open bugs"); the rerun passed.
+      - **D10g:** busybox for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as
+        the roadmap says); its `sh` brings `-c`, which Lua's `io.popen` needs.
     - Threads (`clone`, pthreads) when a port needs them (Python, Node.js), with real locks
       for what one thread per process covers today (fd table, address space, regions,
       `brk`); SMP last.
@@ -3653,7 +3667,14 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 ## Known technical debt
 
-**Open bugs:** none known.
+**Open bugs:**
+
+- Once (2026-11-17, the first D10f gate, from-disk boot): the block self-test's
+  `block_cache_sync` returned `-EIO` and the kernel panicked before init; the rerun passed on
+  both boots, with nothing in the kernel changed. Every `-EIO` in `ata.c` is an error status
+  or the 5 s timeout (`ATA_TIMEOUT`), so a starved QEMU on the host is the likely cause, not
+  proven: the panic does not say which. Next time, log the ATA status and which of the two
+  it was before failing.
 
 **Debt:**
 
@@ -3675,6 +3696,12 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   toolchain gets a non-executable `.rodata`.
 - Stage 0's image (`randomdude/gcc-cross-x86_64-elf`) now needs meson 1.3 or newer for
   `make toolchain-headers`; not tried, its Debian may carry an older one.
+- Lua (D10f) without `io.popen` and `os.execute`: mlibc's `popen` and `system` run
+  `/bin/sh -c`, and our shell has no `-c` (busybox's `sh` would bring it, D10g). Without
+  `os.rename` too: no `rename` in the kernel or ext2 (mlibc has no `Rename` sysdep to call),
+  so it fails with `ENOSYS`; the `lua` test checks only that it fails cleanly.
+- `ports/` downloads at build time (`wget` in the build container): a build with no network
+  needs the tarball already in `build/downloads/`.
 
 - The monotonic clock counts timer ticks (100 Hz, `timer_nanoseconds` = ticks × 10 ms): it
   moves in 10 ms steps and falls behind whenever ticks are lost. A starved QEMU drops them
