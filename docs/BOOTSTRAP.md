@@ -70,9 +70,10 @@ with `-nostdlib` and explicit startup files. MiHOS's first kernels were built wi
 the `x86_64-mihos` target existed (2022).
 
 What it is for now: running the build far enough to install MiHOS's headers into a sysroot,
-the one input stage 1 needs. That step only copies files, so today any container with `make`
-would do; the generic compiler matters again whenever stage 1 needs something *compiled* for
-the target before the target's compiler exists.
+the one input stage 1 needs. That step compiles nothing (mlibc's headers install with
+`-Dheaders_only=true`, and meson then adds no compiler), so today any container with `make`,
+meson and ninja would do; the generic compiler matters again whenever stage 1 needs something
+*compiled* for the target before the target's compiler exists.
 
 `generic-cross-compiler/` holds the image: `randomdude/gcc-cross-x86_64-elf` (a prebuilt
 `x86_64-elf` GCC from Docker Hub) plus the tools the build uses (`xorriso` and GRUB for the
@@ -91,14 +92,12 @@ docker run --rm -it -v "%cd%/..:/root/env" elf-compiler
 `/root/env` (the repository):
 
 ```bash
-make headers
-```
-```bash
-make -C libc install-headers
+make toolchain-headers
 ```
 
-The first installs the kernel/user contract (`kernel/include/uapi`: `<mihos/syscall.h>`, …),
-the second our libc's headers. Both land in `build/x86_64-pc/sysroot/usr/include`.
+It installs the kernel/user contract (`kernel/include/uapi`: `<mihos/syscall.h>`, …), then
+mlibc's headers (a headers-only meson build in `objects/mlibc-headers`). Both land in
+`build/x86_64-pc/sysroot/usr/include`. mlibc needs meson 1.3 or newer.
 
 ## Stage 1: the MiHOS toolchain
 
@@ -174,9 +173,9 @@ Then, from the repository root on the host:
 ./run-tests.sh
 ```
 
-## What D10 changes
+## What D10 changed
 
-D10 moves user programs to mlibc, and mlibc changes how the loop closes. Its headers install
+D10 moved user programs to mlibc (the cut, D10d), and mlibc changes how the loop closes. Its headers install
 with no compiler at all (`-Dheaders_only=true`: meson only adds C and C++ when building the
 library), so the order becomes mlibc's own:
 
@@ -184,9 +183,10 @@ library), so the order becomes mlibc's own:
 mlibc headers ─▶ binutils + GCC + libgcc ─▶ mlibc libc.a ─▶ libstdc++ ─▶ MiHOS
 ```
 
-- Stage 1's input becomes mlibc's headers instead of our libc's.
-- GCC's startup files move from our `crt0.o` to mlibc's `crt1.o`.
-- libstdc++ is built after mlibc, against it.
+- Stage 1's input is mlibc's headers (`make toolchain-headers`), no longer our libc's.
+- GCC's startup files are mlibc's `crt1.o` (`STARTFILE_SPEC` in `gcc/config/mihos.h`), no
+  longer our `crt0.o`.
+- libstdc++ is built after mlibc, against it (D10e, not yet).
 - Stage 0 leaves MiHOS's critical path. It stays here: it is still how an OS starts before it
   has a libc that installs without a compiler.
 
@@ -200,7 +200,11 @@ what the cross compiler produced is the classic check that the loop is closed.
 
 ## Status
 
-- Stage 1: rebuilt 2026-11-15 (GCC 16.2.0, binutils 2.47, `_GNU_SOURCE` for C++).
+- Stage 1: rebuilt 2026-11-15 (GCC 16.2.0, binutils 2.47, `_GNU_SOURCE` for C++). The `crt1.o`
+  startfile and the mlibc headers (D10d, 2026-11-17) wait for the next rebuild; until then the
+  build passes the startup files itself (`user/Makefile`), so the old image still works.
 - Stage 2: every build.
 - Stage 0, and the whole chain from an empty Docker: not re-run since the toolchain moved to the
-  organization forks (2026-11-14). The steps above follow the current files.
+  organization forks (2026-11-14), nor since stage 0 gained meson for mlibc's headers (the
+  generic image's Debian may carry a meson older than 1.3). The steps above follow the current
+  files.

@@ -9,5 +9,8 @@ RUN apt-get install -y grub-pc-bin
 RUN apt-get install -y grub-common
 RUN apt-get install -y e2fsprogs
 
+# meson and ninja install mlibc's headers (make toolchain-headers): stage 1's input
+RUN apt-get install -y meson ninja-build
+
 VOLUME /root/env
 WORKDIR /root/env
