@@ -9,6 +9,8 @@
  * vsnprintf (shared with the kernel through libk.a): every conversion, flag
  * and length it supports, then the C99 contract: the output never overruns,
  * is terminated when size > 0, and the return value is the full length.
+ * Only what C defines: a conversion C does not know (%q) is undefined, and
+ * mlibc stops the program on one.
  */
 
 // Formats into a large buffer; the result and the returned length must match
@@ -123,21 +125,46 @@ static void test_strings(void)
     EXPECT("key=v, n=-3, ok", "%s=%c, n=%d, %s", "key", 'v', -3, "ok");
 }
 
-static void test_pointer(void)
+/*
+ * %p's form is the libc's (C: implementation-defined): ours prints 16 hex digits,
+ * glibc and mlibc 0x and the digits. What every one keeps: the value, in hex.
+ */
+// The hex number in text, with or without 0x; *ok cleared by anything else
+static uintptr_t parse_hex(const char *text, int *ok)
 {
-    EXPECT("0000000000001234", "%p", (void *)0x1234);
-    EXPECT("0000000000000000", "%p", NULL);
-    EXPECT("ffff800000000000", "%p", (void *)0xffff800000000000UL);
+    if (text[0] == '0' && text[1] == 'x')
+        text += 2;
+    uintptr_t value = 0;
+    *ok = *text != '\0';
+    for (; *text != '\0'; text++)
+    {
+        char c = *text;
+        int digit = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+        if (digit < 0)
+            *ok = 0;
+        value = value * 16 + (uintptr_t)digit;
+    }
+    return value;
 }
 
-static void test_unknown(void)
+static void expect_pointer(int line, void *pointer)
 {
-    // Printed as written, without taking an argument
-    EXPECT("%q", "%q");
-    EXPECT("%5q", "%5q");
-    EXPECT("%q 5", "%q %d", 5);
-    EXPECT("abc%", "abc%");
-    EXPECT("abc%-5", "abc%-5");
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%p", pointer);
+    int ok;
+    uintptr_t value = parse_hex(buffer, &ok);
+    if (!ok || value != (uintptr_t)pointer)
+    {
+        test_failures++;
+        printf("FAIL line %d: %%p gave \"%s\", not %#llx in hex\n", line, buffer,
+               (unsigned long long)(uintptr_t)pointer);
+    }
+}
+
+static void test_pointer(void)
+{
+    expect_pointer(__LINE__, (void *)0x1234);
+    expect_pointer(__LINE__, (void *)0xffff800000000000UL);
 }
 
 static void test_cut(void)
@@ -197,7 +224,6 @@ int main(void)
     test_star();
     test_strings();
     test_pointer();
-    test_unknown();
     test_cut();
     return test_status();
 }
