@@ -48,8 +48,8 @@ static int body(void)
     CHECK(fputc('x', stdout) == 'x');
     CHECK(fwrite("abcdabcdabcd", 4, 3, stdout) == 3);
     CHECK(printf("%d", 123) == 3);
-    CHECK(fputs("", stdout) == 0);
-    CHECK(fputs("\n", stdout) == 0);
+    CHECK(fputs("", stdout) >= 0); // C: nonnegative on success (ours 0, mlibc 1)
+    CHECK(fputs("\n", stdout) >= 0);
 
     // A write error sets the stream's error indicator and errno
     CHECK(!ferror(stderr));
