@@ -49,20 +49,18 @@ $(foreach library,$(libraries),$(eval $(call library_rule,$(library))))
 ###########################################
 # Linking against mlibc (roadmap D10d), installed in the sysroot by the top
 # Makefile's mlibc target, with the kernel's <mihos/...> headers beside its
-# own. mlibc's crt1.o holds _start. Linked with the toolchain's default
-# script: mlibc's static startup finds the program headers through
-# __ehdr_start, which needs the ELF header in a loaded segment.
+# own. GCC's specs bring the startup files (mlibc's crt1.o, which holds
+# _start, then crti.o crtbegin.o ... crtend.o crtn.o: crtbegin.o defines
+# __dso_handle, which mlibc's C++ code registers destructors with), -lc and
+# libgcc. Linked with the toolchain's default script: mlibc's static startup
+# finds the program headers through __ehdr_start, which needs the ELF header
+# in a loaded segment.
 # -z noexecstack: some of mlibc's objects lack the .note.GNU-stack section,
 # and without it the linker asks for an executable stack. -z separate-code:
 # the default script for x86_64-mihos otherwise puts .rodata in the code's
 # segment, which makes it executable (Linux targets turn it on by default).
 
 comma := ,
-# GCC's startup files around the program, in the usual order (crtbegin.o
-# defines __dso_handle, which mlibc's C++ code registers destructors with)
-start_files := $(LIB_DIR)/crt1.o $(shell $(CC) -print-file-name=crti.o) \
-               $(shell $(CC) -print-file-name=crtbegin.o)
-end_files := $(shell $(CC) -print-file-name=crtend.o) $(shell $(CC) -print-file-name=crtn.o)
 CPPFLAGS := -Iinclude -Ilib --sysroot=$(SYSROOT_DIR)
 CFLAGS := -std=gnu11 -O2 -g -Wall -Wextra -fno-pie -fno-stack-protector
 
@@ -70,11 +68,10 @@ CFLAGS := -std=gnu11 -O2 -g -Wall -Wextra -fno-pie -fno-stack-protector
 define program_rule
 $(call program_elf,$1): $(LIB_DIR)/crt1.o $(LIB_DIR)/libc.a $(call program_objects,$1) $(library_archives)
 	mkdir -p $$(@D)
-	$$(CC) -o $$@ --sysroot=$(SYSROOT_DIR) -L$(LIB_DIR) -nostdlib -static -no-pie \
+	$$(CC) -o $$@ --sysroot=$(SYSROOT_DIR) -static -no-pie \
 	    -Wl,-z,max-page-size=4096 -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,separate-code \
-	    $(start_files) $(call program_objects,$1) \
-	    $(if $(library_archives),-Wl$(comma)--start-group $(library_archives) -Wl$(comma)--end-group) \
-	    -lc -lgcc $(end_files)
+	    $(call program_objects,$1) \
+	    $(if $(library_archives),-Wl$(comma)--start-group $(library_archives) -Wl$(comma)--end-group)
 
 # Without the debug info (mlibc's is ~20 MB per program, too big for the disk
 # images); the .elf in the build tree keeps it
