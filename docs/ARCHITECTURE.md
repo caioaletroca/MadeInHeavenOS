@@ -5,7 +5,7 @@ one user-mode driver experiment) planned on top: see `ROADMAP.md`, "Kernel shape
 
 ```text
 Docker x86_64-mihos toolchain
-  -> libc/libk.a -> kernel ELF -> sysroot -> staging/iso -> images/mihos.iso
+  -> libk/libk.a -> kernel ELF -> sysroot -> staging/iso -> images/mihos.iso
      (all under build/<target>/: see BUILD_RUN.md)
   -> QEMU / Bochs -> GRUB Multiboot2 -> _start -> boot64 -> kmain
 ```
@@ -32,7 +32,7 @@ kmain(phys)
 | Drivers | `kernel/driver/` | screen backbuffer, TTY, PS/2 policy, keyboard IRQ33 |
 | MM | `kernel/mm/` + `kernel/include/mm/` | mmap -> zone -> buddy -> frame -> slab; paging scaffold |
 | Diagnostics | `kernel/kprintf.c`, `kernel/sys/panic.c` | `kprintf`, fatal `panic` |
-| Runtime | `libc/` | stdio/string/stdlib, `sys/list.h`, `sys/hashtable.h` |
+| Runtime | `libk/` (kernel), mlibc (user space) | stdio/string/stdlib, `sys/list.h`, `sys/hashtable.h` |
 | Packaging | `grub/` | `grub.cfg`, `grub-mkrescue` -> `mihos.iso` |
 | Toolchain | `cross-compiler/`, `generic-cross-compiler/` | Docker cross environments |
 

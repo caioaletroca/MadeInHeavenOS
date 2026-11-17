@@ -4,7 +4,7 @@ PLATFORM ?= pc
 HOST ?= x86_64-mihos
 
 # Per-arch toolchain flags. Resolved relative to this file, so it works
-# from every subproject (libc/, kernel/, grub/). Must stay before any include.
+# from every subproject (libk/, kernel/, grub/). Must stay before any include.
 ARCH_CONFIG := $(dir $(lastword $(MAKEFILE_LIST)))config/$(ARCH).mk
 ifeq ($(wildcard $(ARCH_CONFIG)),)
 $(error Unsupported ARCH '$(ARCH)': missing $(ARCH_CONFIG))
@@ -14,7 +14,7 @@ include $(ARCH_CONFIG)
 # Everything built goes under build/<target>/, one folder per target:
 #   images/   what runs: mihos.iso, disk.img, part.img
 #   sysroot/  headers, libraries and installed programs
-#   objects/  one folder per component: kernel/, libc/, user/, grub/
+#   objects/  one folder per component: kernel/, libk/, mlibc/, user/, grub/
 #   staging/  trees that become images: iso/, initrd/, disk/, root/
 #   test/     run-tests.sh's log and disk copies
 # The component is the directory this Makefile runs in (kernel, libc, ...),
@@ -27,7 +27,7 @@ BINARY_DIR := $(OUTPUT_DIR)/objects/$(COMPONENT)
 IMAGES_DIR := $(OUTPUT_DIR)/images
 STAGING_DIR := $(OUTPUT_DIR)/staging
 
-libk :=$(OUTPUT_DIR)/objects/libc/libk.a
+libk :=$(OUTPUT_DIR)/objects/libk/libk.a
 
 #####################################################################
 # Common Programs and Flags
@@ -51,7 +51,7 @@ LDFLAGS_EXTRA := -nostdlib -lgcc
 # contract (<mihos/...>) and GCC's freestanding ones (stddef.h, stdarg.h), as
 # Linux builds with -nostdinc. libk's come first: GCC has a stdint.h of its own.
 GCC_INCLUDE_DIR := $(shell $(CC) -print-file-name=include)
-LIBK_INCLUDE_DIR := $(PROJECT_ROOT)/libc/include
+LIBK_INCLUDE_DIR := $(PROJECT_ROOT)/libk/include
 UAPI_INCLUDE_DIR := $(PROJECT_ROOT)/kernel/include/uapi
 FREESTANDING_CPPFLAGS := -nostdinc -isystem $(LIBK_INCLUDE_DIR) -isystem $(UAPI_INCLUDE_DIR) \
                          -isystem $(GCC_INCLUDE_DIR)
@@ -74,8 +74,8 @@ LIB_DIR := $(USR_DIR)/lib
 # Common Macro Functions
 src_to_bin_dir = $(patsubst $(SOURCE_DIR)%,$(BINARY_DIR)%,$1)
 
-# subdir.mk lists `local_sources` and subdirectories in `dirs`. libc also uses
-# `hosted_local_sources`: built into libc.a only (needs syscalls or user flags).
+# subdir.mk lists `local_sources` and subdirectories in `dirs`. libk also has
+# `hosted_local_sources`: our old libc.a's user side, no longer built (roadmap D10d).
 define include_dir
 dirs :=
 local_sources :=

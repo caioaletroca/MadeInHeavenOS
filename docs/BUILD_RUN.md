@@ -5,7 +5,7 @@ Native Windows `make` fails (`cp --preserve`, `grub-mkrescue`, `mke2fs`). Starti
 fresh clone, with no toolchain image yet: `BOOTSTRAP.md`.
 
 User programs link against mlibc (`mlibc/`, a submodule) since roadmap D10d; the kernel
-links `libk.a` (`libc/`), which never sees the sysroot.
+links `libk.a` (`libk/`), which never sees the sysroot.
 
 ## Output layout
 
@@ -18,7 +18,7 @@ build/
 └── x86_64-pc/
     ├── images/      what runs: mihos.iso, disk.img (ext2 test disk), part.img (partitioned disk)
     ├── sysroot/     headers, libraries, installed programs (bin/, sbin/, usr/)
-    ├── objects/     one folder per component: kernel/, libc/ (libk.a), mlibc/, user/, grub/ (+ initrd.tar)
+    ├── objects/     one folder per component: kernel/, libk/, mlibc/, user/, grub/ (+ initrd.tar)
     ├── staging/     trees that become images: iso/, initrd/, disk/, root/
     ├── test/        run-tests.sh: run-tests-live.log, run-tests-disk.log, test-disk.img and test-part.img (the last run's disk copies)
     └── mihos.txt    make dump (kernel disassembly)
@@ -45,11 +45,11 @@ build/
 
 ## Source -> images
 
-`make all`: `headers -> libc -> kernel -> mlibc -> user -> grub`, then `disk.img` and `part.img`.
+`make all`: `headers -> libk -> kernel -> mlibc -> user -> grub`, then `disk.img` and `part.img`.
 
 1. headers: `kernel/include/uapi` → `sysroot/usr/include`.
-2. libc: `libk.a` (kernel flags) → `objects/libc/libk.a`, not installed. Its headers
-   (`libc/include`) are the kernel's, with `-nostdinc` (`FREESTANDING_CPPFLAGS` in
+2. libk: `libk.a` (kernel flags) → `objects/libk/libk.a`, not installed. Its headers
+   (`libk/include`) are the kernel's, with `-nostdinc` (`FREESTANDING_CPPFLAGS` in
    `common.mk`). Our libc's user side stays in the tree, unbuilt.
 3. kernel: `crtbegin + objects + libk + -lgcc + crtend`, `-T linker.lds.i` →
    `sysroot/usr/boot/kernel`.

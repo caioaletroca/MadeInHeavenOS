@@ -20,7 +20,7 @@ PART_IMAGE := $(IMAGES_DIR)/part.img
 PART_ROOT_STAGING := $(STAGING_DIR)/root
 INITRD := $(OUTPUT_DIR)/objects/grub/initrd.tar
 
-.PHONY: all headers libc kernel user grub install mlibc mlibc-clean toolchain-headers clean purge dump print-config
+.PHONY: all headers libk kernel user grub install mlibc mlibc-clean toolchain-headers clean purge dump print-config
 
 all: grub $(DISK_IMAGE) $(PART_IMAGE)
 
@@ -75,10 +75,10 @@ headers:
 	$(MAKE) -C kernel install-headers
 
 # libk.a, the kernel's own small C library; user space is on mlibc (roadmap D10d)
-libc:
-	$(MAKE) -C libc
+libk:
+	$(MAKE) -C libk
 
-kernel: libc
+kernel: libk
 	$(MAKE) -C kernel
 
 # Programs link against mlibc in the sysroot
@@ -88,7 +88,7 @@ user: kernel mlibc
 grub: kernel user
 	$(MAKE) -C grub
 
-install: libc
+install: libk
 	$(MAKE) -C kernel install
 
 # mlibc (mlibc/, a submodule), user space's libc since roadmap D10d, built with
