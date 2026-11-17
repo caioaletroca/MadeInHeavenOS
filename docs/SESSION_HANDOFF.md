@@ -56,7 +56,7 @@ Working x86-64 PC kernel with:
 - **`/sbin/init` as pid 1**: the only program the kernel starts (the kernel command line, after
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
   `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
-- **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `malloc_abort`,
+- **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `abort`,
   `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`, `streams`, `memory`, `interrupts`, `concurrent`, `tls`, `futex`; `mlibc_hello` from `user/mlibc/`, on mlibc; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
   directory in the prompt (`mihos:/mnt>`), a ring-buffer
@@ -106,6 +106,14 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+757a721 test: replace malloc_abort with abort and take strerror's words from libc
+0db2969 test(malloc): check what C and POSIX promise, not our heap layout
+5551ad0 test(spawn): drop the check that file actions are ENOSYS
+dff09fa test(stdio): accept any nonnegative fputs result
+305a9aa test(printf): check %p by its value and drop unknown conversions
+685b5a5 test(args): check that the strings are on the stack, not the vectors
+91f24f3 test(brk): measure the initial break from the program's end
+24fa213 docs(architecture): record D10c's first rewrites and what is left in handoff
 45a7580 test(tls): change the thread pointer only in raw-call children
 0dc6bf4 test(time): check EFAULT with raw calls and accept sleep's rounding
 630bb4e test(stdin): read a write-only file stream, not stdout
@@ -1652,7 +1660,7 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
 - **`/usr/tests/run`** (`user/tests/run`): the automatic set is every regular file in
   `/usr/tests` (found with `readdir`, sorted by name with an insertion sort) except `.`-names,
   `run` and the `interactive[]` names, which run only with the `interactive` argument. Expected
-  status 0 unless listed in `special[]` (`hello` 42, `malloc_abort` 134, `cxx` 42); a new test
+  status 0 unless listed in `special[]` (`hello` 42, `abort` 134, `cxx` 42); a new test
   needs no line. Names are `strdup`'d and the directory closed **before** the first spawn (tests
   inherit fds; `files`/`dirs` expect fd 3 free). An unopenable or empty directory, more than
   `TESTS_MAX` (64) tests, or a `special[]` name not found is a `FAIL` (so `0 passed, 0 failed`
@@ -1673,8 +1681,8 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     EOF), stdout and stderr in a pipe each, `PATH=/bin` and `GREETING` in its environment; both
     outputs and the status compared exactly. No banner or prompt; quotes and escapes; `$NAME`,
     `"$NAME"`, unset, a lone `$`, `$$` (the spawned pid); `$?` after `hello` (42), not found
-    (127, the message on stderr) and `malloc_abort` (134, with its "killed by signal 6"
-    line); `pwd`/`cd`/`echo` interleaved in order (the shell's flush); failing builtins and
+    (127, the message on stderr) and `abort` (134, with its "killed by signal 6"
+    line); errors that carry `strerror(ENOENT)` expect the libc's own words; `pwd`/`cd`/`echo` interleaved in order (the shell's flush); failing builtins and
     the last status at EOF; `exit 7` stopping the script, `exit` keeping 127; blank lines and
     a last line without `'\n'`; `!!` left alone; an unmatched quote skipping one line; an
     empty script. Pipelines: into `cat`, with and without spaces, chains up to the longest (8),
@@ -1686,13 +1694,14 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
     their copy of the shell, `cd`'s failure through `wait`. `cat hello | nope` ends, `SIGPIPE`
     killing `cat` silently (a regression hangs the suite here). `/usr/tests/hello` (28 KB, over a pipe's buffer, full
     of `'\0'`) through three `cat`s, byte for byte. fd 3 free at the end.
-  - `brk`: heap on the page after `.bss`, exact unaligned break, zeroed pages after shrink and regrow,
+  - `brk`: heap on the page after the program's end (`_end`, which `user.ld` provides), exact unaligned break, zeroed pages after shrink and regrow,
     `ENOMEM` past the limit / on wrap / below `heap_start`, a 32 KiB stack array.
-  - `malloc`: 16-alignment and no overlap over 15 sizes, one free block after freeing everything
-    (`malloc(heap - header)` fits at the bottom without moving the break), 1000 rounds without heap
-    growth, a 100 KiB block, `calloc` zeroing reused dirty memory, `realloc` semantics, `ENOMEM`
-    cases.
-  - `malloc_abort`: double free (killed by `SIGABRT`, which the runner counts as 134).
+  - `malloc`: what C and POSIX promise on any allocator (D10c): the alignment promised for the
+    size and no overlap over 15 sizes, 1000 rounds of malloc/free, a 100 KiB block, `calloc`
+    zeroing recycled dirty memory, `realloc` keeping the contents, NULL with `ENOMEM` for
+    `SIZE_MAX`, 2^47 and a wrapping `calloc`. Not the heap's layout, `malloc(0)`, `realloc(p, 0)`.
+  - `abort`: `abort()` kills with `SIGABRT`, which the runner counts as 134 (until D10c it was
+    `malloc_abort`, a double free our allocator catches; undefined in C, and mlibc does not).
   - `sigaction`: handlers, `sa_mask`, nesting, stack alignment, the mask, errors, registers and
     the red zone surviving a signal at any instruction (a helper process, the poker, sends
     `SIGUSR1` until stopped), a handler needing stack growth, `EINTR` in `read`, `write` and
@@ -3032,7 +3041,7 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
   - (d, done) stdio output over fds (`hello` prints with `printf`), `ferror` (test: `tests/stdio`).
   - (e, done) `address_space_unmap` + rollback in `address_space_map`, 64 KiB user stack, `SYS_BRK`
     with the heap after the ELF image, libc `brk`/`sbrk`, `malloc`/`free`/`calloc`/`realloc`
-    (tests: `tests/brk`, `tests/malloc`, `tests/malloc_abort`).
+    (tests: `tests/brk`, `tests/malloc`; `malloc_abort` until D10c).
 - **Phase A restructure (done):** `user/` by category (`bin/`, `sbin/`, `tests/`) with discovery and
   install paths, the ISO mirroring the sysroot, `grub.cfg` modules named by install path with an
   expected status, `init_start` as a temporary test runner, the temporary `hello` tests as programs
@@ -3379,22 +3388,29 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           from a program, its libc sets its own before `main`). The mlibc run now goes to the
           end: 31 passed, 15 failed (with `cxx`, excluded until libstdc++), so the disk run
           is still never reached.
-        - Rewrites (our libc's choices): `args` (mlibc hands `main` its own copies of the
-          argv/envp vectors; the strings stay on the stack), `brk` (mlibc's `.bss` follows the
-          program's), `malloc` (our allocator's layout, `malloc(0) == NULL`), `malloc_abort`
-          (double free detection is not required), `printf` (`%p` prints `0x` as glibc does;
-          `%q` is no conversion, mlibc panics on it), `spawn` (file actions are `ENOSYS` only
-          on ours), `stdio` (`fputs` returns a nonnegative value, not 0), the `strerror`
-          wording in `ext2` and `shell` (mlibc adds the name: `No such file or directory
-          (ENOENT)`).
-        - mlibc's side, to look at before deciding: `ungetc` returns a negative `char` as
-          negative (C says the `unsigned char`); `getchar` after `close(0)` does not set the
-          error indicator (`stdin`); `streams` (bad `fopen` modes, `fdopen` of a closed fd,
-          `fputc` on a read-only stream, and `fseek(SEEK_CUR)` fails an `__ensure` and
-          panics); `calendar` (`gmtime` of a huge time without `EOVERFLOW`, `timegm`'s
-          normalizing, `mktime`, `strftime("%s")` unknown and panicking); `sigaction`
-          (`signal()` installs without `SA_RESTART`, glibc/BSD with it; `fwrite` under
-          signals).
+        - Rewritten (they checked our libc's choices): `args` (the strings on the stack, not
+          the vectors: mlibc hands `main` copies), `brk` (the break after `_end`, which
+          `user.ld` now provides: mlibc's `.bss` follows the program's), `printf` (`%p` checked
+          by its value, ours prints 16 digits, glibc and mlibc `0x`; the unknown conversion
+          `%q` is undefined, mlibc panics on it), `stdio` (`fputs` returns any nonnegative
+          value), `spawn` (the file-actions `ENOSYS` check: mlibc implements them), `malloc`
+          (only what C and POSIX promise), `malloc_abort` → `abort` (a double free is
+          undefined; `abort()` is what the runner and the shell expect to die of `SIGABRT`),
+          `ext2` and `shell` (`strerror`'s words are the libc's: mlibc adds "(ENOENT)").
+          On mlibc: 40 passed, 6 failed (`cxx`, excluded, and the five below); on ours 46/46.
+        - **next, mlibc's side** (each a bug to fix in the fork and send upstream, or a
+          choice of ours to drop from the test):
+          - `malloc`: `malloc(SIZE_MAX)` and `malloc(1 << 47)` return a block, not NULL with
+            `ENOMEM` (C and POSIX: a size that cannot be given fails).
+          - `stdin`: `ungetc` returns a negative `char` as negative (C: the `unsigned char`);
+            `getchar` after `close(0)` does not set the error indicator.
+          - `streams`: bad `fopen` modes and `fdopen` of a closed fd are not refused, `fputc`
+            on a read-only stream succeeds, and `fseek(SEEK_CUR)` fails an `__ensure` and
+            panics.
+          - `calendar`: `gmtime` of a huge time without `EOVERFLOW`, `timegm`'s normalizing,
+            `mktime`, `strftime("%s")` unknown and panicking.
+          - `sigaction`: `signal()` installs without `SA_RESTART` (glibc/BSD with it); `fwrite`
+            under signals.
       - **D10d, the cut:** GCC's `STARTFILE_SPEC` moves from our `crt0.o` to mlibc's
         `crt1.o`, mlibc's headers take `sysroot/usr/include` (the kernel then needs its
         own include folder for `libk`), the stage 1 image is built from mlibc's headers
@@ -3562,6 +3578,12 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   `libc.so` and mlibc's `ld.so`); until then each new program costs ~1.4 MB. Loading
   them also makes the mlibc test run slower than `run-tests.sh`'s default 120 s per run:
   use `TIMEOUT=600` until the switch (or until dynamic linking).
+- The kernel's `vsnprintf` (libk) after the cut (D10c/D10d): `tests/printf` checks it today
+  because our libc shares it; on mlibc it checks mlibc's printf, and libk's has no test. A
+  kernel self-test should take the conversions, flags, lengths and the cut, plus what libk does
+  with an unknown conversion (prints it as written), which the user test no longer checks.
+- `exec` clearing the thread pointer is no longer tested (D10c: a program's libc sets its own
+  before `main`, so `tests/tls` cannot see it); a kernel self-test could.
 - Toolchain (D8): libgcc is built once with `-mcmodel=kernel -mno-red-zone` for every
   multilib, so user programs link a kernel-model libgcc (works while they sit below 2 GiB;
   split the flags per multilib before PIE or high load addresses); libstdc++'s `configure`
