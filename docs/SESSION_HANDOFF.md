@@ -13,8 +13,9 @@ Working x86-64 PC kernel with:
   `mihos-2.47`, binutils 2.47: each a release tarball import plus the target patch;
   `cross-compiler/Dockerfile` clones them as `mihos-gcc`/`mihos-binutils`) and `mlibc` (a fork of managarm/mlibc for phase D's sysdeps).
   This repository stays under `caioaletroca`.
-- mlibc is a git submodule at `mlibc/` (2026-11-15), a component next to `kernel/`, `libc/`
-  and `user/` (after the switch `libc/` builds only the kernel's `libk.a`), inside the
+- mlibc is a git submodule at `mlibc/` (2026-11-15), user space's only libc since the cut
+  (D10d, 2026-11-17), a component next to `kernel/`, `libk/` (was `libc/`; builds only the
+  kernel's `libk.a`, the old libc's user side kept there unbuilt) and `user/`, inside the
   repository because the build container mounts only this repository. The fork's `master`
   follows managarm (`upstream` remote); our sysdeps go on `mihos` (`branch = mihos` in
   `.gitmodules`). A fresh clone needs `--recursive` (or `git submodule update --init`), and the
@@ -3462,10 +3463,27 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           `SA_RESTART` (stdio retrying an interrupted write was our libc's choice), and a
           failing isolated test prints its name. **On mlibc every test passes but `cxx`
           (excluded until libstdc++): 45 of 46.** D10c is done; next is D10d.
-      - **D10d, the cut:** GCC's `STARTFILE_SPEC` moves from our `crt0.o` to mlibc's
-        `crt1.o`, mlibc's headers take `sysroot/usr/include` (the kernel then needs its
-        own include folder for `libk`), the stage 1 image is built from mlibc's headers
-        (`BOOTSTRAP.md`), mlibc becomes the default and our libc's user side goes.
+      - **D10d, the cut (2026-11-17), done but the toolchain image rebuild:**
+        - `23d4cf9`: the kernel and `libk.a` build with `-nostdinc` and see only libk's
+          headers, the uapi and GCC's freestanding ones (`FREESTANDING_CPPFLAGS` in
+          `common.mk`, as Linux); the kernel links `libk.a` from its build folder.
+        - `bdbe484`: mlibc installs into the sysroot itself (headers, `libc.a`, `crt1.o`)
+          beside the uapi; every program links against it. The `LIBC` switch, the separate
+          `mlibc-sysroot` and `user.ld` are gone; our `libc.a`, `crt0.o` and `cxx/` are no
+          longer built. `tests/cxx` waits for libstdc++ (D10e) and the runner no longer
+          expects it. The gate's default `TIMEOUT` is 600 s: the boot from disk takes about
+          two and a half minutes. `make toolchain-headers` makes stage 1's input with no
+          target compiler (uapi + mlibc's `headers_only` build).
+        - `baa6a18`: `libc/` renamed `libk/` (the user's choice: the least change; its unused
+          user-side sources stay).
+        - GCC fork `8fd45c40b` (`mihos-16`): `STARTFILE_SPEC` is `crt1.o crti.o crtbegin.o`.
+          `a90b4bf`: `BOOTSTRAP.md` builds stage 1 from `make toolchain-headers`; stage 0's
+          image gains meson and ninja.
+        - Gate: 45 of 45 on both boots (`cxx` parked).
+        - **Left:** rebuild the toolchain image (`make toolchain-headers` on a clean sysroot,
+          then `cross-compiler/docker-build.bat`, `--no-cache` for the fork's new commit),
+          then `user/Makefile` can drop `-nostdlib` and its explicit start files and let
+          GCC's specs link (`-static`), checked by the gate.
       - **D10e–g:** libstdc++ (then `cxx` moves over), Lua through `ports/lua/`, busybox
         for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as the roadmap
         says).
@@ -3609,6 +3627,18 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 **Open bugs:** none known.
 
 **Debt:**
+
+- `libk/` still holds the old libc's user side (`hosted_local_sources`, `crt0.S`, `cxx/`,
+  `internal/`, the hosted headers), unbuilt since D10d: kept by choice for the least change.
+  Deleting it leaves libk with what the kernel uses (`string`, `vsnprintf`, `stdint.h`,
+  `stdbool.h`, `sys/list.h`, `sys/hashtable.h`).
+- `tests/cxx` is not built until libstdc++ (D10e); its runner line (`{"cxx", 42}`) comes
+  back with it, and C++ programs then need hosted C++ flags in `user/Makefile`.
+- `-z separate-code` is passed by `user/Makefile`; binutils' `elf_x86_64_mihos` emulation
+  could turn it on by default, as Linux targets do, so any program linked with the
+  toolchain gets a non-executable `.rodata`.
+- Stage 0's image (`randomdude/gcc-cross-x86_64-elf`) now needs meson 1.3 or newer for
+  `make toolchain-headers`; not tried, its Debian may carry an older one.
 
 - The monotonic clock counts timer ticks (100 Hz, `timer_nanoseconds` = ticks × 10 ms): it
   moves in 10 ms steps and falls behind whenever ticks are lost. A starved QEMU drops them

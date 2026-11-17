@@ -186,9 +186,9 @@ architecture). That target relies on the arch contract staying narrow.
 
 ```text
 kernel/                   # the kernel (uapi headers in kernel/include/uapi/mihos/)
-libc/                     # libk.a (kernel) + libc.a + crt0.o; replaced by mlibc in user space at D
+libk/                     # libk.a, the kernel's C library (user space is on mlibc since D10d)
+mlibc/                    # the mlibc fork (submodule): user space's libc, our sysdeps in sysdeps/mihos
 user/
-├── user.ld
 ├── lib/                  # own user-space libraries (C++ later): libcore, libipc, libgui
 ├── sbin/init/            # PID 1
 ├── bin/                  # own utilities: sh, echo, cat, ls …
