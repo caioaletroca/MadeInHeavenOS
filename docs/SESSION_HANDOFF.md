@@ -106,6 +106,8 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+d5f477f test(interrupts): calibrate on tick edges and let the slack grow with the call
+52dd16b docs(architecture): record the sigaction fixes and D10c's end in handoff
 bb6439e fix(mlibc): take the fork's signal() and signal set fixes
 7864ca9 test(sigaction): ask the kernel for EFAULT and restart the stdio writes
 3aac3d9 fix(exec): mark the process exec'd before closing its close-on-exec fds
@@ -3604,15 +3606,16 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 ## Known technical debt
 
-**Open bugs:**
-
-- `interrupts` fails now and then under load: its 8 MiB write measured 5758 ms by the
-  cycle counter against 5699 ms monotonic, past the check's slack (lines 92-93). Seen twice
-  on mlibc and probably once on our libc (one failed run of six, whose log the next run
-  overwrote). Either the slack is too tight for a loaded host or the clocks drift apart;
-  not looked into yet.
+**Open bugs:** none known.
 
 **Debt:**
+
+- The monotonic clock counts timer ticks (100 Hz, `timer_nanoseconds` = ticks × 10 ms): it
+  moves in 10 ms steps and falls behind whenever ticks are lost. A starved QEMU drops them
+  (one 40 ms write took 5.7 s and its clock fell 59 ms behind the cycle counter), and so would
+  long IRQs-off stretches on hardware. Linux keeps time from a free-running counter (the TSC
+  clocksource), ticks only driving the scheduler: reading the TSC, calibrated at boot, would
+  give nanosecond resolution and no lost time. `interrupts` allows 5% for this.
 
 - `frame_free` costs ~18 µs per frame under QEMU: it checks every zone (9) instead of
   stopping at the one that holds the frame, and saves and restores IRQs once per frame.
