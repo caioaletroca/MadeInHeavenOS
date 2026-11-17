@@ -465,11 +465,13 @@ static void test_setvbuf(void)
     CHECK(fflush(f) == 0 && size_of(FILE_A) == 3);
     CHECK(fclose(f) == 0);
 
-    // The caller's 8 bytes: 7 wait; 2 more do not fit, so the 7 go out and the 2 straight after
+    // An 8-byte buffer: 7 wait; 2 more fill it, so a full buffer goes out (C: as a block
+    // when filled). Whether the 9th follows at once is the libc's choice: ours sends it
+    // straight after, mlibc keeps it
     f = fopen(FILE_A, "w");
     CHECK(f != NULL && setvbuf(f, eight, _IOFBF, sizeof(eight)) == 0);
     CHECK(fputs("1234567", f) >= 0 && size_of(FILE_A) == 0);
-    CHECK(fputs("89", f) >= 0 && size_of(FILE_A) == 9);
+    CHECK(fputs("89", f) >= 0 && size_of(FILE_A) >= 8);
 
     // NULL: back to the stream's own BUFSIZ bytes, which hold 100 easily
     CHECK(setvbuf(f, NULL, _IOFBF, 0) == 0);
