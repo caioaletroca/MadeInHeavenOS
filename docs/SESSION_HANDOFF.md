@@ -106,6 +106,9 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+5fabcee fix(mlibc): take the fork's allocator fix for sizes that cannot be given
+cf35b6b test(malloc): keep the huge-size blocks in a volatile
+7e73d09 docs(architecture): record the D10c test rewrites and mlibc's side in handoff
 757a721 test: replace malloc_abort with abort and take strerror's words from libc
 0db2969 test(malloc): check what C and POSIX promise, not our heap layout
 5551ad0 test(spawn): drop the check that file actions are ENOSYS
@@ -3398,10 +3401,15 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           undefined; `abort()` is what the runner and the shell expect to die of `SIGABRT`),
           `ext2` and `shell` (`strerror`'s words are the libc's: mlibc adds "(ENOENT)").
           On mlibc: 40 passed, 6 failed (`cxx`, excluded, and the five below); on ours 46/46.
+        - Fixed on mlibc's side (fork `91a5107f`): `malloc(SIZE_MAX)` returned a small
+          block (frigg's `large_allocate` adds its header to the size, which wrapped) and a
+          refused `mmap` panicked in `ShardedSlabBasePolicy::map`. Sizes above
+          `PTRDIFF_MAX` are now refused in `MemoryAllocator` (as glibc), `map` returns
+          nullptr, and `malloc`/`realloc` set `ENOMEM`. The test's `malloc(1 << 47)` had
+          never run: a hosted GCC knows `malloc` and dropped the call whose block was only
+          compared with NULL; the blocks now go through a volatile. On mlibc: 41 passed.
         - **next, mlibc's side** (each a bug to fix in the fork and send upstream, or a
           choice of ours to drop from the test):
-          - `malloc`: `malloc(SIZE_MAX)` and `malloc(1 << 47)` return a block, not NULL with
-            `ENOMEM` (C and POSIX: a size that cannot be given fails).
           - `stdin`: `ungetc` returns a negative `char` as negative (C: the `unsigned char`);
             `getchar` after `close(0)` does not set the error indicator.
           - `streams`: bad `fopen` modes and `fdopen` of a closed fd are not refused, `fputc`
@@ -3578,6 +3586,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   `libc.so` and mlibc's `ld.so`); until then each new program costs ~1.4 MB. Loading
   them also makes the mlibc test run slower than `run-tests.sh`'s default 120 s per run:
   use `TIMEOUT=600` until the switch (or until dynamic linking).
+- frigg's size overflow (D10c): `sharded_slab::large_allocate` (`first_offset + size`) and
+  `map_aligned` (`size + alignment - 1 + page_size - 1`) can wrap. The fork only keeps
+  sizes above `PTRDIFF_MAX` away from them (`MemoryAllocator`); frigg itself comes from a
+  pinned wrap, so the real checks belong upstream in managarm/frigg (and mlibc's
+  `PTRDIFF_MAX` guard, the `map` nullptr and the `ENOMEM` upstream in mlibc).
 - The kernel's `vsnprintf` (libk) after the cut (D10c/D10d): `tests/printf` checks it today
   because our libc shares it; on mlibc it checks mlibc's printf, and libk's has no test. A
   kernel self-test should take the conversions, flags, lengths and the cut, plus what libk does
