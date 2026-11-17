@@ -72,7 +72,10 @@ static void test_gmtime(void)
     struct tm local, utc;
     t = 1000000000;
     CHECK(localtime_r(&t, &local) == &local && gmtime_r(&t, &utc) == &utc);
-    CHECK(memcmp(&local, &utc, sizeof(local)) == 0);
+    // C's fields (not memcmp: padding, and a libc's zone name pointer, may differ)
+    CHECK(local.tm_year == utc.tm_year && local.tm_mon == utc.tm_mon && local.tm_mday == utc.tm_mday &&
+          local.tm_hour == utc.tm_hour && local.tm_min == utc.tm_min && local.tm_sec == utc.tm_sec &&
+          local.tm_wday == utc.tm_wday && local.tm_yday == utc.tm_yday && local.tm_isdst == utc.tm_isdst);
     CHECK(localtime(&t) != NULL && localtime(&t)->tm_hour == 1);
 }
 
@@ -180,7 +183,7 @@ static void test_strftime(void)
     memset(text, '#', sizeof(text));
     CHECK(strftime(text, 11, "%F", &tm) == 10 && strcmp(text, "2026-11-10") == 0);
     memset(text, '#', sizeof(text));
-    CHECK(strftime(text, 10, "%F", &tm) == 0 && text[9] == '#' && text[10] == '#');
+    CHECK(strftime(text, 10, "%F", &tm) == 0 && text[10] == '#'); // the 10 bytes are indeterminate (C)
     memset(text, '#', sizeof(text));
     CHECK(strftime(text, 0, "%F", &tm) == 0 && text[0] == '#');
     CHECK(strftime(text, sizeof(text), "", &tm) == 0 && text[0] == '\0'); // empty, not too long
