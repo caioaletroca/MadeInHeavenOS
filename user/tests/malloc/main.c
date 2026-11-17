@@ -152,20 +152,32 @@ static void test_realloc(void)
     free(r);
 }
 
+/*
+ * Sizes no allocator can give: NULL and ENOMEM (POSIX), never a small block.
+ * The result goes through a volatile: a hosted compiler knows malloc, and may
+ * drop a call whose block is only compared with NULL, taking it as non-NULL.
+ */
 static void test_failures_enomem(void)
 {
-    // Sizes no allocator can give: NULL and ENOMEM (POSIX), never a small block
-    errno = 0;
-    CHECK(malloc(SIZE_MAX) == NULL);
-    CHECK(errno == ENOMEM);
+    void *volatile block;
 
     errno = 0;
-    CHECK(malloc((size_t)1 << 47) == NULL); // the whole user half
+    block = malloc(SIZE_MAX);
+    CHECK(block == NULL);
     CHECK(errno == ENOMEM);
+    free(block);
 
     errno = 0;
-    CHECK(calloc(SIZE_MAX / 16 + 2, 16) == NULL); // the product would wrap to 16
+    block = malloc((size_t)1 << 47); // the whole user half
+    CHECK(block == NULL);
     CHECK(errno == ENOMEM);
+    free(block);
+
+    errno = 0;
+    block = calloc(SIZE_MAX / 16 + 2, 16); // the product would wrap to 16
+    CHECK(block == NULL);
+    CHECK(errno == ENOMEM);
+    free(block);
 }
 
 int main(void)
