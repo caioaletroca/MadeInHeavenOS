@@ -407,8 +407,8 @@ void process_exec(address_space_t *space, uintptr_t entry, uintptr_t user_stack)
     address_space_activate(space);
     address_space_destroy(old);
 
-    process_files_close_on_exec(p);
     p->tree.exec_done = true;
+    process_files_close_on_exec(p);
     signal_exec_reset(p);
 
     // A trap from ring 3 starts at the top of the kernel stack, so this
