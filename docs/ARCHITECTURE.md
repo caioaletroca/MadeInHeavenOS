@@ -34,7 +34,7 @@ kmain(phys)
 | Diagnostics | `kernel/kprintf.c`, `kernel/sys/panic.c` | `kprintf`, fatal `panic` |
 | Runtime | `libk/` (kernel), mlibc (user space) | stdio/string/stdlib, `sys/list.h`, `sys/hashtable.h` |
 | Packaging | `grub/` | `grub.cfg`, `grub-mkrescue` -> `mihos.iso` |
-| Toolchain | `cross-compiler/`, `generic-cross-compiler/` | Docker cross environments |
+| Toolchain | `compilers/cross/`, `compilers/elf/` | Docker cross environments |
 
 Build units: `Makefile:1-4`, `common.mk:1-36`, `libc/Makefile:1-24`, `kernel/Makefile:1-50`, `grub/Makefile:1-18`.
 

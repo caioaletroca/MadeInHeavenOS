@@ -1,6 +1,6 @@
 # Build & Run
 
-All build paths assume the Docker mount `repo -> /root/env` (`cross-compiler/docker-run.bat`).
+All build paths assume the Docker mount `repo -> /root/env` (`compilers/cross/docker-run.bat`).
 Native Windows `make` fails (`cp --preserve`, `grub-mkrescue`, `mke2fs`). Starting from a
 fresh clone, with no toolchain image yet: `BOOTSTRAP.md`.
 
@@ -34,10 +34,10 @@ build/
 ## Toolchain
 
 - `HOST=x86_64-mihos`, `CC=x86_64-mihos-gcc` (`common.mk`); arch flags from `config/<arch>.mk`.
-- Custom GCC/binutils: `cross-compiler/Dockerfile`, `build-binutils.sh`, `build-gcc.sh`,
+- Custom GCC/binutils: `compilers/cross/Dockerfile`, `build-binutils.sh`, `build-gcc.sh`,
   configured `--with-sysroot=/root/env/sysroot`. That path is only the compiler's default:
   every compile and link passes `--sysroot=$(SYSROOT_DIR)`.
-- `cross-compiler/docker-build.bat` copies `build/x86_64-pc/sysroot` into the image before
+- `compilers/cross/docker-build.bat` copies `build/x86_64-pc/sysroot` into the image before
   `docker build` (the GCC build needs the headers: `make toolchain-headers` makes them, the
   uapi and mlibc's, with no target compiler). GCC's startup files are mlibc's `crt1.o`, then
   `crti.o crtbegin.o` (`gcc/config/mihos.h` in the GCC fork). After a Dockerfile change, run

@@ -11,7 +11,7 @@ Working x86-64 PC kernel with:
 - Companion repositories in the GitHub organization `MiH-Operating-System` (2026-11-14):
   `gcc` and `binutils` (the `x86_64-mihos` target on branches `mihos-16`, GCC 16.2.0, and
   `mihos-2.47`, binutils 2.47: each a release tarball import plus the target patch;
-  `cross-compiler/Dockerfile` clones them as `mihos-gcc`/`mihos-binutils`) and `mlibc` (a fork of managarm/mlibc for phase D's sysdeps).
+  `compilers/cross/Dockerfile` clones them as `mihos-gcc`/`mihos-binutils`) and `mlibc` (a fork of managarm/mlibc for phase D's sysdeps).
   This repository stays under `caioaletroca`.
 - mlibc is a git submodule at `mlibc/` (2026-11-15), user space's only libc since the cut
   (D10d, 2026-11-17), a component next to `kernel/`, `libk/` (was `libc/`; builds only the
@@ -3481,8 +3481,9 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           image gains meson and ninja.
         - Gate: 45 of 45 on both boots (`cxx` parked).
         - **Left:** rebuild the toolchain image (`make toolchain-headers` on a clean sysroot,
-          then `cross-compiler/docker-build.bat`, `--no-cache` for the fork's new commit),
-          then `user/Makefile` can drop `-nostdlib` and its explicit start files and let
+          then `compilers/cross/docker-build.bat` with `--no-cache`, after pushing the fork:
+          the image clones it from GitHub; a first rebuild on 2026-11-17 still had `crt0.o`
+          because the commit was only local), then `user/Makefile` can drop `-nostdlib` and its explicit start files and let
           GCC's specs link (`-static`), checked by the gate.
       - **D10e–g:** libstdc++ (then `cxx` moves over), Lua through `ports/lua/`, busybox
         for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as the roadmap
@@ -4073,7 +4074,7 @@ The commands below run from the repository root; the images are in
 `build/x86_64-pc/images/` (written `images/` here).
 
 `make all` also builds `disk.img` and `part.img` (needs `mke2fs`: rebuild the Docker image once after a
-Dockerfile change with `docker build . -t mihos-compiler` from `cross-compiler/`, **not**
+Dockerfile change with `docker build . -t mihos-compiler` from `compilers/cross/`, **not**
 `docker-build.bat`: its `robocopy` refreshes the image's sysroot copy, which invalidates the
 cache before the GCC build and rebuilds the whole cross-compiler).
 

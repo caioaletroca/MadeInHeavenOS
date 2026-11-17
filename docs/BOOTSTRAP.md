@@ -30,8 +30,8 @@ MiHOS has three stages today and one planned:
 
 | Stage | What | Needs | Produces | Where |
 |---|---|---|---|---|
-| 0 | A generic cross-compiler (`x86_64-elf`) | Docker | a container that can run the build, and compile freestanding code | `generic-cross-compiler/` |
-| 1 | The MiHOS toolchain (`x86_64-mihos`) | the target's headers (from stage 0) | binutils, GCC, libgcc for MiHOS | `cross-compiler/` |
+| 0 | A generic cross-compiler (`x86_64-elf`) | Docker | a container that can run the build, and compile freestanding code | `compilers/elf/` |
+| 1 | The MiHOS toolchain (`x86_64-mihos`) | the target's headers (from stage 0) | binutils, GCC, libgcc for MiHOS | `compilers/cross/` |
 | 2 | MiHOS itself | the stage 1 image | `mihos.iso`, the disk images | the repository root |
 | 3 | Self-hosting (planned) | the stage 1 toolchain | a GCC that runs *on* MiHOS | not yet |
 
@@ -75,17 +75,17 @@ the one input stage 1 needs. That step compiles nothing (mlibc's headers install
 meson and ninja would do; the generic compiler matters again whenever stage 1 needs something
 *compiled* for the target before the target's compiler exists.
 
-`generic-cross-compiler/` holds the image: `randomdude/gcc-cross-x86_64-elf` (a prebuilt
+`compilers/elf/` holds the image: `randomdude/gcc-cross-x86_64-elf` (a prebuilt
 `x86_64-elf` GCC from Docker Hub) plus the tools the build uses (`xorriso` and GRUB for the
 ISO, `e2fsprogs` for the disk images).
 
-From `generic-cross-compiler/`, Windows:
+From `compilers/elf/`, Windows:
 
 ```bash
 docker build . -t elf-compiler
 ```
 ```bash
-docker run --rm -it -v "%cd%/..:/root/env" elf-compiler
+docker run --rm -it -v "%cd%/../..:/root/env" elf-compiler
 ```
 
 (`docker-build.bat` and `docker-run.bat` hold the same two commands.) Inside the container, at
@@ -113,11 +113,12 @@ Each branch is the release tarball imported as one commit, then the target patch
 `git log` shows exactly what MiHOS changes. To move to a newer release: import the new tarball
 on a new branch and cherry-pick the patch.
 
-`cross-compiler/Dockerfile` builds on Debian:
+`compilers/cross/Dockerfile` builds on Debian:
 
 1. installs the build tools (GMP, MPFR, MPC, ISL, bison, flex, texinfo, …);
 2. clones both forks at their branches (`--depth 1`);
-3. copies `cross-compiler/sysroot/` (the headers from stage 0) to `/root/env/sysroot`, the
+3. copies `compilers/cross/sysroot/` (the headers from stage 0, nothing else: `/MIR` drops
+   what stage 0 no longer makes) to `/root/env/sysroot`, the
    compiler's default sysroot (`--with-sysroot`);
 4. builds and installs binutils (`src/build-binutils.sh`);
 5. builds and installs GCC and libgcc only (`src/build-gcc.sh`): no libstdc++ yet, no gcov.
@@ -127,10 +128,10 @@ on a new branch and cherry-pick the patch.
 Both scripts run under `set -e`: a failed step fails the image build instead of leaving an
 image without libgcc.
 
-From `cross-compiler/`, Windows:
+From `compilers/cross/`, Windows:
 
 ```bash
-robocopy ../build/x86_64-pc/sysroot ./sysroot /E
+robocopy ../../build/x86_64-pc/sysroot/usr/include ./sysroot/usr/include /MIR
 ```
 ```bash
 docker build . -t mihos-compiler
@@ -140,21 +141,22 @@ docker build . -t mihos-compiler
 
 Two Docker cache rules:
 
-- The copied sysroot comes before the GCC build, so any header that changed since the last
+- The copied headers come before the GCC build, so any header that changed since the last
   image rebuilds GCC. After a change that is not about headers (a Dockerfile line after GCC,
   say), run only `docker build`.
 - `git clone` lines never change text, so Docker reuses the old clone after a fork moves.
-  Pick up a new commit on `mihos-16` or `mihos-2.47` with `docker build --no-cache`.
+  Pick up a new commit on `mihos-16` or `mihos-2.47` with `docker build --no-cache`, after
+  pushing it: the image clones from GitHub, never from a local clone.
 
 Every compile and link in the OS build passes `--sysroot=build/x86_64-pc/sysroot`, so the
 copied sysroot in the image only matters while GCC itself is being built.
 
 ## Stage 2: MiHOS
 
-From `cross-compiler/`:
+From `compilers/cross/`:
 
 ```bash
-docker run --rm -it -v "%cd%/..:/root/env" mihos-compiler
+docker run --rm -it -v "%cd%/../..:/root/env" mihos-compiler
 ```
 
 Inside, at `/root/env`:
