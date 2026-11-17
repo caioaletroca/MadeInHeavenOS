@@ -91,8 +91,8 @@ static void child_exited_with(pid_t pid, int expected)
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == expected);
 }
 
-// Runs a test in a child of its own
-static void isolated(void (*test)(void))
+// Runs a test in a child of its own, naming it when the child failed (a crash prints no line)
+static void isolated_named(void (*test)(void), const char *name)
 {
     pid_t child = fork_flushed();
     CHECK(child >= 0);
@@ -101,8 +101,14 @@ static void isolated(void (*test)(void))
         test();
         child_done();
     }
+
+    int failures = test_failures;
     child_passed(child);
+    if (test_failures != failures)
+        printf("  in %s\n", name);
 }
+
+#define isolated(test) isolated_named(test, #test)
 
 static sigset_t set_of(int signal)
 {
@@ -347,17 +353,19 @@ static void test_errors(void)
     CHECK(sigaction(SIGSTOP, &action, NULL) == -1 && errno == EINVAL);
     CHECK(sigaction(SIGKILL, NULL, &old) == 0 && old.sa_handler == SIG_DFL);
 
+    // A bad address is the kernel's EFAULT, so asked of it directly: a libc that copies
+    // through its own struct (glibc's sigaction, mlibc's) faults on it in user space
     errno = 0;
-    CHECK(sigaction(SIGUSR1, NULL, (struct sigaction *)16) == -1 && errno == EFAULT);
+    CHECK(test_syscall(SYS_SIGACTION, SIGUSR1, 0, 16) == -1 && errno == EFAULT);
 
     sigset_t set;
     sigemptyset(&set);
     errno = 0;
     CHECK(sigprocmask(99, &set, NULL) == -1 && errno == EINVAL);
     errno = 0;
-    CHECK(sigprocmask(SIG_SETMASK, (sigset_t *)16, NULL) == -1 && errno == EFAULT);
+    CHECK(test_syscall(SYS_SIGPROCMASK, SIG_SETMASK, 16, 0) == -1 && errno == EFAULT);
     errno = 0;
-    CHECK(sigprocmask(SIG_SETMASK, &set, (sigset_t *)16) == -1 && errno == EFAULT);
+    CHECK(test_syscall(SYS_SIGPROCMASK, SIG_SETMASK, (long)&set, 16) == -1 && errno == EFAULT);
 
     errno = 0;
     CHECK(sigaddset(&set, 0) == -1 && errno == EINVAL);
@@ -607,11 +615,19 @@ static void test_eintr_wait(void)
     child_killed_by(sleeper, SIGKILL);
 }
 
-// stdio retries an interrupted write: every byte arrives
+/*
+ * A stream written under signals with SA_RESTART: the kernel restarts the
+ * interrupted writes, so every byte arrives and no error shows. Without it, an
+ * interrupted write is the stream's error (EINTR): glibc, musl and mlibc report
+ * it, ours retried, and C promises neither.
+ */
 static void test_stdio_retries(void)
 {
     static char data[STREAM_SIZE];
-    handle_plain(SIGUSR1, on_signal);
+    struct sigaction action = {0};
+    action.sa_handler = on_signal;
+    action.sa_flags = SA_RESTART;
+    CHECK(sigaction(SIGUSR1, &action, NULL) == 0);
     int fds[2];
     CHECK(pipe(fds) == 0);
 
@@ -1056,7 +1072,7 @@ static void test_sigpending(void)
     CHECK(sigismember(&waiting, SIGUSR1) == 0);
 
     errno = 0;
-    CHECK(sigpending((sigset_t *)16) == -1 && errno == EFAULT);
+    CHECK(test_syscall(SYS_SIGPENDING, 16, 0, 0) == -1 && errno == EFAULT); // the kernel's, as in test_errors
 }
 
 static void test_signal_function(void)
