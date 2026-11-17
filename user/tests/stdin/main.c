@@ -8,6 +8,8 @@
  * closed stdin. The parts that need a keyboard are in stdin_interactive.
  */
 
+#define WRITE_ONLY "/mnt/stdin-write-only" // the ext2 disk: writable in both boots
+
 static void test_ungetc(void)
 {
     char line[8];
@@ -34,14 +36,29 @@ static void test_ungetc(void)
     CHECK(line[0] == '\0');
 }
 
+/*
+ * A stream on an fd open only for writing: the read fails (EBADF), so EOF and
+ * the error indicator, not a byte from the buffer. Not stdout:
+ * which libcs refuse it by the stream's mode is their choice (glibc and ours
+ * do; mlibc reads fd 1, the console here, and waits for a key).
+ */
 static void test_write_only(void)
 {
-    // stdout is not readable: EOF and the error indicator, not a byte from its buffer
-    CHECK(fgetc(stdout) == EOF);
-    CHECK(ferror(stdout));
-    CHECK(!feof(stdout));
-    clearerr(stdout);
-    CHECK(!ferror(stdout));
+    FILE *f = fopen(WRITE_ONLY, "w");
+    CHECK(f != NULL);
+    if (f == NULL)
+        return;
+    CHECK(fputs("data", f) >= 0);
+
+    // errno is EBADF on mlibc (from read); ours refuses earlier and leaves it
+    CHECK(fgetc(f) == EOF);
+    CHECK(ferror(f));
+    CHECK(!feof(f));
+    clearerr(f);
+    CHECK(!ferror(f));
+
+    CHECK(fclose(f) == 0);
+    CHECK(unlink(WRITE_ONLY) == 0);
 }
 
 static void test_closed(void)
