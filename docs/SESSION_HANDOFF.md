@@ -3507,8 +3507,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           `.init_array`).
         - `8029dd7`: programs with `.cpp` sources link with `g++` and get `CXXFLAGS`;
           `tests/cxx` is back (exceptions, RTTI, the library, `thread_local`).
-        - Gate (with a trial image built from the fork's `dbb988fe1`): 46 of 46 on both
-          boots. **D10e is done** once the image is rebuilt from the pushed fork.
+        - `84f52b2`: the kernel no longer links `crtbegin.o`/`crtend.o` (as Linux): GCC's
+          now work through `.init_array`, which the kernel never runs, and their 32-bit
+          relocations cannot reach the higher half (a clean build failed to link; the old
+          copies in the build folder had hidden it).
+        - The image was rebuilt from the pushed fork. Gate from a clean build: 46 of 46 on
+          both boots. **D10e is done.**
       - **D10f–g:** Lua through `ports/lua/`, busybox
         for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as the roadmap
         says).
@@ -3662,6 +3666,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   then); no `/dev/urandom`, so `std::random_device` only has rdrand; it is also built for
   the `no-red-zone` multilib, which only the kernel uses (wasted build time); the image
   keeps GCC's build tree in a layer (libstdc++ is built from it), making the image larger.
+- The kernel's `crti.S`/`crtn.S` and `boot64.S`'s `call _init` are left from the osdev
+  constructor pattern: with no `crtbegin.o` (D10e) `_init` is empty, and the kernel has no
+  constructors. Either drop the three, or, if the kernel ever needs constructors, walk
+  `.init_array` from the linker script, as Linux runs its initcalls.
 - `-z separate-code` is passed by `user/Makefile`; binutils' `elf_x86_64_mihos` emulation
   could turn it on by default, as Linux targets do, so any program linked with the
   toolchain gets a non-executable `.rodata`.
