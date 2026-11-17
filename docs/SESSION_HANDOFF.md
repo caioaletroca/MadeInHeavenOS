@@ -106,6 +106,10 @@ Working x86-64 PC kernel with:
 Latest commits:
 
 ```text
+bb6439e fix(mlibc): take the fork's signal() and signal set fixes
+7864ca9 test(sigaction): ask the kernel for EFAULT and restart the stdio writes
+3aac3d9 fix(exec): mark the process exec'd before closing its close-on-exec fds
+c313912 docs(architecture): record the mlibc calendar fixes and the exec race in handoff
 7a420a9 fix(mlibc): take the fork's calendar fixes
 9c272ef test(calendar): check C's fields and bytes, not a libc's layout choices
 7fae839 docs(architecture): record the mlibc stream fixes in handoff
@@ -3387,7 +3391,7 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
            and mlibc's Linux port. D10b is done: on mlibc 25 tests pass up to `stat`
            (`memory` and `reboot` among them), the 10 failing ones are D10c's, and `stdin`
            stalls the run.
-      - **D10c, in progress: the tests that check our libc rather than the standard.** Each
+      - **D10c, done: the tests that check our libc rather than the standard.** Each
         failure on the mlibc build is a test to rewrite (it checks our libc's choice) or an
         mlibc bug (it checks the standard), decided case by case.
         - Done: `stdin` (`fgetc(stdout)` is refused by the stream's mode on ours and glibc;
@@ -3445,10 +3449,17 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           `%E` panicked. The test no longer `memcmp`s two `struct tm` (padding, the zone
           pointer) nor checks the bytes of a `strftime` that did not fit (indeterminate in
           C). On mlibc: 44 passed (`cxx` excluded, `sigaction`).
-        - **next, mlibc's side** (each a bug to fix in the fork and send upstream, or a
-          choice of ours to drop from the test):
-          - `sigaction`: `signal()` installs without `SA_RESTART` (glibc/BSD with it); `fwrite`
-            under signals.
+        - Fixed in the kernel (`3aac3d9`): `exec` marked the process exec'd only after
+          closing its close-on-exec fds, so a parent woken by that close (mlibc's
+          `posix_spawn` waits on such a pipe) could still `setpgid` it (`groups`, once).
+        - Fixed on mlibc's side (fork `c29d6d14`), for `sigaction`: `signal()` installs with
+          `SA_RESTART` (BSD semantics, as glibc); `sigaddset`/`sigdelset`/`sigismember`
+          refuse `NSIG` and up (they checked the 1024 bits `sigset_t` holds). The test asks
+          the kernel itself for `EFAULT` on bad addresses (mlibc, like glibc's `sigaction`,
+          copies through its own struct and faults first), its stdio check uses
+          `SA_RESTART` (stdio retrying an interrupted write was our libc's choice), and a
+          failing isolated test prints its name. **On mlibc every test passes but `cxx`
+          (excluded until libstdc++): 45 of 46.** D10c is done; next is D10d.
       - **D10d, the cut:** GCC's `STARTFILE_SPEC` moves from our `crt0.o` to mlibc's
         `crt1.o`, mlibc's headers take `sysroot/usr/include` (the kernel then needs its
         own include folder for `libk`), the stage 1 image is built from mlibc's headers
@@ -3595,11 +3606,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 
 **Open bugs:**
 
-- `exec` closes the close-on-exec fds before it marks the process as exec'd
-  (`kernel/sched/process.c`, `process_exec`: `process_files_close_on_exec(p)` comes before
-  `p->tree.exec_done = true`). A parent woken by that close (mlibc's `posix_spawn` waits on
-  a close-on-exec pipe) can `setpgid` the child in between and succeed instead of getting
-  `EACCES`: `groups` line 196 failed once on mlibc. Set `exec_done` first.
+- `interrupts` fails now and then under load: its 8 MiB write measured 5758 ms by the
+  cycle counter against 5699 ms monotonic, past the check's slack (lines 92-93). Seen twice
+  on mlibc and probably once on our libc (one failed run of six, whose log the next run
+  overwrote). Either the slack is too tight for a loaded host or the clocks drift apart;
+  not looked into yet.
 
 **Debt:**
 
@@ -3629,7 +3640,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   `PTRDIFF_MAX` guard, the `map` nullptr and the `ENOMEM` upstream in mlibc). The stdio
   fixes (`unget`'s `unsigned char`, `ungetc` clearing EOF, `fread`'s error indicator)
   also belong upstream in mlibc, as do the stream fixes of fork `a47a66b8` and the
-  calendar fixes of fork `351a9ff3`. mlibc's `mktime` is still `timegm`: right while
+  calendar fixes of fork `351a9ff3` and the signal fixes of fork `c29d6d14`. mlibc's `mktime` is still `timegm`: right while
   everything is UTC, wrong once a `TZ` with an offset is set.
 - mlibc's `setvbuf` takes the caller's size but not the array itself (its buffer keeps
   an `ungetc` area in front); a caller's array of static data is never used. C allows it.
