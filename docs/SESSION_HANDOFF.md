@@ -49,8 +49,8 @@ Working x86-64 PC kernel with:
   mounted at `/dev` with `/dev/null`, `/dev/zero` and `/dev/console`; `ioctl` (`TIOCGWINSZ`);
   a **current directory** per process (relative paths, `chdir`, `getcwd`, inherited at spawn)
 - **ELF64 loader**: user programs built separately (`user/`), validated and mapped by `elf_load`
-- **The root on a disk or the initrd**: the kernel command line's leading `name=value` words
-  are the kernel's (`root=hdb1`), the rest is init's. `root=` mounts the ext2 on that block
+- **The root on a disk or the initrd**: the kernel command line's leading words are the
+  kernel's (`root=hdb1`, `selftests`), the rest is init's (see "The root file system"). `root=` mounts the ext2 on that block
   device as `/` (failing → a panic listing the block devices); without it the initrd is `/`.
   Two boots from the CD: "live" (the initrd) and "from disk" (`part.img`'s partition 1, the
   installed system, no initrd loaded); `./run-tests.sh` runs the tests in both
@@ -599,7 +599,7 @@ kernel/
 ├── platform/pc/                  # pic, pit, ps2, keyboard, vga, screen (CP437), multiboot2, ata, platform.c
 ├── sched/ mm/ driver/ sys/ fs/ exec/ selftest/
 ├── init.c                        # init_start: starts /sbin/init (pid 1), panics if it exits
-├── kernel_args.c                 # the command line's leading name=value words (root=)
+├── kernel_args.c                 # the command line's kernel words (root=, selftests), a table of parameters
 └── kmain.c
 ```
 
@@ -684,7 +684,7 @@ the real tick length in ns), `platform_date_read(date)` (the battery-backed cloc
 ### Boot sequence (`kmain`)
 
 ```text
-tty_init → platform_boot_info_init → kernel_args_parse [root=; init's words] → arch_init [TSS first]
+tty_init → platform_boot_info_init → kernel_args_parse [root=, selftests; init's words] → arch_init [TSS first]
 → input_init → platform_init (PIC, PS/2, keyboard IRQ, ATA disks)
 → mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init]
 → devfs_init [its root, not mounted yet: devices can register] → mem_devices_init [/dev/null, /dev/zero]
@@ -696,9 +696,10 @@ tty_init → platform_boot_info_init → kernel_args_parse [root=; init's words]
 → block_devfs_init [/dev/hda…, /dev/hdb1…: the disks platform_init found and their partitions]
 → root_init [/: ext2 on root=, or the initrd; a disk needs irq_enable, so here] → devfs_mount [/dev]
 → console_open [/dev/console: init's fds 0-2] → ext2_init(root_device) [first other ext2 disk on /mnt]
-→ clock_selftest → guard_selftest → hashtable_selftest → mm_selftest
-→ scheduler_selftest [+ sync tests] → console_selftest → user_selftest → vfs_selftest(root_device)
-→ block_selftest → partition_selftest → ext2_selftest(root_device) → elf_selftest
+→ selftests_run(root_device), only with selftests on the command line (GRUB's test entries):
+  kernel_args_selftest → clock_selftest → guard_selftest → hashtable_selftest → mm_selftest
+  → scheduler_selftest [+ sync tests] → console_selftest → user_selftest → vfs_selftest(root_device)
+  → block_selftest → partition_selftest → ext2_selftest(root_device) → elf_selftest
 → init_start(init_args) [starts /sbin/init, waits; init exiting = panic; init halts via SYS_REBOOT]
 ```
 
@@ -2169,13 +2170,24 @@ root_init: root "" ─▶ initrd_init ─▶ "/" = the initrd (live)        none
            root "hdb1" ─▶ block_find ─▶ ext2_mount ─▶ "/" = ext2     fails ─▶ panic + device list
 ```
 
-- **The command line** (`kernel_args_parse`, right after `platform_boot_info_init`): a loop
-  over words; `strcspn(p, " ")` is the word, `strcspn(p, "= ")` stops at its `=`. The leading
-  words with `=` are the kernel's: `root=` copied into `kernel_args.root`
-  (`BLOCK_NAME_MAX`; longer → panic), any other name printed (`kernel: unknown parameter
-  'foo', ignored`). The first word without `=` and everything after it are init's:
-  `init_args` points into `boot_info.cmdline` (static, lives forever), no copy. `root=` with
-  an empty value means no `root=`.
+- **The command line** (`kernel_args_parse`, right after `platform_boot_info_init`):
+  `word_next` reads one word as a view into the line (`name`/`value` pointers plus lengths,
+  nothing copied; `value` NULL for a bare word) and moves a `const char **` cursor past it.
+  The kernel knows its parameters from a table, `kernel_arg_specs[]`: a name, whether it is a
+  switch, and a setter (Linux's `kernel_param` with its `ops->set`); a new parameter is a
+  setter plus a line there. A kernel word is `name=value`, or the bare name of a switch
+  (`selftests` = `selftests=1`); switches take `1`/`on`/`yes` and `0`/`off`/`no`, the last
+  word wins. `root=` is copied into `kernel_args.root` (`BLOCK_NAME_MAX`; longer → panic).
+  An unknown `name=value`, a value a parameter cannot take and a missing value for a
+  non-switch are printed (`kernel: unknown parameter 'foo', ignored`, `bad value`, `needs a
+  value`) and skipped. The first bare word the kernel does not know, and everything after
+  it, are init's; `--` ends the kernel's words explicitly (so init can get `selftests` or
+  `a=b` as its first word). `init_args` points into `boot_info.cmdline` (static, lives
+  forever), no copy. `root=` with an empty value means no `root=`.
+- **Self-tests** run only with `selftests` on (`selftests_run` in `kmain.c`); the two test
+  entries pass `selftests=1`, the shell entries boot straight to init.
+  `selftest/kernel_args.c` runs 21 lines through the parser, every field checked (first of
+  the self-tests; its three bad lines print the three warnings).
 - **`root_init(args, info)`** (after `block_devfs_init`: a disk needs `irq_enable`; before
   anything looks up a path): no `root=` → `initrd_init` (no `initrd` module → panic `no root=
   and no initrd`); `root=` → `block_find`, `ext2_mount` (a missing device is `-ENODEV`, a
@@ -3528,6 +3540,15 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           `os.rename` (no `rename` in the kernel).
         - Gate: 47 of 47 on both boots, e2fsck clean. The first run's disk boot panicked once
           in the block self-test (`-EIO`, see "Open bugs"); the rerun passed.
+      - **Boot messages (intermission, 2026-11-18), in progress:** toward what a booting
+        OS shows (Linux: printk levels and `quiet`, then init, getty's `/etc/issue`, no shell
+        banner).
+        - `d665a45`: the kernel self-tests run only with `selftests` on the command line
+          (GRUB's test entries); a table-driven command line parser (switches, `--`, bad
+          values skipped) with a self-test. Gate: 47 of 47 on both boots, e2fsck clean.
+        - Next: the shell's banner out (`user/bin/sh/main.c`, init printing an issue-like
+          line instead), log levels with `quiet`/`loglevel=`, uptime timestamps on kernel
+          messages.
       - **D10g:** busybox for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as
         the roadmap says); its `sh` brings `-c`, which Lua's `io.popen` needs.
     - Threads (`clone`, pthreads) when a port needs them (Python, Node.js), with real locks
@@ -3845,8 +3866,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The root on the disk is mounted writable from the start. Linux mounts it
   read-only, runs fsck, then remounts it writable; we have neither a remount nor an fsck of
   our own. Also no `rootwait`, `rootfstype=` or `ro`/`rw` options.
-- The command line: no `--` (everything after it would be init's, so init cannot get a
-  leading word with `=`); unknown kernel names are printed and dropped (Linux passes them to
+- The command line: no quoted values (`name="a b"`, which Linux takes), and `-` and `_`
+  in names are not the same (Linux treats them as one); unknown kernel names are printed and dropped (Linux passes them to
   init's environment); `root=` names a device by its name only (no `UUID=`/`LABEL=`/`PARTUUID=`),
   so the same disk is `hdb1` in QEMU and `hdc1` in Bochs and the `*-disk` entries name QEMU's.
 - An initrd GRUB loads although `root=` is given is never read, and its memory stays reserved.
