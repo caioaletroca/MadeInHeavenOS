@@ -56,7 +56,8 @@ Working x86-64 PC kernel with:
   installed system, no initrd loaded); `./run-tests.sh` runs the tests in both
 - **`/sbin/init` as pid 1**: the only program the kernel starts (the kernel command line, after
   the kernel's words, is its arguments); `once <command>` (the test entries) runs it and halts the system through `reboot`,
-  `respawn <command>` (the shell entry) restarts it forever. Init never exits (the kernel panics)
+  `respawn <command>` (the shell entry) restarts it forever, printing `/etc/issue` before each
+  start (getty's greeting; `user/etc/` is installed into the sysroot's `etc/`). Init never exits (the kernel panics)
 - **User test programs** in `user/tests/` (`hello`, `stdio`, `brk`, `malloc`, `abort`,
   `stdin`, `args`, `spawn`, `printf`, `reboot`, `cxx`, `files`, `dirs`, `stat`, `tty`, `devices`, `ioctl`, `disks`, `ext2`, `cwd`, `dup`, `pipe`, `shell`, `fork`, `exec`, `cow`, `stack`, `signal`, `sigaction`, `groups`, `terminal`, `stop`, `termios`, `editing`, `history`, `string`, `vectors`, `time`, `calendar`, `streams`, `memory`, `interrupts`, `concurrent`, `tls`, `futex`; `mlibc_hello` from `user/mlibc/`, on mlibc; `stdin_interactive` from a second GRUB entry), run by `/usr/tests/run`
 - **A shell** (`/bin/sh`, third GRUB entry): builtins `cd`/`exit`/`fg`/`help`/`history`/`jobs`/`pwd`, the
@@ -3546,8 +3547,13 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
         - `d665a45`: the kernel self-tests run only with `selftests` on the command line
           (GRUB's test entries); a table-driven command line parser (switches, `--`, bad
           values skipped) with a self-test. Gate: 47 of 47 on both boots, e2fsck clean.
-        - Next: the shell's banner out (`user/bin/sh/main.c`, init printing an issue-like
-          line instead), log levels with `quiet`/`loglevel=`, uptime timestamps on kernel
+        - `a428edc`: the shell prints no banner; init's `respawn` prints `/etc/issue`
+          before each start (getty's job; `once`, the test entries, prints nothing; no
+          file, no greeting). `user/etc/` is installed into the sysroot's `etc/` (0644),
+          `grub/Makefile` packs `etc` into the initrd and part.img (`PROGRAM_DIRS` is now
+          `ROOT_DIRS`). `5194238`: `user/etc/**` stays LF on checkout. Gate: 47 of 47 on
+          both boots, e2fsck clean; the shell entry shows the issue, then the prompt.
+        - Next: log levels with `quiet`/`loglevel=`, uptime timestamps on kernel
           messages.
       - **D10g:** busybox for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as
         the roadmap says); its `sh` brings `-c`, which Lua's `io.popen` needs.
@@ -3609,7 +3615,7 @@ sh.h / history.h   shared types and declarations ("..." includes)
   default and the shell's own status at EOF), `running` (cleared by `exit`), `interactive`, and
   `editor`, the line library's `line_editor_t` with the command history.
 - **Interactive or not** (POSIX, as bash and dash): `interactive = isatty(0) && isatty(2)`.
-  Interactive: the banner, the prompt through the line editor (on **stderr**, as POSIX says),
+  Interactive: the prompt through the line editor (on **stderr**, as POSIX says),
   history expansion and `line_history_add`, a `'\n'` on stderr at EOF. Otherwise (a script piped in) none of these, so only
   the commands' output comes out, and `!!` stays literal; stdin is unbuffered
   (`setvbuf(stdin, NULL, _IONBF, 0)`): `fgets` reads one byte at a time and never past the
@@ -3982,7 +3988,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The shell has no arrow-key history (needs raw mode / termios), no `;`, `&&`, `||` or
   redirections, no field splitting, no continuation lines for an open quote; a `'` inside `"..."`
   flips history expansion's quote tracking. The `shell` test covers scripts; the interactive
-  parts (prompt, history, the banner) are still checked by hand (no pseudo-terminal). A script's
+  parts (prompt, history) are still checked by hand (no pseudo-terminal). A script's
   stdin costs one `read` per byte (dash's way); on a file bash keeps its buffer and seeks back
   after each line (`fflush(stdin)` before each command would do that here). No `sh file`, `sh -c`, `-i`/`-s` or `$0`/`$1`.
 - stdio: `setvbuf(NULL)` ignores the size asked for and uses the own 512 bytes (glibc
