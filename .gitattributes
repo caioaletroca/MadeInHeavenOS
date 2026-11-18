@@ -1,3 +1,5 @@
 *.sh text eol=lf
 # The test disk's files go onto disk.img byte for byte: never convert line endings
 disk/** -text
+# The system's configuration files go into the images as they are: LF, as a Unix system reads them
+user/etc/** text eol=lf
