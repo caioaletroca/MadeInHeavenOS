@@ -6,6 +6,7 @@ elf.c \
 ext2.c \
 guard.c \
 hashtable.c \
+kernel_args.c \
 mm.c \
 partition.c \
 scheduler.c \

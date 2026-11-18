@@ -31,6 +31,7 @@
 #include "selftest/ext2.h"
 #include "selftest/guard.h"
 #include "selftest/hashtable.h"
+#include "selftest/kernel_args.h"
 #include "selftest/mm.h"
 #include "selftest/partition.h"
 #include "selftest/scheduler.h"
@@ -40,6 +41,28 @@
 static thread_t boot_thread;
 static boot_info_t boot_info;
 static kernel_args_t kernel_args;
+
+/**
+ * The kernel's self-tests, run when the command line says selftests=1 (GRUB's
+ * test entries). Each one panics on failure.
+ */
+static void selftests_run(block_device_t *root_device)
+{
+    kernel_args_selftest();
+    clock_selftest();
+    guard_selftest();
+    hashtable_selftest();
+    mm_selftest();
+    scheduler_selftest();
+    console_selftest();
+    user_selftest();
+    vfs_selftest(root_device);
+    block_selftest();
+    partition_selftest();
+    ext2_selftest(root_device); // after the block one: that one counts cache hits and misses
+    elf_selftest();
+    kprintf("self-tests: ok\n");
+}
 
 /**
  * Kernel main entry point.
@@ -85,19 +108,8 @@ void kmain(uintptr_t boot_handoff)
     console_open();
     ext2_init(root_device);
 
-    clock_selftest();
-    guard_selftest();
-    hashtable_selftest();
-    mm_selftest();
-    scheduler_selftest();
-    console_selftest();
-    user_selftest();
-    vfs_selftest(root_device);
-    block_selftest();
-    partition_selftest();
-    ext2_selftest(root_device); // after the block one: that one counts cache hits and misses
-    elf_selftest();
-    kprintf("self-tests: ok\n"); // each one panics on failure
+    if (kernel_args.selftests)
+        selftests_run(root_device);
 
     init_start(kernel_args.init_args);
 
