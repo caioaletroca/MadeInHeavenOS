@@ -4,12 +4,6 @@
 #include <signal.h>
 #include "sh.h"
 
-static void print_header(void)
-{
-    printf("Welcome to MiHos Shell\n");
-    printf("=====================\n\n");
-}
-
 static void terminal_setup(shell_t *sh)
 {
     sh->group = getpgrp();
@@ -32,10 +26,7 @@ int main(void)
     command_t cmd;
 
     if (sh.interactive)
-    {
         terminal_setup(&sh);
-        print_header();
-    }
     else
     {
         // A script may hand stdin to its commands (a "cat" reads the lines after it): reading

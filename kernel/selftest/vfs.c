@@ -187,10 +187,11 @@ static void vfs_test_readdir(void)
     {
         vfs_expect_entry(root, 2, "bin", VFS_DIRECTORY, 0);
         vfs_expect_entry(root, 3, "dev", VFS_DIRECTORY, 0);
-        vfs_expect_entry(root, 4, "mnt", VFS_DIRECTORY, 0);
-        vfs_expect_entry(root, 5, "sbin", VFS_DIRECTORY, 0);
-        vfs_expect_entry(root, 6, "usr", VFS_DIRECTORY, usr->ino);
-        if (vfs_readdir(root, 7, &entry) != 0 || vfs_readdir(root, 100, &entry) != 0)
+        vfs_expect_entry(root, 4, "etc", VFS_DIRECTORY, 0);
+        vfs_expect_entry(root, 5, "mnt", VFS_DIRECTORY, 0);
+        vfs_expect_entry(root, 6, "sbin", VFS_DIRECTORY, 0);
+        vfs_expect_entry(root, 7, "usr", VFS_DIRECTORY, usr->ino);
+        if (vfs_readdir(root, 8, &entry) != 0 || vfs_readdir(root, 100, &entry) != 0)
             panic("VFS self-test: readdir past the root's last entry did not return 0\n");
     }
 

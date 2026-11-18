@@ -86,8 +86,21 @@ $(foreach program,$(programs),$(eval $(call program_rule,$(program),$(call progr
 mlibc_programs := $(patsubst %/,%,$(wildcard mlibc/*/))
 $(foreach program,$(mlibc_programs),$(eval $(call program_rule,$(program),$(install_dir_tests)/mlibc_$(notdir $(program)))))
 
+###########################################
+# The system's configuration files: etc/ copied as it is into the sysroot's
+# etc/ (etc/issue → /etc/issue), so into the initrd and part.img. Mode 0644
+# whatever the checkout gave them (through the Windows mount every file looks
+# executable)
+
+etc_files := $(wildcard etc/*)
+
+$(SYSROOT_DIR)/etc/%: etc/%
+	mkdir -p $(@D)
+	install -m 0644 $< $@
+
 installed := $(foreach program,$(programs),$(call program_installed,$(program))) \
-             $(foreach program,$(mlibc_programs),$(install_dir_tests)/mlibc_$(notdir $(program)))
+             $(foreach program,$(mlibc_programs),$(install_dir_tests)/mlibc_$(notdir $(program))) \
+             $(addprefix $(SYSROOT_DIR)/,$(etc_files))
 # The libraries' objects too, for their .d files: a changed header rebuilds them
 user_objects := $(foreach program,$(programs) $(mlibc_programs) $(addprefix lib/,$(libraries)),$(call program_objects,$(program)))
 

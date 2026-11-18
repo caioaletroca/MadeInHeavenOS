@@ -9,6 +9,8 @@
 #define CRASHES_MAX 5         // a command killed this many times in a row is given up
 #define EXIT_CANNOT_START 127 // exec failed in the child, the shell's "command not found"
 
+#define ISSUE_PATH "/etc/issue"
+
 /*
  * Start a command in a session of its own, owning the console: what getty does
  * for a login. Fork and exec, not spawn, since both must happen in the child.
@@ -54,6 +56,24 @@ __attribute__((noreturn)) static void halt(void)
         ;
 }
 
+/*
+ * Print /etc/issue before starting the shell, as getty does before a login:
+ * the system's greeting, read again each time so an edit shows at the next
+ * start. No file, no greeting.
+ */
+static void issue_print(void)
+{
+    FILE *issue = fopen(ISSUE_PATH, "r");
+    if (issue == NULL)
+        return;
+
+    char line[256];
+    while (fgets(line, sizeof(line), issue) != NULL)
+        fputs(line, stdout);
+
+    fclose(issue);
+}
+
 // once: run the command, report how it ended, halt
 __attribute__((noreturn)) static void run_once(char *command[], char *envp[])
 {
@@ -83,6 +103,7 @@ __attribute__((noreturn)) static void run_once(char *command[], char *envp[])
 __attribute__((noreturn)) static void run_respawn(char *command[], char *envp[])
 {
     int crashes = 0;
+    issue_print();
     pid_t pid = start(command, envp);
     if (pid < 0)
         halt();
@@ -117,6 +138,7 @@ __attribute__((noreturn)) static void run_respawn(char *command[], char *envp[])
             crashes = 0; // exit and Ctrl+D are normal: a fresh shell, no message
         }
 
+        issue_print();
         pid = start(command, envp);
         if (pid < 0)
             halt();
