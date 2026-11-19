@@ -1,4 +1,4 @@
-#include <kprintf.h>
+#include <logger.h>
 #include <mm/buddy.h>
 #include <mm/boot_alloc.h>
 
@@ -188,14 +188,14 @@ void buddy_log(const buddy_system_t *ctx, physaddr_t address)
     // Loop through all free area
     for (unsigned int i = 0; i <= ctx->order_max; i++)
     {
-        kprintf("order: %d", i);
+        log_debug("order: %d", i);
         if (list_empty(&ctx->free_area[i].list))
         {
-            kprintf("  [ empty ]\n");
+            log_debug("  [ empty ]\n");
         }
         else
         {
-            kprintf("\n");
+            log_debug("\n");
 
             // Loop through all free area lists
             for (list_t *frame_link = ctx->free_area[i].list.next;
@@ -214,12 +214,12 @@ void buddy_log(const buddy_system_t *ctx, physaddr_t address)
                 physaddr_t frame_address = address + ((physaddr_t)frame_index << ctx->order_bit);
                 physaddr_t frame_end = frame_address + ((physaddr_t)1 << (ctx->order_bit + i));
 
-                kprintf("  [ 0x%p : 0x%p ]\n", (void *)frame_address, (void *)frame_end);
+                log_debug("  [ 0x%p : 0x%p ]\n", (void *)frame_address, (void *)frame_end);
 
                 // Sums free memory
                 free_memory += ((size_t)1 << (ctx->order_bit + i));
             }
         }
     }
-    kprintf("free memory: %u\n", free_memory);
+    log_debug("free memory: %u\n", free_memory);
 }

@@ -9,7 +9,7 @@
 #include <sched/process.h>
 #include <sched/signal.h>
 #include <mihos/signal.h>
-#include <kprintf.h>
+#include <logger.h>
 #include <panic.h>
 #include <stdbool.h>
 #include <string.h>
@@ -293,8 +293,8 @@ static void page_fault_handler(isr_context_t *regs)
             address_space_fault(scheduler_current()->space, virtual_address, write) == 0)
             return;
 
-        kprintf("user page fault: %s %s at %p (thread %u, rip %p)\n",
-                (error_code & 0x10) ? "exec" : (error_code & 0x2) ? "write"
+        log_info("user page fault: %s %s at %p (thread %u, rip %p)\n",
+                 (error_code & 0x10) ? "exec" : (error_code & 0x2) ? "write"
                                                                   : "read",
                 (error_code & 0x1) ? "protection violation" : "not present",
                 (void *)virtual_address, scheduler_current()->id, (void *)regs->rip);
@@ -516,7 +516,7 @@ void arch_mmu_init(void)
         no_execute = true;
     }
     else
-        kprintf("mmu: no NX support: every page is executable\n");
+        log_warning("mmu: no NX support: every page is executable\n");
 
     // Address spaces copy the kernel's L4 entries when created. An L4 entry
     // added later would be missing from all of them, so give every

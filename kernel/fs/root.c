@@ -3,7 +3,7 @@
 #include <fs/ext2.h>
 #include <fs/initrd.h>
 #include <mihos/errno.h>
-#include <kprintf.h>
+#include <logger.h>
 #include <panic.h>
 
 /**
@@ -14,13 +14,13 @@
  */
 static void root_panic(const char *name, int error)
 {
-    kprintf("root: cannot mount root=%s: %d\n", name, error);
-    kprintf("root: pick root= from the block devices there are:\n");
+    log_error("root: cannot mount root=%s: %d\n", name, error);
+    log_error("root: pick root= from the block devices there are:\n");
 
     for (size_t i = 0; block_at(i) != NULL; i++)
     {
         const block_device_t *dev = block_at(i);
-        kprintf("  %s %u KiB\n", dev->name, (unsigned int)(dev->sector_count / 2));
+        log_error("  %s %u KiB\n", dev->name, (unsigned int)(dev->sector_count / 2));
     }
 
     panic("root: unable to mount the root file system\n");
@@ -37,7 +37,7 @@ block_device_t *root_init(const kernel_args_t *args, const boot_info_t *boot_inf
         if (root == NULL)
             panic("root: no root= and no initrd\n");
 
-        kprintf("root: the initrd mounted on /\n");
+        log_info("root: the initrd mounted on /\n");
     }
     else
     {
@@ -46,7 +46,7 @@ block_device_t *root_init(const kernel_args_t *args, const boot_info_t *boot_inf
         if (ret < 0)
             root_panic(args->root, ret);
 
-        kprintf("root: %s mounted on /\n", disk->name);
+        log_info("root: %s mounted on /\n", disk->name);
     }
 
     vfs_mount_root(root);

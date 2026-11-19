@@ -4,7 +4,7 @@
 #include <asm/cpu.h>
 #include <driver/block_cache.h>
 #include <platform/platform.h>
-#include <kprintf.h>
+#include <logger.h>
 
 /**
  * List of registered halt hooks.
@@ -28,10 +28,10 @@ __attribute__((noreturn)) void system_halt(void)
 
     int ret = block_cache_sync();
     if (ret < 0)
-        kprintf("system_halt: writing the disk cache failed: %d\n", ret);
+        log_error("system_halt: writing the disk cache failed: %d\n", ret);
 
     irq_disable();
-    kprintf("system halted\n");
+    log_message(LOG_EMERGENCY, "system halted\n");
     platform_power_off();
     cpu_halt();
 }

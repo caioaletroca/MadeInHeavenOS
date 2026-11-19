@@ -3,7 +3,7 @@
 #include <x86/isr.h>
 #include <sched/scheduler.h>
 #include <sched/process.h>
-#include <kprintf.h>
+#include <logger.h>
 #include <sched/signal.h>
 #include <mihos/signal.h>
 #include <stdbool.h>
@@ -81,8 +81,8 @@ static bool exception_is_fatal(uint8_t int_no)
  */
 static void exception_user_handler(isr_context_t *regs, uint8_t int_no)
 {
-    kprintf("user exception: %s (thread %u)\n"
-            "\trip: %p, rsp: %p, err_code: %u\n",
+    log_info("user exception: %s (thread %u)\n"
+             "\trip: %p, rsp: %p, err_code: %u\n",
             exception_messages[int_no], scheduler_current()->id,
             (void *)regs->rip, (void *)regs->rsp, (unsigned int)(regs->info & 0xFFFFFFFF));
 
@@ -119,7 +119,7 @@ static void exception_handler(isr_context_t *regs)
     }
     else
     {
-        kprintf("IRQ: %u\n", int_no);
+        log_warning("IRQ: %u\n", int_no);
     }
 }
 

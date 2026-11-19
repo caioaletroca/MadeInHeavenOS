@@ -1,5 +1,5 @@
 #include <mm/zone.h>
-#include <kprintf.h>
+#include <logger.h>
 
 physaddr_t zone_alloc(const zone_t *ctx, int order)
 {
@@ -79,7 +79,7 @@ int zone_init(zone_t *ctx, physaddr_t address, size_t size, size_t frame_size, i
 
 void zone_log(const zone_t *ctx)
 {
-    kprintf("- Zone -\n");
-    kprintf("    [ 0x%p : 0x%p] %u bytes\n", ctx->address, ctx->address + ctx->size - 1, ctx->size);
+    log_debug("- Zone -\n");
+    log_debug("    [ 0x%p : 0x%p] %u bytes\n", ctx->address, ctx->address + ctx->size - 1, ctx->size);
     buddy_log(&ctx->buddy, ctx->address);
 }

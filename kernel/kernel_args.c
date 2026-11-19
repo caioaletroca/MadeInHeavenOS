@@ -1,6 +1,6 @@
 #include <kernel_args.h>
 #include <string.h>
-#include <kprintf.h>
+#include <logger.h>
 #include <panic.h>
 
 /*
@@ -74,10 +74,32 @@ static bool root_set(kernel_args_t *args, const kernel_arg_word_t *word)
     return true;
 }
 
+// quiet: only errors and worse on the console; quiet=0 puts the default back
+static bool quiet_set(kernel_args_t *args, const kernel_arg_word_t *word)
+{
+    bool quiet;
+    if (!switch_parse(word, &quiet))
+        return false;
+
+    args->console_level = quiet ? LOGGER_CONSOLE_QUIET : LOGGER_CONSOLE_DEFAULT;
+    return true;
+}
+
+static bool loglevel_set(kernel_args_t *args, const kernel_arg_word_t *word)
+{
+    if (word->value_length != 1 || word->value[0] < '0' || word->value[0] > '0' + LOGGER_CONSOLE_MAX)
+        return false;
+
+    args->console_level = word->value[0] - '0';
+    return true;
+}
+
 // Every parameter the kernel knows; a new one is a setter plus a line here
 static const kernel_arg_spec_t kernel_arg_specs[] = {
     {"root", false, root_set},
     {"selftests", true, selftests_set},
+    {"quiet", true, quiet_set},
+    {"loglevel", false, loglevel_set},
 };
 
 /**
@@ -137,6 +159,7 @@ void kernel_args_parse(const char *cmdline, kernel_args_t *args)
 {
     args->root[0] = '\0';
     args->selftests = false;
+    args->console_level = LOGGER_CONSOLE_DEFAULT;
 
     const char *p = cmdline;
     kernel_arg_word_t word;
@@ -155,12 +178,12 @@ void kernel_args_parse(const char *cmdline, kernel_args_t *args)
                 p = word.name; // a bare word the kernel does not know: init's first word, given back
                 break;
             }
-            kprintf("kernel: unknown parameter '%.*s', ignored\n", (int)word.name_length, word.name);
+            log_warning("kernel: unknown parameter '%.*s', ignored\n", (int)word.name_length, word.name);
         }
         else if (word.value == NULL && !spec->is_switch)
-            kprintf("kernel: %s needs a value, ignored\n", spec->name);
+            log_warning("kernel: %s needs a value, ignored\n", spec->name);
         else if (!spec->set(args, &word))
-            kprintf("kernel: bad value '%s=%.*s', ignored\n", spec->name, (int)word.value_length, word.value);
+            log_warning("kernel: bad value '%s=%.*s', ignored\n", spec->name, (int)word.value_length, word.value);
     }
 
     while (*p == ' ')

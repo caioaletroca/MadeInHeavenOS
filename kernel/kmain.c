@@ -21,6 +21,7 @@
 #include <fs/pipe.h>
 #include <kprintf.h>
 #include <kernel_args.h>
+#include <logger.h>
 #include <boot_info.h>
 #include <init.h>
 
@@ -75,8 +76,9 @@ void kmain(uintptr_t boot_handoff)
 
     platform_boot_info_init(boot_handoff, &boot_info);
     kernel_args_parse(boot_info.cmdline, &kernel_args);
+    logger_set_console_level(kernel_args.console_level);
 
-    kprintf("MiHOS\n");
+    log_notice("MiHOS\n");
 
     arch_init();
 

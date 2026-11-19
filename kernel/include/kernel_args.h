@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <driver/block.h>
+#include <logger.h>
 
 /**
  * The kernel's part of the command line: the leading words that are name=value,
@@ -18,6 +19,7 @@ typedef struct kernel_args
 {
     char root[BLOCK_NAME_MAX]; // root=: the block device holding '/'; "" = the initrd
     bool selftests;            // selftests=1: run the kernel's self-tests before init (GRUB's test entries)
+    int console_level;         // quiet (4) or loglevel=N: messages below it reach the console
     const char *init_args;     // init's words: points into the parsed command line
 } kernel_args_t;
 

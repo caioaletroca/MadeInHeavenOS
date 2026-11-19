@@ -2,7 +2,7 @@
 #include <driver/clock.h>
 #include <mihos/errno.h>
 #include <mm/kmalloc.h>
-#include <kprintf.h>
+#include <logger.h>
 
 // ---- Names: creating files and removing their names; a node's blocks and inode freed at its last put ----
 
@@ -90,7 +90,7 @@ void ext2_release(vfs_node_t *node)
         if (ret == 0)
             ret = ext2_inode_free(n->volume, n->ino, node->type == VFS_DIRECTORY);
         if (ret < 0)
-            kprintf("ext2: freeing inode %u failed (%d): run e2fsck\n", n->ino, ret);
+            log_error("ext2: freeing inode %u failed (%d): run e2fsck\n", n->ino, ret);
     }
 
     scoped_guard(mutex, &n->volume->lock)

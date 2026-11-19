@@ -10,7 +10,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include <kprintf.h>
+#include <logger.h>
 #include <panic.h>
 
 // ATA channel and control port definitions
@@ -483,7 +483,7 @@ void ata_init(void)
 
         drive->channel->has_drives = true;
 
-        kprintf("ata: %s, %u MiB\n", names[i], (unsigned int)(drive->block.sector_count / 2048));
+        log_info("ata: %s, %u MiB\n", names[i], (unsigned int)(drive->block.sector_count / 2048));
     }
 
     // From here on commands sleep until their IRQ (CPU interrupts come on later, in kmain)

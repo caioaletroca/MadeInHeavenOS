@@ -3,7 +3,7 @@
 #include <mihos/errno.h>
 #include <mm/kmalloc.h>
 #include <string.h>
-#include <kprintf.h>
+#include <logger.h>
 #include <util.h>
 
 // ---- Mounting: the superblock and the group table, checked; the root node; the boot mount ----
@@ -207,7 +207,7 @@ static void ext2_halt(halt_hook_t *hook)
     if (ret == 0)
         ret = ext2_state_store(volume, volume->state | EXT2_VALID_FS);
     if (ret < 0)
-        kprintf("ext2: %s: cannot mark the volume clean: %d\n", volume->disk->name, ret);
+        log_error("ext2: %s: cannot mark the volume clean: %d\n", volume->disk->name, ret);
 }
 
 int ext2_mount(block_device_t *disk, vfs_node_t **root)
@@ -257,7 +257,7 @@ int ext2_mount(block_device_t *disk, vfs_node_t **root)
     if (!volume->read_only)
     {
         if ((volume->state & EXT2_VALID_FS) == 0 || (volume->state & EXT2_ERROR_FS) != 0)
-            kprintf("ext2: %s was not cleanly unmounted or has errors: run e2fsck\n", disk->name);
+            log_warning("ext2: %s was not cleanly unmounted or has errors: run e2fsck\n", disk->name);
 
         // Update the superblock's s_mtime and s_wtime to the current time
         ret = ext2_super_time_store(volume, offsetof(ext2_super_t, s_mtime));
@@ -298,7 +298,7 @@ void ext2_init(const block_device_t *root_device)
 
         if (ret < 0)
         {
-            kprintf("ext2: %s: cannot mount: %d\n", disk->name, ret);
+            log_error("ext2: %s: cannot mount: %d\n", disk->name, ret);
             continue;
         }
 
@@ -306,11 +306,11 @@ void ext2_init(const block_device_t *root_device)
         vfs_node_put(root);
 
         if (ret < 0)
-            kprintf("ext2: %s: cannot mount on /mnt: %d\n", disk->name, ret);
+            log_error("ext2: %s: cannot mount on /mnt: %d\n", disk->name, ret);
         else
-            kprintf("ext2: %s mounted on /mnt\n", disk->name);
+            log_info("ext2: %s mounted on /mnt\n", disk->name);
         return; // one disk on /mnt, mounted or not
     }
 
-    kprintf("ext2: no disk to mount\n");
+    log_debug("ext2: no disk to mount\n");
 }

@@ -2,7 +2,7 @@
 #include <mm/mmap.h>
 #include <mm/boot_alloc.h>
 #include <util.h>
-#include <kprintf.h>
+#include <logger.h>
 #include <panic.h>
 
 #define MMAP_MAX_REGIONS 128
@@ -317,19 +317,19 @@ void mmap_init(const boot_info_t *info)
 
 static void mmap_log(mmap_t *ctx)
 {
-    kprintf("- Memory Map -\n");
+    log_debug("- Memory Map -\n");
 
-    kprintf("Reserved:    [ %u ]\n", ctx->reserved.length);
+    log_debug("Reserved:    [ %u ]\n", ctx->reserved.length);
     for (size_t i = 0; i < ctx->reserved.length; i++)
     {
         mmap_region_t *region = &ctx->reserved.regions[i];
-        kprintf("    [ 0x%p : 0x%p ] %u bytes\n", region->base, region->base + region->size - 1, region->size);
+        log_debug("    [ 0x%p : 0x%p ] %u bytes\n", region->base, region->base + region->size - 1, region->size);
     }
 
-    kprintf("Available:   [ %u ]\n", ctx->available.length);
+    log_debug("Available:   [ %u ]\n", ctx->available.length);
     for (size_t i = 0; i < ctx->available.length; i++)
     {
         mmap_region_t *region = &ctx->available.regions[i];
-        kprintf("    [ 0x%p : 0x%p ] %u bytes\n", region->base, region->base + region->size - 1, region->size);
+        log_debug("    [ 0x%p : 0x%p ] %u bytes\n", region->base, region->base + region->size - 1, region->size);
     }
 }

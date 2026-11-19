@@ -6,7 +6,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-#include <kprintf.h>
+#include <logger.h>
 
 #define MBR_ENTRIES_OFFSET 446
 #define MBR_ENTRIES 4
@@ -125,7 +125,7 @@ static void partition_add(block_device_t *disk, int slot, const mbr_entry_t *ent
 
     if (mbr_type_extended(entry->type))
     {
-        kprintf("partition: %s%d is extended: logical partitions are not read\n", disk->name, slot);
+        log_info("partition: %s%d is extended: logical partitions are not read\n", disk->name, slot);
         return;
     }
 
@@ -134,14 +134,14 @@ static void partition_add(block_device_t *disk, int slot, const mbr_entry_t *ent
         entry->first_sector >= disk->sector_count ||
         entry->sector_count > disk->sector_count - entry->first_sector)
     {
-        kprintf("partition: %s%d is outside the disk, skipped\n", disk->name, slot);
+        log_warning("partition: %s%d is outside the disk, skipped\n", disk->name, slot);
         return;
     }
 
     partition_t *partition = kzalloc(sizeof(partition_t));
     if (partition == NULL)
     {
-        kprintf("partition: %s%d failed to allocate memory\n", disk->name, slot);
+        log_error("partition: %s%d failed to allocate memory\n", disk->name, slot);
         return;
     }
 
@@ -157,12 +157,12 @@ static void partition_add(block_device_t *disk, int slot, const mbr_entry_t *ent
     int ret = block_register(&partition->block);
     if (ret < 0)
     {
-        kprintf("partition: %s%d failed to register block device\n", disk->name, slot);
+        log_error("partition: %s%d failed to register block device\n", disk->name, slot);
         kfree(partition);
         return;
     }
 
-    kprintf("partition: %s, %u MiB at sector %u\n", partition->block.name, (entry->sector_count / 2048), entry->first_sector);
+    log_info("partition: %s, %u MiB at sector %u\n", partition->block.name, (entry->sector_count / 2048), entry->first_sector);
 }
 
 static void partition_scan(block_device_t *disk)
@@ -172,7 +172,7 @@ static void partition_scan(block_device_t *disk)
     long bytes = block_read_bytes(disk, table, sizeof(table), 0);
     if (bytes != 512)
     {
-        kprintf("partition: %s failed to read MBR\n", disk->name);
+        log_error("partition: %s failed to read MBR\n", disk->name);
         return;
     }
 
@@ -194,7 +194,7 @@ static void partition_scan(block_device_t *disk)
             return;
         if (entry->type == MBR_TYPE_GPT)
         {
-            kprintf("partition: %s has a GPT: not read yet\n", disk->name);
+            log_warning("partition: %s has a GPT: not read yet\n", disk->name);
             return;
         }
     }
