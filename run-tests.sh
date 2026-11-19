@@ -175,7 +175,8 @@ run_boot() {
     summary=$(grep -E '^tests: [0-9]+ passed, [0-9]+ failed' "$log" | tail -n 1)
     [ -n "$summary" ] || fail "the test runner did not finish"
     grep -q '^init: /usr/tests/run exited with status 0' "$log" || fail "the test runner failed"
-    grep -q '^system halted' "$log" || fail "no clean halt"
+    # A kernel message: after its uptime timestamp ("[    3.140000] "), if any
+    grep -qE '^(\[ *[0-9]+\.[0-9]{6}\] )?system halted' "$log" || fail "no clean halt"
 
     # Test programs print FAIL lines, also those nobody waits for (the adopted orphan)
     if grep -q 'FAIL' "$log"; then

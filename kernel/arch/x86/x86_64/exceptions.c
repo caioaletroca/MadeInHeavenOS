@@ -81,10 +81,10 @@ static bool exception_is_fatal(uint8_t int_no)
  */
 static void exception_user_handler(isr_context_t *regs, uint8_t int_no)
 {
-    log_info("user exception: %s (thread %u)\n"
-             "\trip: %p, rsp: %p, err_code: %u\n",
-            exception_messages[int_no], scheduler_current()->id,
-            (void *)regs->rip, (void *)regs->rsp, (unsigned int)(regs->info & 0xFFFFFFFF));
+    log_info("user exception: %s (thread %u)\n",
+             exception_messages[int_no], scheduler_current()->id);
+    log_info("\trip: %p, rsp: %p, err_code: %u\n",
+             (void *)regs->rip, (void *)regs->rsp, (unsigned int)(regs->info & 0xFFFFFFFF));
 
     int signal = exception_signals[int_no] != 0 ? exception_signals[int_no] : SIGKILL;
 
