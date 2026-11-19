@@ -1,0 +1,39 @@
+--- a/include/platform.h
++++ b/include/platform.h
+@@ -432,6 +432,11 @@
+ #define HAVE_MNTENT_H 1
+ #define HAVE_NET_ETHERNET_H 1
+ #define HAVE_SYS_STATFS_H 1
++#if defined(__mihos__)
++/* mlibc without its "linux" option: no <mntent.h>, no <sys/statfs.h> */
++# undef HAVE_MNTENT_H
++# undef HAVE_SYS_STATFS_H
++#endif
+ #define HAVE_PRINTF_PERCENTM 1
+ #define HAVE_WAIT3 1
+ #define HAVE_DEV_FD 1
+--- a/libbb/appletlib.c
++++ b/libbb/appletlib.c
+@@ -34,6 +34,7 @@
+ 
+ #if !(defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) \
+     || defined(__APPLE__) \
++    || defined(__mihos__) /* <malloc.h> is mlibc's "linux" option */ \
+     )
+ # include <malloc.h> /* for mallopt */
+ #endif
+--- a/libbb/alloc_affinity.c
++++ b/libbb/alloc_affinity.c
+@@ -9,6 +9,7 @@
+ #include <sched.h>
+ #include "libbb.h"
+ 
++#if !defined(__mihos__) /* sched_getaffinity is mlibc's "linux" option */
+ unsigned long* FAST_FUNC get_malloc_cpu_affinity(int pid, unsigned *sz)
+ {
+ 	unsigned long *mask = NULL;
+@@ -27,3 +28,4 @@
+ 	*sz = sz_in_bytes;
+ 	return mask;
+ }
++#endif

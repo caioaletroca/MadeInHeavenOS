@@ -3,3 +3,6 @@
 disk/** -text
 # The system's configuration files go into the images as they are: LF, as a Unix system reads them
 user/etc/** text eol=lf
+# Applied to and read inside the Linux build container: LF, as the upstream sources
+ports/**/*.patch text eol=lf
+ports/**/*.config text eol=lf
