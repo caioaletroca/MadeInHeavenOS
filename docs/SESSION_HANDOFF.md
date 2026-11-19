@@ -600,7 +600,8 @@ kernel/
 ├── platform/pc/                  # pic, pit, ps2, keyboard, vga, screen (CP437), multiboot2, ata, platform.c
 ├── sched/ mm/ driver/ sys/ fs/ exec/ selftest/
 ├── init.c                        # init_start: starts /sbin/init (pid 1), panics if it exits
-├── kernel_args.c                 # the command line's kernel words (root=, selftests), a table of parameters
+├── kernel_args.c                 # the command line's kernel words (root=, selftests, quiet, loglevel=), a table of parameters
+├── logger.c                      # log levels: log_error … log_debug, the console's cutoff
 └── kmain.c
 ```
 
@@ -685,7 +686,8 @@ the real tick length in ns), `platform_date_read(date)` (the battery-backed cloc
 ### Boot sequence (`kmain`)
 
 ```text
-tty_init → platform_boot_info_init → kernel_args_parse [root=, selftests; init's words] → arch_init [TSS first]
+tty_init → platform_boot_info_init → kernel_args_parse [root=, selftests, quiet/loglevel=; init's words]
+→ logger_set_console_level [before the first message] → arch_init [TSS first]
 → input_init → platform_init (PIC, PS/2, keyboard IRQ, ATA disks)
 → mm_init(&boot_info) [mmap_init + kmalloc_init + arch_mmu_init]
 → devfs_init [its root, not mounted yet: devices can register] → mem_devices_init [/dev/null, /dev/zero]
@@ -2187,8 +2189,20 @@ root_init: root "" ─▶ initrd_init ─▶ "/" = the initrd (live)        none
   forever), no copy. `root=` with an empty value means no `root=`.
 - **Self-tests** run only with `selftests` on (`selftests_run` in `kmain.c`); the two test
   entries pass `selftests=1`, the shell entries boot straight to init.
-  `selftest/kernel_args.c` runs 21 lines through the parser, every field checked (first of
-  the self-tests; its three bad lines print the three warnings).
+  `selftest/kernel_args.c` runs 31 lines through the parser, every field checked (first of
+  the self-tests; its bad lines print their warnings).
+- **Log levels** (`logger.c`, `include/logger.h`): Linux's eight with plain names
+  (`LOG_EMERGENCY` … `LOG_DEBUG`, 0 to 7), through `log_message(level, fmt, ...)` and
+  `log_error`/`log_warning`/`log_notice`/`log_info`/`log_debug`. The console shows a message
+  when its level is below one cutoff: 7 by default (all but debug), 4 with `quiet` (errors and
+  worse), N with `loglevel=N` (0 to 8; 8 shows debug). `quiet` and `loglevel=` write the same
+  field, `kernel_args.console_level`, so the later word wins; kmain hands it to
+  `logger_set_console_level` right after the parse. Levels follow Linux's for the same
+  messages: `MiHOS` notice (the version banner), disks, partitions and mounts info, user
+  faults info (Linux's `segfault at`), failures error, `system halted` emergency (shown even
+  quiet, as Linux's `pr_emerg`). The debugcon log is filtered as the screen is (one console).
+  `kprintf` stays unfiltered for `panic` and the self-tests. The shell entries pass `quiet`:
+  the screen shows only `/etc/issue` and the prompt; the test entries show every message.
 - **`root_init(args, info)`** (after `block_devfs_init`: a disk needs `irq_enable`; before
   anything looks up a path): no `root=` → `initrd_init` (no `initrd` module → panic `no root=
   and no initrd`); `root=` → `block_find`, `ext2_mount` (a missing device is `-ENODEV`, a
@@ -3553,8 +3567,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           `grub/Makefile` packs `etc` into the initrd and part.img (`PROGRAM_DIRS` is now
           `ROOT_DIRS`). `5194238`: `user/etc/**` stays LF on checkout. Gate: 47 of 47 on
           both boots, e2fsck clean; the shell entry shows the issue, then the prompt.
-        - Next: log levels with `quiet`/`loglevel=`, uptime timestamps on kernel
-          messages.
+        - `aa038d5`: log levels (`logger.c`), `quiet` and `loglevel=` (one cutoff, the
+          later word wins), every kernel message at Linux's level for it, the shell entries
+          quiet. Gate: 47 of 47 on both boots, e2fsck clean; both shell entries show only
+          the issue and the prompt.
+        - Next: uptime timestamps on kernel messages (`[    0.123456]`, in `log_message`).
       - **D10g:** busybox for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as
         the roadmap says); its `sh` brings `-c`, which Lua's `io.popen` needs.
     - Threads (`clone`, pthreads) when a port needs them (Python, Node.js), with real locks
@@ -3877,6 +3894,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   init's environment); `root=` names a device by its name only (no `UUID=`/`LABEL=`/`PARTUUID=`),
   so the same disk is `hdb1` in QEMU and `hdc1` in Bochs and the `*-disk` entries name QEMU's.
 - An initrd GRUB loads although `root=` is given is never read, and its memory stays reserved.
+- Kernel messages: no ring buffer, so a message under the cutoff is gone (Linux keeps every
+  one for `dmesg`, read through `syslog`/`klogctl`: busybox's `dmesg` would use it); no
+  `ignore_loglevel`; no timestamps yet.
 - The scripted entry choice (SMBIOS product name) works where the product name can be set
   (QEMU); the tests learn the boot from the runner's argument, which repeats what `root=`
   says (only grub.cfg knows both).
