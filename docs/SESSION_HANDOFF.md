@@ -3583,8 +3583,36 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           unstamped. Gate: 47 of 47 on both boots, e2fsck clean.
         - The intermission is done: a quiet boot shows `/etc/issue` and the prompt; a test
           boot shows every message, stamped. Back to D10g.
-      - **D10g:** busybox for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as
-        the roadmap says); its `sh` brings `-c`, which Lua's `io.popen` needs.
+      - **D10g, BusyBox (2026-11-19), in progress:** the commands (`mkdir`, `rm`, `cp`, …
+        are not ours: borrowed, as the roadmap says).
+        - `f47a362`: `ports/busybox/` builds BusyBox 1.38.0 (pinned sha256, never vendored)
+          into `/bin/busybox` (1.35 MB static), run as `busybox <applet>`. `applets.config`
+          lists the applets (files, text tools, `md5sum`/`sha256sum`, `vi`, `less`, `ash`);
+          the Makefile merges it over `allnoconfig` and runs `oldconfig` (busybox's kconfig
+          drops the booleans of `KCONFIG_ALLCONFIG`), failing on any wanted line kconfig
+          dropped. `mihos.patch`: three changes for mlibc's `linux` option being off
+          (`<mntent.h>`, `<sys/statfs.h>`, `<malloc.h>`, `sched_getaffinity`). Proven first
+          in throwaway containers (`--rm`, repo mounted read-only).
+        - `5053440`: the `busybox` test, 46 cases (exact stdout and status, input on a
+          pipe); 32 run, 14 are parked with the calls they wait for (`waits_for`). The first
+          run showed what is missing:
+          - **getuid/geteuid/getgid/getegid:** ash calls `geteuid` at startup and mlibc
+            *panics* without the sysdep ("Cannot continue without sys_geteuid()"). Return
+            0 (root) for now. Unparks the 4 `sh` cases and the file chain after
+            `echo made > file`.
+          - **fcntl `F_GETFL`/`F_SETFL`/`F_DUPFD`/`F_DUPFD_CLOEXEC`:** the kernel and the
+            sysdep know only `F_GETFD`/`F_SETFD`. busybox `printf` exits 1 when
+            `fcntl(1, F_GETFL)` fails; ash saves fds with `F_DUPFD_CLOEXEC` before a
+            redirection. The status flags belong to the open file (shared by `dup`s).
+          - **rename:** `mv` (and Lua's `os.rename`); VFS and ext2, `..` fixed when a
+            directory moves, `EINVAL` for a move into its own subtree.
+          - **utimensat:** `touch` (NULL times = now, `UTIME_NOW`/`UTIME_OMIT`).
+        - Next: those calls (the user writes them), unparking the cases batch by batch;
+          the run after each shows the next gaps (`cp` may want `fchmod`). Then symlinks
+          for applet names (`/bin/ls → busybox`: a VFS link type, following during
+          lookup with `ELOOP` at 40, `readlink`/`lstat`, initrd tar type `2`, ext2 fast
+          symlinks); `-c` in our own shell for Lua's `io.popen` (`/bin/sh` stays ours,
+          ash is `busybox sh`).
     - Threads (`clone`, pthreads) when a port needs them (Python, Node.js), with real locks
       for what one thread per process covers today (fd table, address space, regions,
       `brk`); SMP last.
@@ -3757,6 +3785,14 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   so it fails with `ENOSYS`; the `lua` test checks only that it fails cleanly.
 - `ports/` downloads at build time (`wget` in the build container): a build with no network
   needs the tarball already in `build/downloads/`.
+- BusyBox (D10g) is patched around mlibc's `linux` option, which our port leaves off
+  (`<mntent.h>`, `<sys/statfs.h>`, `<malloc.h>`, `sched_getaffinity`); most mlibc systems
+  turn it on. Turn it on (a fork change and an image rebuild) when a second port needs
+  those headers, and drop `mihos.patch`'s workarounds. Built without `CONFIG_DESKTOP`, so
+  the small `od` (no `-A`/`-t`) and other trimmed applets.
+- mlibc's `execvp` has no default `PATH` when the environment has none (glibc falls back to
+  `/bin:/usr/bin`): `env -i cmd` finds nothing unless `cmd` is a path.
+- Applets run only as `busybox <applet>` until the kernel has symlinks (D10g's next step).
 
 - The monotonic clock counts timer ticks (100 Hz, `timer_nanoseconds` = ticks × 10 ms): it
   moves in 10 ms steps and falls behind whenever ticks are lost. A starved QEMU drops them
