@@ -2201,7 +2201,14 @@ root_init: root "" ─▶ initrd_init ─▶ "/" = the initrd (live)        none
   messages: `MiHOS` notice (the version banner), disks, partitions and mounts info, user
   faults info (Linux's `segfault at`), failures error, `system halted` emergency (shown even
   quiet, as Linux's `pr_emerg`). The debugcon log is filtered as the screen is (one console).
-  `kprintf` stays unfiltered for `panic` and the self-tests. The shell entries pass `quiet`:
+  Each shown line starts with Linux's uptime stamp, `[    5.123456] ` (`clock_monotonic`,
+  `0.000000` before `timer_init`; it moves in ticks, ~10 ms): stamp and text are formatted
+  into one 512-byte buffer (`snprintf`, then `vsnprintf` after it) and written with one
+  `tty_write`, so they stay whole under IRQs. A message not ending its line leaves
+  `line_open` set and the next one continues it without a stamp (Linux's `KERN_CONT`, here
+  implicit); one call per line, so a message with a `\n` inside would stamp only its first.
+  `run-tests.sh` matches `system halted` after a stamp.
+  `kprintf` stays unfiltered and unstamped for `panic` and the self-tests. The shell entries pass `quiet`:
   the screen shows only `/etc/issue` and the prompt; the test entries show every message.
 - **`root_init(args, info)`** (after `block_devfs_init`: a disk needs `irq_enable`; before
   anything looks up a path): no `root=` → `initrd_init` (no `initrd` module → panic `no root=
@@ -3555,7 +3562,7 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           `os.rename` (no `rename` in the kernel).
         - Gate: 47 of 47 on both boots, e2fsck clean. The first run's disk boot panicked once
           in the block self-test (`-EIO`, see "Open bugs"); the rerun passed.
-      - **Boot messages (intermission, 2026-11-18), in progress:** toward what a booting
+      - **Boot messages (intermission, 2026-11-18 to 2026-11-19), done:** toward what a booting
         OS shows (Linux: printk levels and `quiet`, then init, getty's `/etc/issue`, no shell
         banner).
         - `d665a45`: the kernel self-tests run only with `selftests` on the command line
@@ -3571,7 +3578,11 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           later word wins), every kernel message at Linux's level for it, the shell entries
           quiet. Gate: 47 of 47 on both boots, e2fsck clean; both shell entries show only
           the issue and the prompt.
-        - Next: uptime timestamps on kernel messages (`[    0.123456]`, in `log_message`).
+        - `17171e9`: every kernel message line starts with its uptime stamp
+          (`[    5.123456] `), one buffer and one `tty_write` per message, continuations
+          unstamped. Gate: 47 of 47 on both boots, e2fsck clean.
+        - The intermission is done: a quiet boot shows `/etc/issue` and the prompt; a test
+          boot shows every message, stamped. Back to D10g.
       - **D10g:** busybox for the commands (`mkdir`, `rm`, `cp`, … are not ours: borrowed, as
         the roadmap says); its `sh` brings `-c`, which Lua's `io.popen` needs.
     - Threads (`clone`, pthreads) when a port needs them (Python, Node.js), with real locks
@@ -3896,7 +3907,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - An initrd GRUB loads although `root=` is given is never read, and its memory stays reserved.
 - Kernel messages: no ring buffer, so a message under the cutoff is gone (Linux keeps every
   one for `dmesg`, read through `syslog`/`klogctl`: busybox's `dmesg` would use it); no
-  `ignore_loglevel`; no timestamps yet.
+  `ignore_loglevel`; no `printk.time=0` to turn the stamps off; `panic` and the self-tests
+  print through `kprintf`, unstamped (Linux stamps panic lines too).
 - The scripted entry choice (SMBIOS product name) works where the product name can be set
   (QEMU); the tests learn the boot from the runner's argument, which repeats what `root=`
   says (only grub.cfg knows both).
