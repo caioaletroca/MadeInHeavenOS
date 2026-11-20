@@ -36,16 +36,11 @@ typedef struct busybox_case
     const char *waits_for; // the missing calls this case needs; NULL = runs
 } busybox_case_t;
 
-// ash saves the fds a redirection replaces with F_DUPFD
-#define WAITS_REDIRECT "fcntl F_DUPFD"
-// The cases after it use the file ash writes first
-#define WAITS_FILE WAITS_REDIRECT
-
 static const busybox_case_t cases[] = {
     // Output only
     {{"echo", "hello", "world"}, NULL, "hello world\n", 0, NULL},
     {{"echo", "-n", "a"}, NULL, "a", 0, NULL},
-    {{"printf", "%s-%d\\n", "x", "5"}, NULL, "x-5\n", 0, "fcntl F_GETFL"}, // checks stdout is open first
+    {{"printf", "%s-%d\\n", "x", "5"}, NULL, "x-5\n", 0, NULL}, // checks stdout with F_GETFL first
     {{"seq", "1", "3"}, NULL, "1\n2\n3\n", 0, NULL},
     {{"seq", "-s", ",", "1", "5"}, NULL, "1,2,3,4,5\n", 0, NULL},
     {{"basename", "/usr/tests/run"}, NULL, "run\n", 0, NULL},
@@ -80,21 +75,22 @@ static const busybox_case_t cases[] = {
     // Directories and files: /usr holds only tests in both boots; /mnt is the writable test disk
     {{"ls", "/usr"}, NULL, "tests\n", 0, NULL},
     {{"mkdir", "/mnt/busybox"}, NULL, "", 0, NULL},
-    {{"sh", "-c", "echo made > /mnt/busybox/file"}, NULL, "", 0, WAITS_REDIRECT},
-    {{"cat", "/mnt/busybox/file"}, NULL, "made\n", 0, WAITS_FILE},
-    {{"cp", "/mnt/busybox/file", "/mnt/busybox/copy"}, NULL, "", 0, WAITS_FILE},
-    {{"cmp", "/mnt/busybox/file", "/mnt/busybox/copy"}, NULL, "", 0, WAITS_FILE},
-    {{"mv", "/mnt/busybox/copy", "/mnt/busybox/moved"}, NULL, "", 0, WAITS_FILE ", rename"},
-    {{"ls", "/mnt/busybox"}, NULL, "file\nmoved\n", 0, WAITS_FILE ", rename"},
+    // ash saves the fd a redirection replaces with F_DUPFD_CLOEXEC, at 10 and up
+    {{"sh", "-c", "echo made > /mnt/busybox/file"}, NULL, "", 0, NULL},
+    {{"cat", "/mnt/busybox/file"}, NULL, "made\n", 0, NULL},
+    {{"cp", "/mnt/busybox/file", "/mnt/busybox/copy"}, NULL, "", 0, NULL},
+    {{"cmp", "/mnt/busybox/file", "/mnt/busybox/copy"}, NULL, "", 0, NULL},
+    {{"mv", "/mnt/busybox/copy", "/mnt/busybox/moved"}, NULL, "", 0, "rename"},
+    {{"ls", "/mnt/busybox"}, NULL, "file\nmoved\n", 0, "rename"},
     {{"touch", "/mnt/busybox/new"}, NULL, "", 0, "utimensat"},
     {{"find", "/mnt/busybox", "-name", "n*"}, NULL, "/mnt/busybox/new\n", 0, "utimensat"},
-    {{"rm", "/mnt/busybox/file", "/mnt/busybox/moved", "/mnt/busybox/new"}, NULL, "", 0,
-     WAITS_FILE ", rename, utimensat"},
+    // -f: whichever of these the parked cases above did not make is skipped, so rmdir finds it empty
+    {{"rm", "-f", "/mnt/busybox/file", "/mnt/busybox/copy", "/mnt/busybox/moved", "/mnt/busybox/new"},
+     NULL, "", 0, NULL},
     {{"rmdir", "/mnt/busybox"}, NULL, "", 0, NULL},
     {{"test", "-e", "/mnt/busybox"}, NULL, "", 1, NULL},
 
-    // The shell: arithmetic, a pipeline, a loop, an exit status. echo, not printf: printf
-    // checks stdout with F_GETFL first (the parked printf case above)
+    // The shell: arithmetic, a pipeline, a loop, an exit status
     {{"sh", "-c", "echo $((6 * 7))"}, NULL, "42\n", 0, NULL},
     {{"sh", "-c", "{ echo b; echo a; } | busybox sort"}, NULL, "a\nb\n", 0, NULL},
     {{"sh", "-c", "for i in 1 2 3; do echo -n $i; done; echo"}, NULL, "123\n", 0, NULL},
