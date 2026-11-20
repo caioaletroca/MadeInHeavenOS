@@ -78,6 +78,7 @@ static process_t *child_create(process_t *parent, address_space_t *space)
     process_cwd_inherit(child, parent);
     signal_inherit(child, parent);
     process_group_inherit(child, parent);
+    process_identity_inherit(child, parent);
 
     // The handle from process_create is the parent's reference, held until wait
     process_child_add(parent, child);
@@ -272,6 +273,48 @@ long sys_getppid(void)
 {
     process_t *current = scheduler_current()->process;
     return process_parent_pid(current);
+}
+
+/**
+ * getuid: the real user id of the calling process (who started it). Never fails.
+ *
+ * @return The real user id; 0 is root.
+ */
+long sys_getuid(void)
+{
+    return scheduler_current()->process->identity.uid;
+}
+
+/**
+ * geteuid: the effective user id of the calling process (what permission
+ * checks use). Never fails.
+ *
+ * @return The effective user id; 0 is root.
+ */
+long sys_geteuid(void)
+{
+    return scheduler_current()->process->identity.euid;
+}
+
+/**
+ * getgid: the real group id of the calling process. Never fails.
+ *
+ * @return The real group id; 0 is root's group.
+ */
+long sys_getgid(void)
+{
+    return scheduler_current()->process->identity.gid;
+}
+
+/**
+ * getegid: the effective group id of the calling process (what permission
+ * checks use). Never fails.
+ *
+ * @return The effective group id; 0 is root's group.
+ */
+long sys_getegid(void)
+{
+    return scheduler_current()->process->identity.egid;
 }
 
 /**

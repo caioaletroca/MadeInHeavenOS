@@ -36,6 +36,20 @@ typedef struct
 } process_tree_t;
 
 /**
+ * Who a process runs as (Linux's struct cred, its first four fields): the
+ * real ids say who started it, the effective ones are what permission checks
+ * use. Inherited at fork and spawn, kept across exec. 0 is root, which every
+ * process is until there are users.
+ */
+typedef struct process_identity
+{
+    uint32_t uid;  // real user
+    uint32_t euid; // effective user
+    uint32_t gid;  // real group
+    uint32_t egid; // effective group
+} process_identity_t;
+
+/**
  * A process stopped by SIGSTOP, SIGTSTP, SIGTTIN or SIGTTOU.
  */
 typedef struct
@@ -88,6 +102,7 @@ typedef struct process
     process_stop_t stop;
     process_signals_t signals;
     process_files_t files;
+    process_identity_t identity;
 } process_t;
 
 /**
@@ -256,6 +271,14 @@ process_t *process_find(uint32_t pid);
  * @param parent The parent process.
  */
 void process_group_inherit(process_t *child, process_t *parent);
+
+/**
+ * Give the child the parent's user and group ids, as fork and spawn do.
+ *
+ * @param child The child process.
+ * @param parent The parent process.
+ */
+void process_identity_inherit(process_t *child, process_t *parent);
 
 /**
  * setpgid: move a process to a group.

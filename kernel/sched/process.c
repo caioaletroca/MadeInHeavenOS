@@ -183,6 +183,11 @@ void process_group_inherit(process_t *child, process_t *parent)
     child->tree.session = parent->tree.session;
 }
 
+void process_identity_inherit(process_t *child, process_t *parent)
+{
+    child->identity = parent->identity;
+}
+
 long process_group_set(process_t *caller, uint32_t pid, uint32_t group)
 {
     guard(spinlock, &process_tree_lock);

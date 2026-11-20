@@ -51,6 +51,10 @@
 #define SYS_SET_THREAD_POINTER 46
 #define SYS_FUTEX_WAIT 47
 #define SYS_FUTEX_WAKE 48
+#define SYS_GETUID 49
+#define SYS_GETEUID 50
+#define SYS_GETGID 51
+#define SYS_GETEGID 52
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)

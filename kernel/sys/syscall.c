@@ -100,6 +100,14 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_futex_wait((uintptr_t)arg0, (uint32_t)arg1, (uintptr_t)arg2);
     case SYS_FUTEX_WAKE:
         return sys_futex_wake((uintptr_t)arg0, (size_t)arg1);
+    case SYS_GETUID:
+        return sys_getuid();
+    case SYS_GETEUID:
+        return sys_geteuid();
+    case SYS_GETGID:
+        return sys_getgid();
+    case SYS_GETEGID:
+        return sys_getegid();
     default:
         return -ENOSYS;
     }
