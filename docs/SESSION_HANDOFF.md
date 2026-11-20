@@ -1030,8 +1030,16 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   `F_GETFD` and `F_SETFD` for the one flag, `FD_CLOEXEC`; `-EBADF` for a closed fd, `-EINVAL` for
   any other command. The flag is a bit per fd in `process_t.close_on_exec`, not in `file_t`: it
   belongs to the slot, so two fds of one open file differ. `process_fd_install` and `dup2` clear
-  it, `process_files_inherit` copies it. libc `fcntl` in `<fcntl.h>` reads its third argument
-  only for `F_SETFD`. `open` sets it too with `O_CLOEXEC` (Linux's `02000000`, D10): `sys_open`
+  it, `process_files_inherit` copies it. D10g added the open file's side: `F_GETFL` → the
+  access mode (from `FILE_READ`/`FILE_WRITE`) and `O_APPEND` (`file_status_flags`);
+  `F_SETFL` changes only `FILE_APPEND`, under `position_lock` (what `vfs_file_write` holds),
+  ignoring the other bits as Linux (`O_NONBLOCK` too). These live in `file_t.flags`, so every
+  `dup` and fork copy sees them. `F_DUPFD`/`F_DUPFD_CLOEXEC` (0 and 1030) → the lowest free
+  fd ≥ `arg` (`process_fd_install_from`; `process_fd_install` is it from 0), `-EINVAL` for
+  an `arg` outside the table, `-EMFILE` when none is free from there; the `_CLOEXEC` one
+  marks the new fd. A `guard` under a `case` needs its own braces: otherwise the labels
+  after it jump into its scope and its cleanup unlocks garbage on return (the first
+  try page-faulted at boot). `open` sets it too with `O_CLOEXEC` (Linux's `02000000`, D10): `sys_open`
   keeps the flag from `vfs_open` (it is the fd's, not the file's) and marks the new fd in the
   same call, so no fork and exec come between.
 - **`spawn(path, argv, envp)`** → child pid or `-ENOENT`/`-ENOEXEC`/`-E2BIG`/`-EFAULT`/`-ENOMEM`.
@@ -3604,8 +3612,8 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           run showed what is missing:
           - **getuid/geteuid/getgid/getegid (done):** ash calls `geteuid` at startup and
             mlibc *panics* without the sysdep ("Cannot continue without sys_geteuid()").
-          - **fcntl `F_GETFL`/`F_SETFL`/`F_DUPFD`/`F_DUPFD_CLOEXEC`:** the kernel and the
-            sysdep know only `F_GETFD`/`F_SETFD`. busybox `printf` (the applet and ash's
+          - **fcntl `F_GETFL`/`F_SETFL`/`F_DUPFD`/`F_DUPFD_CLOEXEC` (done):** the kernel and
+            the sysdep knew only `F_GETFD`/`F_SETFD`. busybox `printf` (the applet and ash's
             builtin) checks `fcntl(1, F_GETFL)` first and prints nothing when it fails; ash
             saves fds with `F_DUPFD_CLOEXEC` before a redirection. The status flags belong
             to the open file (shared by `dup`s).
@@ -3621,6 +3629,14 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           checks `clearenv` (on the starting environment and on mlibc's copy after a
           `setenv`), the 4 `sh` cases run (the pipeline and loop use `echo`: `printf` waits
           for `F_GETFL`); 10 cases stay parked. Gate: 48 of 48 on both boots.
+        - The fcntl commands, batch 2 (the user wrote the kernel side): `4e667f7` (see
+          `fcntl` under User mode). mlibc fork `cb38eb98`: the Fcntl sysdep passes the four,
+          and `Dup` with `O_CLOEXEC` is one `F_DUPFD_CLOEXEC` call. Pointer `17e2600`.
+          `71cffe9`: the `dup` test checks every command (both flag kinds, appends through
+          `F_SETFL`, the `F_DUPFD` errors); busybox runs `printf` and the chain after
+          `echo made > file` (ash's saved fds at 10 and up fit the 16 slots), and `rm -f`
+          clears whatever the parked cases left. 4 cases stay parked (`mv` and its `ls` for
+          `rename`, `touch` and `find` for `utimensat`). Gate: 48 of 48 on both boots.
         - Next: the remaining calls (the user writes them), unparking the cases batch by batch;
           the run after each shows the next gaps (`cp` may want `fchmod`). Then symlinks
           for applet names (`/bin/ls → busybox`: a VFS link type, following during
@@ -3810,6 +3826,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The fork's `clearenv` fix (`9d5d2017`) is managarm's bug too: send it upstream as a PR.
 - Every process is root: no `setuid`/`setgid`, no saved ids or supplementary groups, and no
   permission checks on files (ext2 keeps owners and modes, the kernel ignores them).
+- `O_NONBLOCK` is accepted by `F_SETFL` and ignored (Linux ignores only what it does not
+  support): pipes and the tty always block. A program expecting `EAGAIN` would hang; make
+  them honour it when a port needs it.
+- 16 fds per process (`PROCESS_MAX_FILES`; Linux's default is 1024, and `close_on_exec` is a
+  32-bit mask): ash keeps saved fds at 10 and up, so nested redirections can hit `EMFILE`.
 
 - The monotonic clock counts timer ticks (100 Hz, `timer_nanoseconds` = ticks × 10 ms): it
   moves in 10 ms steps and falls behind whenever ticks are lost. A starved QEMU drops them
@@ -4056,9 +4077,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   real mask with `fxsave` at boot). Saved on every switch between user threads, even when the
   same user thread comes back after a kernel thread.
 - `exec`: `SYS_SPAWN` stays a system call (`posix_spawn` could become `fork` + `exec` in libc, with
-  file actions). `fcntl` has only `F_GETFD` and `F_SETFD`; `open` takes `O_CLOEXEC`, but there is no
-  `pipe2` and `dup` takes no flags, so mlibc's sysdeps set the flag after `pipe` or `dup`,
-  which leaves a gap once threads exist. No `execl` family, no
+  file actions). `open` takes `O_CLOEXEC` and `dup` gets it atomically through
+  `F_DUPFD_CLOEXEC`, but there is no `pipe2` or `dup3`, so mlibc's sysdeps set the flag after
+  `pipe` or `dup2`, which leaves a gap once threads exist. No `execl` family, no
   `#!` scripts, no `ENOEXEC` test. `exec` must stop other threads when threads exist. Stdio buffers die with the old program, as on POSIX.
 - Pipelines: at most `PIPELINE_MAX` (8) commands (bash: no limit), no `pipefail` or `PIPESTATUS`.
   A syntax error does not set `$?` (bash: 2). A failed `dup2` in a stage's child is not checked.
