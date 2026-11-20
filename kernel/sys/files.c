@@ -383,18 +383,49 @@ long sys_pipe(uintptr_t fds)
 }
 
 /**
- * Perform operations on a file descriptor.
+ * The O_ flags an open file was opened with, as F_GETFL reports them: the
+ * access mode and O_APPEND.
+ *
+ * @param file The open file.
+ * @return Its access mode and status flags.
+ */
+static long file_status_flags(file_t *file)
+{
+    long flags;
+    if ((file->flags & FILE_READ) && (file->flags & FILE_WRITE))
+        flags = O_RDWR;
+    else if (file->flags & FILE_WRITE)
+        flags = O_WRONLY;
+    else
+        flags = O_RDONLY;
+
+    if (file->flags & FILE_APPEND)
+        flags |= O_APPEND;
+    return flags;
+}
+
+/**
+ * fcntl(fd, command, arg): reads or changes an fd or its open file.
+ * - F_GETFD / F_SETFD: the fd's own flags (FD_CLOEXEC), not shared with its copies.
+ * - F_GETFL / F_SETFL: the open file's access mode and status flags, shared by every
+ *   copy (dup, fork); F_SETFL changes only O_APPEND and ignores the other bits, as Linux.
+ * - F_DUPFD / F_DUPFD_CLOEXEC: dup to the lowest free fd >= arg; the _CLOEXEC one
+ *   sets FD_CLOEXEC on it, the other leaves it clear.
  *
  * @param fd The file descriptor.
- * @param command The command to perform (e.g., F_GETFD, F_SETFD).
- * @param arg The argument for the command.
- * @return The flags for F_GETFD, 0 for F_SETFD, or a negative error code on failure.
+ * @param command One of the six commands above.
+ * @param arg FD_CLOEXEC for F_SETFD, the O_ flags for F_SETFL, the lowest fd for the
+ *            F_DUPFDs; unused otherwise.
+ * @return The flags for F_GETFD and F_GETFL, the new fd for the F_DUPFDs, 0 for the
+ *         setters, or -EBADF (fd not open), -EINVAL (unknown command, or an F_DUPFD
+ *         arg outside the table), -EMFILE (no free fd from arg up).
  */
 long sys_fcntl(unsigned long fd, int command, long arg)
 {
     process_t *p = scheduler_current()->process;
 
-    if (sys_file(fd) == NULL)
+    file_t *file = sys_file(fd);
+    if (file == NULL)
         return -EBADF;
 
     uint32_t bit = 1u << fd;
@@ -409,6 +440,35 @@ long sys_fcntl(unsigned long fd, int command, long arg)
         else
             p->files.close_on_exec &= ~bit;
         return 0;
+    case F_GETFL:
+        return file_status_flags(file);
+    case F_SETFL:
+    {
+        // Only O_APPEND can change; the access mode and creation flags are ignored, as on Linux.
+        // Under the lock vfs_file_write holds, so a write in progress finishes in its old mode
+        guard(mutex, &file->position_lock);
+        if (arg & O_APPEND)
+            file->flags |= FILE_APPEND;
+        else
+            file->flags &= ~FILE_APPEND;
+        return 0;
+    }
+    case F_DUPFD:
+    case F_DUPFD_CLOEXEC:
+    {
+        if (arg < 0 || arg >= PROCESS_MAX_FILES)
+            return -EINVAL;
+
+        int new_fd = process_fd_install_from(p, file_get(file), (int)arg);
+        if (new_fd < 0)
+        {
+            file_put(file);
+            return new_fd;
+        }
+        if (command == F_DUPFD_CLOEXEC)
+            p->files.close_on_exec |= 1u << new_fd;
+        return new_fd;
+    }
     default:
         return -EINVAL;
     }

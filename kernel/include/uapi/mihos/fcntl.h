@@ -19,8 +19,12 @@
 #define SEEK_END 2 // offset from the end of the file
 
 // fcntl() commands
-#define F_GETFD 1 // read the fd's flags
-#define F_SETFD 2 // set the fd's flags
+#define F_DUPFD 0            // duplicate to the lowest free fd >= arg
+#define F_GETFD 1            // read the fd's flags
+#define F_SETFD 2            // set the fd's flags
+#define F_GETFL 3            // read the open file's access mode and status flags
+#define F_SETFL 4            // set the open file's status flags (O_APPEND)
+#define F_DUPFD_CLOEXEC 1030 // F_DUPFD with FD_CLOEXEC set (Linux's 1024 + 6)
 
 // fd flags
 #define FD_CLOEXEC 1 // close this fd in a successful exec

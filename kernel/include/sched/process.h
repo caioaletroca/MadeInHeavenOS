@@ -122,6 +122,17 @@ process_t *process_create(struct address_space *space);
 process_t *process_create_init(struct address_space *space);
 
 /**
+ * Install a file at the lowest free file descriptor from first up (fcntl's
+ * F_DUPFD); process_fd_install is this from 0.
+ *
+ * @param p The process to install the file descriptor for.
+ * @param file The file to associate with the process.
+ * @param first The lowest descriptor it may use (0 to PROCESS_MAX_FILES - 1).
+ * @return The file descriptor on success, or -EMFILE when none is free from first up.
+ */
+int process_fd_install_from(process_t *p, file_t *file, int first);
+
+/**
  * Install a file descriptor for the specified process.
  *
  * @param p The process to install the file descriptor for.

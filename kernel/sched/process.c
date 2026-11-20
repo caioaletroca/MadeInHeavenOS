@@ -310,12 +310,12 @@ long process_signal_everyone(process_t *caller, int signal)
     return result;
 }
 
-int process_fd_install(process_t *p, file_t *file)
+int process_fd_install_from(process_t *p, file_t *file, int first)
 {
     if (p == NULL || file == NULL)
         return -EMFILE;
 
-    for (int i = 0; i < PROCESS_MAX_FILES; i++)
+    for (int i = first; i < PROCESS_MAX_FILES; i++)
     {
         if (p->files.open[i] == NULL)
         {
@@ -326,6 +326,11 @@ int process_fd_install(process_t *p, file_t *file)
     }
 
     return -EMFILE;
+}
+
+int process_fd_install(process_t *p, file_t *file)
+{
+    return process_fd_install_from(p, file, 0);
 }
 
 int process_start(process_t *p, uintptr_t entry, uintptr_t user_stack)
