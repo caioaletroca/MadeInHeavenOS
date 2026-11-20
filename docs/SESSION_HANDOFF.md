@@ -1431,7 +1431,16 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   node op (`-EROFS` without one). `mkdir` of a path that already looks up → `-EEXIST` first
   (also `/` and the initrd's directories). `rmdir`: `"/"` → `-EBUSY`, a last name `.` →
   `-EINVAL` (POSIX), `..` → `-ENOTEMPTY` (Linux), decided by the VFS so a file system is
-  never asked to remove a directory from itself (ext2 would lock the same node twice). Directories open (listed with
+  never asked to remove a directory from itself (ext2 would lock the same node twice).
+  **`vfs_rename(old, new)`** (`sys_rename`, `SYS_RENAME` 53, D10g; mlibc's `Rename` sysdep,
+  C's `rename` in `<stdio.h>`): both paths trimmed; `"/"` → `-EBUSY`; a trailing `/` on
+  either → `old` must be a directory (`-ENOTDIR`); both parents by `vfs_lookup_parent`; a last
+  name `.` or `..` → `-EBUSY` (Linux); different `dev` → `-EXDEV` (18, "Invalid cross-device
+  link": `mv` copies instead); no `rename` op → `-EROFS` (initrd, devfs); a mount point on
+  either side → `-EBUSY`; then the old parent's `rename` op. A node's `parent` can change now,
+  so it is read and held under the node's spinlock (`vfs_node_parent`, used by `vfs_lookup`'s
+  `..` and `vfs_getcwd`) and swapped the same way (`vfs_node_set_parent`, the old parent put
+  after the lock). Directories open (listed with
   `getdents`); reading one gives `-EISDIR`. `vfs_read`: a directory → `-EISDIR`, a node without
   a `read` op (character devices, read through their `file_ops`) → `-EINVAL`. A block device is
   read like a file: `lseek` works on it, since only `VFS_CHARDEV` is refused.
@@ -2459,6 +2468,26 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   `free_on_release`; then the parent's `nlink` −1. The last put frees it (`ext2_inode_free`
   with `directory`: `bg_used_dirs_count` −1). `ext2_create` and `ext2_mkdir` refuse a parent
   with `nlink` 0 (`-ENOENT`): a directory removed while still held takes no new names.
+- **Rename** (`ext2_rename`, `namespace.c`, D10g): one at a time per volume
+  (`volume->rename_lock`, Linux's `s_vfs_rename_mutex`): so only a rename ever holds two
+  directories' locks, and no `parent` changes while one walks them. `ext2_lock_two` takes an
+  ancestor's lock before its descendant's (`ext2_is_under` walks `parent` up to the volume's
+  root), the same directory once. Every check before any write: source missing → `-ENOENT`; a
+  target the VFS can't show (a symlink) → `-EEXIST`; both names one inode → 0, nothing done
+  (the `ret = 1` path); new directory removed → `-ENOENT`; a directory into its own subtree →
+  `-EINVAL`; a target holding the source (`mv a/b/x a/b`, where the target *is* the old
+  directory, already locked) → `-ENOTEMPTY`, checked before the target's lock; directory onto
+  file → `-ENOTDIR`, file onto directory → `-EISDIR`; a directory into a new parent at
+  `EXT2_LINK_MAX` → `-EMLINK`; a non-empty target directory → `-ENOTEMPTY`. Then the writes,
+  new name first and old name last (a crash leaves two names, never none): a new name is
+  `ext2_dir_add`, a replaced one `ext2_dir_set` (`directory.c`: the record's inode and type
+  rewritten in place, so the name never disappears); a directory changing parent gets its `..`
+  rewritten in place too (it must stay the second record), old parent `nlink` −1 and new +1;
+  `ext2_dir_remove` of the old name; a replaced target loses its name (a directory both links,
+  and its `..` from the new parent) and is freed at its last put (`free_on_release`); the
+  source's ctime, both directories' links and times stored once. After the directory locks,
+  still under `rename_lock`, the source's node moves under its new parent
+  (`vfs_node_set_parent`), so `..` and `getcwd` from inside a moved directory follow it.
 - **Read** (`ext2_read`): clamped to the size; per ext2 block: `ext2_file_block`, a hole → `memset` 0,
   else the slice copied from the leased block; errors are returned as is.
 - **Write** (`ext2_write`, under `n->lock`): 0 bytes → 0; at or past `max_file_size` → `-EFBIG`,
@@ -3617,8 +3646,8 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
             builtin) checks `fcntl(1, F_GETFL)` first and prints nothing when it fails; ash
             saves fds with `F_DUPFD_CLOEXEC` before a redirection. The status flags belong
             to the open file (shared by `dup`s).
-          - **rename:** `mv` (and Lua's `os.rename`); VFS and ext2, `..` fixed when a
-            directory moves, `EINVAL` for a move into its own subtree.
+          - **rename (done):** `mv` (and Lua's `os.rename`); VFS and ext2, `..` fixed when
+            a directory moves, `EINVAL` for a move into its own subtree.
           - **utimensat:** `touch` (NULL times = now, `UTIME_NOW`/`UTIME_OMIT`).
         - The uid calls, batch 1 (the user wrote the kernel side): `fd7bf94` adds
           `process_identity_t` and calls 49 to 52 (see Processes). mlibc fork `3bcc11c7`
@@ -3637,6 +3666,15 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           `echo made > file` (ash's saved fds at 10 and up fit the 16 slots), and `rm -f`
           clears whatever the parked cases left. 4 cases stay parked (`mv` and its `ls` for
           `rename`, `touch` and `find` for `utimensat`). Gate: 48 of 48 on both boots.
+        - Rename, batch 3 (the user wrote the kernel side): `debd65a` (see `vfs_rename` under
+          the VFS and Rename under ext2). The first build page-faulted in the `cwd` test:
+          `vfs_getcwd` put the parent on the found path too, one reference too many per step
+          (`kfree: invalid pointer`). mlibc fork `cedaf0b0` adds the `Rename` sysdep. Pointer
+          `b1a6c76`. `5694deb`: `ext2` tests every case (in place, moved, onto an open file,
+          onto itself, a directory moved with its `..` and links, `getcwd` from inside it while
+          it moves, onto an empty directory, every refusal); Lua's `os.rename` moves a file;
+          busybox `mv` and its `ls` run. 2 cases stay parked (`touch` and `find`, for
+          `utimensat`). Gate: 48 of 48 on both boots, e2fsck clean.
         - Next: the remaining calls (the user writes them), unparking the cases batch by batch;
           the run after each shows the next gaps (`cp` may want `fchmod`). Then symlinks
           for applet names (`/bin/ls → busybox`: a VFS link type, following during
@@ -3810,9 +3848,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - Stage 0's image (`randomdude/gcc-cross-x86_64-elf`) now needs meson 1.3 or newer for
   `make toolchain-headers`; not tried, its Debian may carry an older one.
 - Lua (D10f) without `io.popen` and `os.execute`: mlibc's `popen` and `system` run
-  `/bin/sh -c`, and our shell has no `-c` (busybox's `sh` would bring it, D10g). Without
-  `os.rename` too: no `rename` in the kernel or ext2 (mlibc has no `Rename` sysdep to call),
-  so it fails with `ENOSYS`; the `lua` test checks only that it fails cleanly.
+  `/bin/sh -c`, and our shell has no `-c` (busybox's `sh` would bring it, D10g).
 - `ports/` downloads at build time (`wget` in the build container): a build with no network
   needs the tarball already in `build/downloads/`.
 - BusyBox (D10g) is patched around mlibc's `linux` option, which our port leaves off
@@ -3829,6 +3865,11 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `O_NONBLOCK` is accepted by `F_SETFL` and ignored (Linux ignores only what it does not
   support): pipes and the tty always block. A program expecting `EAGAIN` would hang; make
   them honour it when a port needs it.
+- rename (D10g) has no `renameat`/`renameat2` (no `*at` family: mlibc answers `ENOSYS`), and
+  the initrd and devfs have no `rename` op, so a rename there is `EROFS` even where Linux
+  would say `EBUSY` (renaming `/mnt`, a mount point, on the live boot's read-only root).
+- mlibc has no `Access` sysdep: `access()` fails with `ENOSYS` (the `ext2` test uses `stat`
+  instead). Without permission checks it would only check that the path exists.
 - 16 fds per process (`PROCESS_MAX_FILES`; Linux's default is 1024, and `close_on_exec` is a
   32-bit mask): ash keeps saved fds at 10 and up, so nested redirections can hit `EMFILE`.
 
@@ -4194,7 +4235,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `user/tests/stdio` checks the fully buffered order through a pipe, but the line-buffered one
   (a terminal's) only by eye: no pseudo-terminal to capture it.
 - ext2 (each item becomes work when something needs it):
-  - no `rename`; no `link`, so a file has one name (but the
+  - no `link`, so a file has one name (but the
     link count is kept right for when it has more); symlinks (and other kinds the VFS cannot
     show) cannot be unlinked (a fast symlink's `i_block` holds text); an `O_APPEND` file's
     offset is the size read after its write, so another appender's bytes may come before it
