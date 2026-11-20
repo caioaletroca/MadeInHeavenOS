@@ -2267,9 +2267,9 @@ fs/ext2/
 ├── allocation.c   block and inode bitmaps, free counts: block_alloc/free, inode_alloc/init/free
 ├── inode.c        the ops tables, inode_byte, inode_store, links_store, node_get
 ├── file_blocks.c  slot, file_block, truncate_branch
-├── directory.c    record checks, dir_walk, dir_add/remove, readdir, lookup
+├── directory.c    record checks, the directory cursor, dir_lookup, dir_add/remove/set, dir_empty, readdir, lookup
 ├── file_data.c    read, write, truncate
-├── namespace.c    create, unlink, mkdir, rmdir, release (frees an unlinked node at its last put)
+├── namespace.c    create, unlink, mkdir, rmdir, release (frees an unlinked node at its last put), rename
 └── mount.c        superblock checks, group table, s_state, halt hook, mount, init
 ```
 
@@ -2283,7 +2283,7 @@ function after what it calls).
 / (initrd) ─ mnt ── mounted ──▶ ext2 root (inode 2) ─ hello.txt (inode 20)
                                                     └ docs (14) ─ deep ─ nested ─ file.txt
 read(/mnt/big.txt) ─▶ ext2_read ─ per ext2 block: ext2_file_block ─▶ ext2_block_get ─▶ block cache lease ─ memcpy
-lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─▶ ext2_node_get(ino) ─▶ node cache
+lookup(dir, name) ─▶ ext2_dir_lookup ─ cursor over records in leased blocks ─▶ ext2_node_get(ino) ─▶ node cache
 ```
 
 - **On-disk format** (`fs/ext2/disk_format.h`, private to the folder): `ext2_super_t` (1024 bytes at byte
@@ -2403,16 +2403,30 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   blocks: +256 KiB, +64 MiB, +16 GiB); walks down one slot per level like a page table; without
   `create` 0 anywhere is a hole, with it every missing table and the data block are created on
   the way down; past the triple range `-EFBIG`.
-- **Directories:** `ext2_dir_walk(dir, visit, context)` (the caller holds `dir->lock`) runs
-  `visit(entry, context)` (a function pointer plus a context struct: a closure by hand) for
-  every used entry, block by block, while the block is leased; 0 goes on, 1 stops (the walk
-  returns 1), -errno fails. Each record is checked first (`ext2_record_bad`, shared with
-  `ext2_dir_add`): 8 bytes of header left in the block, `rec_len` ≥ 8, a multiple of 4, inside the
-  block, holding `8 + name_len` → else `-EIO` (never a loop or a read past the block). Inode 0
-  (deleted) is skipped. `readdir` counts shown entries (regular files and directories: others
-  are skipped and not counted, so indexes stay dense) up to `index`; `.` and `..` come from the
-  disk. `lookup` compares `name_len` and the bytes (exact, case-sensitive), then calls `ext2_node_get`
-  after the walk with no lease held; a match that is not a file or directory is `-ENOENT`.
+- **Directories:** the one loop over a directory's records is the **cursor**
+  (`ext2_dir_cursor_t`, C#'s `IEnumerator`; the caller holds `dir->lock` for its whole life):
+  `ext2_dir_cursor(dir)` starts it, declared `release_with(ext2_dir_cursor_close)` so the
+  block's lease goes back however the function leaves. It holds the logical block, its lease,
+  the current record's `offset` and the one before it (`previous`, `UINT32_MAX` first in a
+  block). `ext2_dir_next_record` steps one record (unused ones too: `ext2_dir_add` looks for
+  room in them), block by block, holes skipped; `ext2_dir_next` skips inode 0 (deleted);
+  `ext2_dir_find(c, name, length)` stops at a used record with that name (exact,
+  case-sensitive); all return 1 at a record (`c->entry`), 0 past the last, -errno.
+  `ext2_dir_writable(c, offset)` is the current block's record to change between
+  `begin_write`/`end_write`. Each record is checked first (`ext2_record_bad`): 8 bytes of
+  header left in the block, `rec_len` ≥ 8, a multiple of 4, inside the block, holding `8 +
+  name_len` → else `-EIO` (never a loop or a read past the block). `ext2_dir_lookup(dir, name,
+  length, &ino, &file_type)` (either may be NULL) → 1/0/-errno with the cursor closed on
+  return, so `ext2_node_get` (volume lock, disk reads) can follow with no lease held; create,
+  unlink, mkdir, rmdir and rename's `ext2_rename_get` all find names through it. `readdir`
+  counts shown entries (regular files and directories: others are skipped and not counted,
+  so indexes stay dense) up to `index`; `.` and `..` come from the disk. `lookup` is
+  `ext2_dir_lookup` under the lock, then `ext2_node_get`; a match that is not a file or
+  directory is `-ENOENT`. `ext2_dir_empty`: 0 at any used name but `.`/`..`, else 1.
+  Linux's ext2 works the same way (`ext2_find_entry` returns the record and its page); it also
+  keeps positions across calls (rename finds each name once), where ours searches by name
+  again inside `ext2_dir_remove`/`_set`: a kept position would need `remove` to rescan its
+  block for `previous`, since an `ext2_dir_add` meanwhile can split the record before it.
   `ext2_dir_add(dir, name, length, ino, file_type)` (lock held, the name checked absent): the
   first record whose `rec_len` minus what it uses (`EXT2_DIRENT_SIZE(name_len)`, 0 for a
   deleted one) holds the new record is split: it keeps what it uses, the new record takes the
@@ -2423,7 +2437,7 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   the inode stored. **Create** (`ext2_create(dir, name, length, mode, &child)`, the `create`
   node op, writable volumes only): under the directory's lock; `EXT2_INDEX_FL` → `-EROFS`
   (adding a record without updating the hash index would hide it from Linux's lookups); the
-  name found by a walk with `ext2_lookup_visit` (any type: `link`, a symlink, too) →
+  name found by `ext2_dir_lookup` (any type: `link`, a symlink, too) →
   `-EEXIST`; `ext2_inode_alloc` (the directory's group), `ext2_inode_init(EXT2_S_IFREG | mode
   & 07777, 1 link, now)`, then `ext2_dir_add` (`EXT2_FT_REG_FILE`): the name
   last, so no record points at an unprepared inode; a failure of either gives the inode back.
@@ -2436,7 +2450,7 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   deleted ones included); `-ENOENT`, `-EIO` for a corrupt record. A directory never shrinks.
 - **Deleting** (its own section, after "File data"): `ext2_unlink(dir, name, length)` (the
   `unlink` node op, writable volumes only), under the directory's lock: `EXT2_INDEX_FL` →
-  `-EROFS`; a walk with `ext2_lookup_visit` (not found, or a kind the VFS cannot show →
+  `-EROFS`; `ext2_dir_lookup` (not found, or a kind the VFS cannot show →
   `-ENOENT`: a fast symlink keeps its target in `i_block`, which a truncate would free as
   block numbers); the node read *before* anything changes (`ext2_node_get`: a failure later
   never leaves a nameless file with a link); a directory → `-EISDIR` (rmdir's); 0 links
@@ -2463,7 +2477,7 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   inode; after, the node is marked (`nlink` 0, `free_on_release`) and the put frees its block
   and inode. `ext2_rmdir(dir, name, length)`: the name looked up like unlink's (`-ENOENT`), the
   node read, not a directory → `-ENOTDIR`; under its own lock (parent before child, so no
-  create can slip in) `ext2_dir_empty` (a walk stopping at any name but `.`/`..`) → else
+  create can slip in) `ext2_dir_empty` (stops at any name but `.`/`..`) → else
   `-ENOTEMPTY`, `ext2_dir_remove`, its links to 0 (both at once, as Linux) and
   `free_on_release`; then the parent's `nlink` −1. The last put frees it (`ext2_inode_free`
   with `directory`: `bg_used_dirs_count` −1). `ext2_create` and `ext2_mkdir` refuse a parent
@@ -2472,9 +2486,15 @@ lookup(dir, name) ─▶ ext2_dir_walk(visit) ─ records in leased blocks ─�
   (`volume->rename_lock`, Linux's `s_vfs_rename_mutex`): so only a rename ever holds two
   directories' locks, and no `parent` changes while one walks them. `ext2_lock_two` takes an
   ancestor's lock before its descendant's (`ext2_is_under` walks `parent` up to the volume's
-  root), the same directory once. Every check before any write: source missing → `-ENOENT`; a
-  target the VFS can't show (a symlink) → `-EEXIST`; both names one inode → 0, nothing done
-  (the `ret = 1` path); new directory removed → `-ENOENT`; a directory into its own subtree →
+  root), the same directory once; it is used as the `ext2_dirs` guard. Every release is
+  scoped (`rename_lock` guard, `source`/`target` `release_with(vfs_node_put_ref)`, the
+  `ext2_dirs` guard in an inner block), so each step is `return_on_error`; they release in
+  reverse: directories, nodes, `rename_lock`. The steps are helpers: `ext2_rename_get` (find
+  and take a node), `ext2_rename_check` (every refusal, one `return` each),
+  `ext2_rename_move_dotdot`, `ext2_rename_drop_target`, `ext2_rename_store`. Every check
+  before any write: source missing → `-ENOENT`; a target the VFS can't show (a symlink) →
+  `-EEXIST`; both names one inode → 0, nothing done; new directory removed → `-ENOENT`; a
+  directory into its own subtree →
   `-EINVAL`; a target holding the source (`mv a/b/x a/b`, where the target *is* the old
   directory, already locked) → `-ENOTEMPTY`, checked before the target's lock; directory onto
   file → `-ENOTDIR`, file onto directory → `-EISDIR`; a directory into a new parent at
@@ -2944,6 +2964,16 @@ link.next == MALLOC_MAGIC while allocated; size in UNITs (sizeof(block_t)), head
   lock: a copy would be unlocked instead of the real one. Pitfalls: inside `scoped_guard`, `break`/
   `continue` leave the hidden `for`; always use braces (a stray `;` after `scoped_guard(...)` is an
   empty body); no `goto` into a guard's scope.
+- **`release_with(fn)`** (`cleanup.h`, Linux's `__free`): the same cleanup for any variable,
+  `fn(&variable)` on every exit: `vfs_node_t *n release_with(vfs_node_put_ref) = NULL;`
+  (`fs/vfs.h`: puts it unless NULL), `ext2_dir_cursor_t c release_with(ext2_dir_cursor_close)`.
+  Declaration order is release order reversed, so it orders locks and references too.
+- **`return_on_error(call)`** (`cleanup.h`, Rust's `?`): a GCC statement expression
+  `({ ... })` that returns a negative result from the enclosing function, else is the call's
+  value (`if (!return_on_error(ext2_dir_find(...)))`). Only in functions whose every release
+  is a guard or `release_with`: a hidden return must not skip a manual unlock or put. Linux's
+  style avoids control flow in macros and writes `if (err) return err;`; we take the macro
+  because every release here is scoped. Used in ext2's directory code and rename so far.
 - **Rules:** a lock sits next to the data it protects, with a "protected by" comment. Never free an
   object while holding its embedded lock: decrement under the lock, tear down after it. `guard(irq)`
   is not mutual exclusion on SMP; shared data gets a named lock. Explicit acquire/release stay where
@@ -3675,6 +3705,12 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           it moves, onto an empty directory, every refusal); Lua's `os.rename` moves a file;
           busybox `mv` and its `ls` run. 2 cases stay parked (`touch` and `find`, for
           `utimensat`). Gate: 48 of 48 on both boots, e2fsck clean.
+        - The ext2 directory refactor (the user wrote it from a design talked over after
+          rename): `b7f0fe5`. The records' loop was copied in four functions and the walk's
+          callback could only read; the cursor replaces both (see Directories under ext2),
+          `cleanup.h` gains `release_with` and `return_on_error` (see Locks and guards), and
+          `ext2_rename` is split into its steps with every release scoped. Behaviour
+          unchanged: gate 48 of 48 on both boots, e2fsck clean.
         - Next: the remaining calls (the user writes them), unparking the cases batch by batch;
           the run after each shows the next gaps (`cp` may want `fchmod`). Then symlinks
           for applet names (`/bin/ls → busybox`: a VFS link type, following during
@@ -3870,6 +3906,10 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   would say `EBUSY` (renaming `/mnt`, a mount point, on the live boot's read-only root).
 - mlibc has no `Access` sysdep: `access()` fails with `ENOSYS` (the `ext2` test uses `stat`
   instead). Without permission checks it would only check that the path exists.
+- `ext2_create`, `ext2_unlink`, `ext2_mkdir` and `ext2_rmdir` still carry the `ret` chain
+  (`if (ret == 0) ...` to one exit that puts the child); move them to `release_with` +
+  `return_on_error` as rename was. mkdir is the careful one: a failure after its node exists
+  must still mark it (`nlink` 0, `free_on_release`) so the put frees it.
 - 16 fds per process (`PROCESS_MAX_FILES`; Linux's default is 1024, and `close_on_exec` is a
   32-bit mask): ash keeps saved fds at 10 and up, so nested redirections can hit `EMFILE`.
 
