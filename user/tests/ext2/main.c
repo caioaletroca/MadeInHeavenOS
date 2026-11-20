@@ -11,8 +11,8 @@
 /*
  * The ext2 test disk (disk.img) mounted on /mnt, from user space: listings,
  * stat, reads through open/lseek/read (big.txt across direct, single and
- * double indirect blocks, the sparse file's hole), overwrites in place, and
- * what is refused.
+ * double indirect blocks, the sparse file's hole), overwrites in place,
+ * creating and removing names, renames, and what is refused.
  */
 
 #define MNT "/mnt"
@@ -580,6 +580,138 @@ static void test_dirs(void)
     CHECK(rmdir("/") == -1 && errno == EBUSY);
 }
 
+// A small file at path holding text
+static void make_file(const char *path, const char *text)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    CHECK(fd >= 0 && write(fd, text, strlen(text)) == (ssize_t)strlen(text));
+    close(fd);
+}
+
+static nlink_t links(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 ? st.st_nlink : 0;
+}
+
+static ino_t inode(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 ? st.st_ino : 0;
+}
+
+// Nothing has the name path (stat, not access: mlibc has no Access sysdep yet)
+static int missing(const char *path)
+{
+    struct stat st;
+    errno = 0;
+    return stat(path, &st) == -1 && errno == ENOENT;
+}
+
+// rename(old, new) fails with error
+static int refused(const char *old_path, const char *new_path, int error)
+{
+    errno = 0;
+    return rename(old_path, new_path) == -1 && errno == error;
+}
+
+/*
+ * rename in grow/ra and grow/rb: a file in place, into the other directory,
+ * onto another file (still open, so its bytes outlive its name), onto itself; a
+ * directory moved with a file inside, its ".." and the links following it, the
+ * process inside it while it moves (getcwd follows), onto an empty directory;
+ * then every refusal. grow is left as it was.
+ */
+static void test_rename(void)
+{
+#define RA MNT "/grow/ra"
+#define RB MNT "/grow/rb"
+    char buffer[64];
+
+    CHECK(mkdir(RA, 0755) == 0 && mkdir(RB, 0755) == 0);
+    make_file(RA "/f", "one");
+    ino_t file = inode(RA "/f");
+
+    // A file: a new name in place, then in the other directory; the inode stays
+    CHECK(rename(RA "/f", RA "/g") == 0);
+    CHECK(missing(RA "/f"));
+    CHECK(inode(RA "/g") == file);
+    CHECK(rename(RA "/g", RB "/g") == 0);
+    expect_text(RB "/g", "one");
+    CHECK(links(RA) == 2 && links(RB) == 2); // a file's move changes no directory's links
+
+    // Onto another file: replaced in one step; an open copy keeps the old bytes, with no name
+    make_file(RB "/h", "two");
+    int old = open(RB "/h", O_RDONLY);
+    CHECK(old >= 0);
+    CHECK(rename(RB "/g", RB "/h") == 0);
+    CHECK(missing(RB "/g"));
+    expect_text(RB "/h", "one");
+    struct stat st;
+    CHECK(fstat(old, &st) == 0 && st.st_nlink == 0);
+    CHECK(read_full(old, buffer, sizeof(buffer)) == 3 && memcmp(buffer, "two", 3) == 0);
+    close(old);
+
+    // Onto itself: nothing happens
+    CHECK(rename(RB "/h", RB "/h") == 0);
+    expect_text(RB "/h", "one");
+
+    // A directory: its contents come along, ".." names the new parent, the link moves
+    CHECK(mkdir(RA "/d", 0755) == 0);
+    make_file(RA "/d/inside", "in");
+    CHECK(links(RA) == 3);
+    CHECK(rename(RA "/d", RB "/d") == 0);
+    CHECK(links(RA) == 2 && links(RB) == 3);
+    expect_text(RB "/d/inside", "in");
+    CHECK(inode(RB "/d/..") == inode(RB));
+
+    // Moved while this process is inside it: getcwd and ".." follow
+    char start[128], here[128];
+    CHECK(getcwd(start, sizeof(start)) != NULL);
+    CHECK(chdir(RB "/d") == 0);
+    CHECK(rename(RB "/d", RA "/d2") == 0);
+    CHECK(getcwd(here, sizeof(here)) != NULL && strcmp(here, RA "/d2") == 0);
+    CHECK(inode("..") == inode(RA));
+    expect_text("inside", "in");
+    CHECK(chdir(start) == 0);
+    CHECK(links(RA) == 3 && links(RB) == 2);
+
+    // Onto an empty directory: it goes, its link with it
+    CHECK(mkdir(RB "/empty", 0755) == 0);
+    CHECK(links(RB) == 3);
+    CHECK(rename(RA "/d2", RB "/empty") == 0);
+    expect_text(RB "/empty/inside", "in");
+    CHECK(links(RA) == 2 && links(RB) == 3);
+
+    // The refusals
+    CHECK(mkdir(RA "/e", 0755) == 0);
+    CHECK(refused(RB "/nope", RB "/x", ENOENT));
+    CHECK(refused(RB "/h", RB "/nope/x", ENOENT));
+    CHECK(refused(RB "/h", RB "/empty", EISDIR));      // a file onto a directory
+    CHECK(refused(RB "/empty", RB "/h", ENOTDIR));     // a directory onto a file
+    CHECK(refused(RA "/e", RB "/empty", ENOTEMPTY));   // onto a directory with something in it
+    CHECK(refused(RB "/empty", RB "/empty/sub", EINVAL)); // into itself
+    CHECK(refused(RB, RB "/empty/rb", EINVAL));        // into its own subtree
+    CHECK(refused(RB "/empty/inside", RB "/empty", ENOTEMPTY)); // the target holds the source
+    CHECK(refused(RB "/h/", RB "/h2", ENOTDIR));       // a trailing '/' promises a directory
+    CHECK(refused(RB "/.", RB "/dot", EBUSY));
+    CHECK(refused(RB "/h", RB "/..", EBUSY));
+    CHECK(refused("/", RB "/root", EBUSY));
+    CHECK(refused(RB "/h", "/h", EXDEV)); // the test disk is never the root's file system
+    if (!test_root_on_disk())
+        CHECK(refused("/usr/tests/ext2", "/usr/tests/moved", EROFS)); // the initrd is read-only
+    expect_text(RB "/h", "one"); // nothing a refusal touched changed
+    expect_text(RB "/empty/inside", "in");
+
+    CHECK(rmdir(RA "/e") == 0);
+    CHECK(unlink(RB "/empty/inside") == 0 && rmdir(RB "/empty") == 0);
+    CHECK(unlink(RB "/h") == 0);
+    CHECK(rmdir(RA) == 0 && rmdir(RB) == 0);
+    CHECK(links(MNT "/grow") == 2);
+#undef RA
+#undef RB
+}
+
 static void test_refusals(void)
 {
     char buffer[64];
@@ -622,6 +754,7 @@ int main(void)
     test_create();
     test_unlink();
     test_dirs();
+    test_rename();
     test_times();
     test_refusals();
 

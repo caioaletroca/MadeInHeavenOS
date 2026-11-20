@@ -80,8 +80,8 @@ static const busybox_case_t cases[] = {
     {{"cat", "/mnt/busybox/file"}, NULL, "made\n", 0, NULL},
     {{"cp", "/mnt/busybox/file", "/mnt/busybox/copy"}, NULL, "", 0, NULL},
     {{"cmp", "/mnt/busybox/file", "/mnt/busybox/copy"}, NULL, "", 0, NULL},
-    {{"mv", "/mnt/busybox/copy", "/mnt/busybox/moved"}, NULL, "", 0, "rename"},
-    {{"ls", "/mnt/busybox"}, NULL, "file\nmoved\n", 0, "rename"},
+    {{"mv", "/mnt/busybox/copy", "/mnt/busybox/moved"}, NULL, "", 0, NULL},
+    {{"ls", "/mnt/busybox"}, NULL, "file\nmoved\n", 0, NULL},
     {{"touch", "/mnt/busybox/new"}, NULL, "", 0, "utimensat"},
     {{"find", "/mnt/busybox", "-name", "n*"}, NULL, "/mnt/busybox/new\n", 0, "utimensat"},
     // -f: whichever of these the parked cases above did not make is skipped, so rmdir finds it empty

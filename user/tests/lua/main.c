@@ -16,7 +16,7 @@ extern char **environ; // POSIX: the program declares it, no header has to
  * the clock, files on the test disk.
  *
  * Not here yet: io.popen and os.execute, which run "/bin/sh -c" and our shell
- * has no -c; os.rename, which the kernel lacks (checked to fail cleanly).
+ * has no -c.
  */
 
 #define LUA_PATH "/bin/lua"
@@ -92,11 +92,16 @@ static const lua_case_t cases[] = {
      "f = assert(io.open(name, 'r'))\n"
      "assert(f:seek('end') == 10 and f:seek('set', 4) == 4 and f:read('n') == 2)\n"
      "f:close()\n"
-     "assert(os.remove(name))\n"
-     "assert(io.open(name, 'r') == nil)\n",
+     "local moved = '/mnt/lua-moved.txt'\n"
+     "assert(os.rename(name, moved))\n"
+     "assert(io.open(name, 'r') == nil)\n"
+     "f = assert(io.open(moved, 'r')) assert(f:read('l') == 'one') f:close()\n"
+     "assert(os.remove(moved))\n"
+     "assert(io.open(moved, 'r') == nil)\n",
      0},
-    {"missing calls fail cleanly",
-     "assert(os.rename('/no/such', '/no/other') == nil)\n"
+    {"failed calls return nil and the error",
+     "local ok, message, code = os.rename('/no/such', '/no/other')\n"
+     "assert(ok == nil and type(message) == 'string' and code == 2)\n" // ENOENT
      "local root = os.getenv('TEST_ROOT')\n"
      "assert(root == 'disk' or root == 'initrd')\n",
      0},
