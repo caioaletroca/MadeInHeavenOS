@@ -61,4 +61,31 @@
  */
 #define scoped_guard(name, ...) scoped_guard_(name, __COUNTER__, __VA_ARGS__)
 
+/**
+ * @brief Call fn(&variable) when the variable leaves scope, however it leaves
+ * (end of block, return). Like guard(), for a value that is not a lock:
+ *   vfs_node_t *node release_with(vfs_node_put_ref) = NULL;
+ *
+ * @param fn Takes a pointer to the variable.
+ */
+#define release_with(fn) __attribute__((cleanup(fn)))
+
+/**
+ * @brief Run a call that returns -errno on failure; on a negative result, return
+ * it from the enclosing function (Rust's `?`). Otherwise the macro's value is the
+ * call's, so a 0/1 answer can be tested: if (!return_on_error(find(...))).
+ *
+ * Only in functions where every release is a guard or release_with: a hidden
+ * return must not skip an unlock or a put.
+ *
+ * @param call An expression of type int (or long).
+ */
+#define return_on_error(call) \
+    ({                        \
+        int _result = (call); \
+        if (_result < 0)      \
+            return _result;   \
+        _result;              \
+    })
+
 #endif // _CLEANUP_H

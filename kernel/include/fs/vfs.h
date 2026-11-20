@@ -146,6 +146,17 @@ bool vfs_node_tryget(vfs_node_t *node);
 void vfs_node_put(vfs_node_t *node);
 
 /**
+ * @brief vfs_node_put for release_with: puts the node the variable holds, if any.
+ *
+ * @param node The variable (a vfs_node_t *, NULL when it holds nothing).
+ */
+static inline void vfs_node_put_ref(vfs_node_t **node)
+{
+    if (*node != NULL)
+        vfs_node_put(*node);
+}
+
+/**
  * @brief The node's parent directory (its ".."), as a new reference.
  *
  * @param node The node.

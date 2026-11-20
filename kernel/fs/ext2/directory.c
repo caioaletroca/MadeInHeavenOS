@@ -2,7 +2,7 @@
 #include <mihos/errno.h>
 #include <string.h>
 
-// ---- Directories: walking, adding and removing the records of a directory's blocks; readdir, lookup ----
+// ---- Directories: a cursor over a directory's records; adding, removing and changing them; readdir, lookup ----
 
 /**
  * @brief Check if an ext2 directory record is bad
@@ -47,62 +47,124 @@ bool ext2_entry_type(uint8_t file_type, vfs_node_type_t *type)
 }
 
 /**
- * @brief Walk through the entries of a directory
+ * @brief Step to the next record of the directory, unused ones included
  *
- * The caller holds dir->lock: a create may split a record or add a block meanwhile.
+ * Walks the blocks in order (holes have no records) and the records of each
+ * block through rec_len. A block's lease is held while the cursor points into it.
  *
- * @param dir: The ext2 directory node
- * @param visit: The visit function to call for each directory entry
- * @param context: The context to pass to the visit function
- * @return 0 on success, negative error code on failure
+ * @param c: The cursor (ext2_dir_cursor(dir) before the first step)
+ * @return 1 at a record (c->entry), 0 past the last, -EIO for a corrupt record, or -errno
  */
-int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context)
+int ext2_dir_next_record(ext2_dir_cursor_t *c)
 {
-    ext2_volume_t *volume = dir->volume;
-    uint64_t blocks = (dir->base.size + volume->block_size - 1) / volume->block_size;
+    ext2_volume_t *volume = c->dir->volume;
+    uint64_t blocks = c->dir->base.size / volume->block_size;
 
-    for (uint64_t i = 0; i < blocks; i++)
+    // Step past the current record; the first step has none
+    if (c->entry != NULL)
     {
+        c->previous = c->offset;
+        c->offset += c->entry->rec_len;
+    }
+
+    for (;;)
+    {
+        // Still inside a block: the record here
+        if (c->lease != NULL && c->offset < volume->block_size)
+        {
+            if (ext2_record_bad(volume, c->data, c->offset))
+                return -EIO;
+            c->entry = (const ext2_dirent_t *)(c->data + c->offset);
+            return 1;
+        }
+
+        // Past this block's end (records end exactly there): on to the next
+        if (c->lease != NULL)
+        {
+            block_cache_put(c->lease);
+            c->lease = NULL;
+            c->block++;
+        }
+        if (c->block >= blocks)
+        {
+            c->entry = NULL;
+            return 0;
+        }
+
         uint32_t block;
-        int ret = ext2_file_block(volume, dir, i, NULL, false, &block);
-        if (ret < 0)
-            return ret;
+        return_on_error(ext2_file_block(volume, c->dir, c->block, NULL, false, &block));
         if (block == 0)
+        {
+            c->block++; // a hole: no records there
             continue;
+        }
 
         block_cache_buf_t *lease;
         const uint8_t *data;
-        ret = ext2_block_get(volume, block, &lease, &data);
-        if (ret < 0)
-            return ret;
-
-        // Records chain through rec_len and end exactly at the end of the block
-        uint32_t rec_len;
-        for (uint32_t offset = 0; offset < volume->block_size; offset += rec_len)
-        {
-            if (ext2_record_bad(volume, data, offset))
-            {
-                block_cache_put(lease);
-                return -EIO;
-            }
-
-            const ext2_dirent_t *e = (const ext2_dirent_t *)(data + offset);
-            rec_len = e->rec_len;
-            if (e->inode == 0)
-                continue; // a deleted entry (or an empty block's placeholder)
-
-            ret = visit(e, context);
-            if (ret != 0)
-            {
-                block_cache_put(lease);
-                return ret;
-            }
-        }
-
-        block_cache_put(lease);
+        return_on_error(ext2_block_get(volume, block, &lease, &data));
+        c->lease = lease;
+        c->data = data;
+        c->offset = 0;
+        c->previous = UINT32_MAX;
     }
+}
 
-    return 0;
+/**
+ * @brief Step to the next used record (deleted ones, inode 0, are skipped)
+ *
+ * @param c: The cursor
+ * @return 1 at a record (c->entry), 0 past the last, or -errno
+ */
+int ext2_dir_next(ext2_dir_cursor_t *c)
+{
+    int ret = 0;
+    while ((ret = ext2_dir_next_record(c)) == 1 && c->entry->inode == 0)
+        ;
+    return ret;
+}
+
+/**
+ * @brief Step to the next used record called name[0..length)
+ *
+ * @param c: The cursor
+ * @param name: The name (not '\0'-terminated)
+ * @param length: The length of the name
+ * @return 1 at the record (c->entry), 0 if not there, or -errno
+ */
+int ext2_dir_find(ext2_dir_cursor_t *c, const char *name, size_t length)
+{
+    int ret = 0;
+    while ((ret = ext2_dir_next(c)) == 1)
+        if (c->entry->name_len == length && memcmp(c->entry->name, name, length) == 0)
+            return 1;
+    return ret;
+}
+
+/**
+ * @brief Give back the lease a cursor holds (for release_with)
+ *
+ * @param c: The cursor
+ */
+void ext2_dir_cursor_close(ext2_dir_cursor_t *c)
+{
+    if (c->lease != NULL)
+        block_cache_put(c->lease);
+}
+
+/**
+ * @brief A record of the cursor's current block, writable: change it only between
+ * block_cache_begin_write(c->lease) and block_cache_end_write(c->lease)
+ *
+ * c->data is const (the cache's read view); this is the same byte in the lease's
+ * own buffer, the trick ext2_block_write uses.
+ *
+ * @param c: The cursor, at a record
+ * @param offset: The record's offset in the block (c->offset, or c->previous)
+ * @return The record
+ */
+ext2_dirent_t *ext2_dir_writable(ext2_dir_cursor_t *c, uint32_t offset)
+{
+    return (ext2_dirent_t *)(c->lease->data + (c->data - c->lease->data) + offset);
 }
 
 /**
@@ -124,56 +186,27 @@ int ext2_dir_add(ext2_node_t *dir, const char *name, size_t length, uint32_t ino
     uint32_t need = EXT2_DIRENT_SIZE(length);
     uint64_t blocks = dir->base.size / volume->block_size;
 
-    for (uint64_t i = 0; i < blocks; i++)
+    ext2_dir_cursor_t c release_with(ext2_dir_cursor_close) = ext2_dir_cursor(dir);
+    while (return_on_error(ext2_dir_next_record(&c)))
     {
-        uint32_t block;
-        int ret = ext2_file_block(volume, dir, i, NULL, false, &block);
-        if (ret < 0)
-            return ret;
-        if (block == 0)
+        uint32_t rec_len = c.entry->rec_len;
+        uint32_t used = c.entry->inode != 0 ? EXT2_DIRENT_SIZE(c.entry->name_len) : 0; // a deleted record uses nothing
+        if (rec_len - used < need)
             continue;
 
-        block_cache_buf_t *lease;
-        const uint8_t *data;
-        ret = ext2_block_get(volume, block, &lease, &data);
-        if (ret < 0)
-            return ret;
+        ext2_dirent_t *record = ext2_dir_writable(&c, c.offset);
+        ext2_dirent_t *added = (ext2_dirent_t *)((uint8_t *)record + used);
 
-        uint32_t rec_len;
-        for (uint32_t offset = 0; offset < volume->block_size; offset += rec_len)
-        {
-            if (ext2_record_bad(volume, data, offset))
-            {
-                block_cache_put(lease);
-                return -EIO;
-            }
-
-            const ext2_dirent_t *e = (const ext2_dirent_t *)(data + offset);
-            rec_len = e->rec_len;
-
-            uint32_t used = e->inode != 0 ? EXT2_DIRENT_SIZE(e->name_len) : 0; // a deleted record uses nothing
-            if (rec_len - used < need)
-                continue;
-
-            // The writable address of this record (data is const: the same trick as ext2_block_write)
-            uint8_t *record = lease->data + (data - lease->data) + offset;
-            ext2_dirent_t *added = (ext2_dirent_t *)(record + used);
-
-            block_cache_begin_write(lease);
-            if (used != 0)
-                ((ext2_dirent_t *)record)->rec_len = used; // the old record keeps only what it uses
-            added->inode = ino;
-            added->rec_len = rec_len - used; // the rest, so the chain still ends at the block's end
-            added->name_len = (uint8_t)length;
-            added->file_type = file_type;
-            memcpy(added->name, name, length);
-            block_cache_end_write(lease);
-
-            block_cache_put(lease);
-            return 0;
-        }
-
-        block_cache_put(lease);
+        block_cache_begin_write(c.lease);
+        if (used != 0)
+            record->rec_len = used; // the old record keeps only what it uses
+        added->inode = ino;
+        added->rec_len = rec_len - used; // the rest, so the chain still ends at the block's end
+        added->name_len = (uint8_t)length;
+        added->file_type = file_type;
+        memcpy(added->name, name, length);
+        block_cache_end_write(c.lease);
+        return 0;
     }
 
     // No record has room: a new block at the end, holding one record that covers all of it
@@ -211,57 +244,18 @@ int ext2_dir_add(ext2_node_t *dir, const char *name, size_t length, uint32_t ino
  */
 int ext2_dir_remove(ext2_node_t *dir, const char *name, size_t length)
 {
-    ext2_volume_t *volume = dir->volume;
-    uint64_t blocks = dir->base.size / volume->block_size;
+    ext2_dir_cursor_t c release_with(ext2_dir_cursor_close) = ext2_dir_cursor(dir);
+    if (!return_on_error(ext2_dir_find(&c, name, length)))
+        return -ENOENT;
 
-    for (uint64_t i = 0; i < blocks; i++)
-    {
-        uint32_t block;
-        int ret = ext2_file_block(volume, dir, i, NULL, false, &block);
-        if (ret < 0)
-            return ret;
-        if (block == 0)
-            continue;
-
-        block_cache_buf_t *lease;
-        const uint8_t *data;
-        ret = ext2_block_get(volume, block, &lease, &data);
-        if (ret < 0)
-            return ret;
-
-        // `previous` follows one record behind, deleted ones included (growing one of those is fine)
-        uint32_t rec_len = 0;
-        uint32_t previous = UINT32_MAX; // none yet in this block
-        for (uint32_t offset = 0; offset < volume->block_size; previous = offset, offset += rec_len)
-        {
-            if (ext2_record_bad(volume, data, offset))
-            {
-                block_cache_put(lease);
-                return -EIO;
-            }
-
-            const ext2_dirent_t *e = (const ext2_dirent_t *)(data + offset);
-            rec_len = e->rec_len;
-            if (e->inode == 0 || e->name_len != length || memcmp(e->name, name, length) != 0)
-                continue;
-
-            uint8_t *start = lease->data + (data - lease->data); // the block's writable first byte
-            block_cache_begin_write(lease);
-            if (previous == UINT32_MAX)
-                ((ext2_dirent_t *)(start + offset))->inode = 0;
-            else
-                ((ext2_dirent_t *)(start + previous))->rec_len += rec_len;
-
-            block_cache_end_write(lease);
-
-            block_cache_put(lease);
-            return 0;
-        }
-
-        block_cache_put(lease);
-    }
-
-    return -ENOENT;
+    // c.previous counts deleted records too (growing one of those is fine)
+    block_cache_begin_write(c.lease);
+    if (c.previous == UINT32_MAX)
+        ext2_dir_writable(&c, c.offset)->inode = 0;
+    else
+        ext2_dir_writable(&c, c.previous)->rec_len += c.entry->rec_len;
+    block_cache_end_write(c.lease);
+    return 0;
 }
 
 /**
@@ -279,157 +273,100 @@ int ext2_dir_remove(ext2_node_t *dir, const char *name, size_t length)
  */
 int ext2_dir_set(ext2_node_t *dir, const char *name, size_t length, uint32_t ino, uint8_t file_type)
 {
-    ext2_volume_t *volume = dir->volume;
-    uint64_t blocks = dir->base.size / volume->block_size;
+    ext2_dir_cursor_t c release_with(ext2_dir_cursor_close) = ext2_dir_cursor(dir);
+    if (!return_on_error(ext2_dir_find(&c, name, length)))
+        return -ENOENT;
 
-    for (uint64_t i = 0; i < blocks; i++)
-    {
-        uint32_t block;
-        int ret = ext2_file_block(volume, dir, i, NULL, false, &block);
-        if (ret < 0)
-            return ret;
-        if (block == 0)
-            continue;
-
-        block_cache_buf_t *lease;
-        const uint8_t *data;
-        ret = ext2_block_get(volume, block, &lease, &data);
-        if (ret < 0)
-            return ret;
-
-        uint32_t rec_len;
-        for (uint32_t offset = 0; offset < volume->block_size; offset += rec_len)
-        {
-            if (ext2_record_bad(volume, data, offset))
-            {
-                block_cache_put(lease);
-                return -EIO;
-            }
-
-            const ext2_dirent_t *e = (const ext2_dirent_t *)(data + offset);
-            rec_len = e->rec_len;
-            if (e->inode == 0 || e->name_len != length || memcmp(e->name, name, length) != 0)
-                continue;
-
-            ext2_dirent_t *writable = (ext2_dirent_t *)(lease->data + (data - lease->data) + offset);
-            block_cache_begin_write(lease);
-            writable->inode = ino;
-            writable->file_type = file_type;
-            block_cache_end_write(lease);
-
-            block_cache_put(lease);
-            return 0;
-        }
-
-        block_cache_put(lease);
-    }
-
-    return -ENOENT;
+    ext2_dirent_t *record = ext2_dir_writable(&c, c.offset);
+    block_cache_begin_write(c.lease);
+    record->inode = ino;
+    record->file_type = file_type;
+    block_cache_end_write(c.lease);
+    return 0;
 }
 
 /**
- * @brief Visit function for checking if a directory is empty
+ * @brief Whether a record is "." or ".."
  *
- * @param e: The ext2 directory entry
- * @param context: Unused context
- * @return int: 0 for '.' or '..', 1 for other entries
+ * @param e: The record
+ * @return true for "." and ".."
  */
-static int ext2_empty_visit(const ext2_dirent_t *e, void *context)
+static bool ext2_entry_is_dots(const ext2_dirent_t *e)
 {
-    (void)context;
-    bool dot = e->name_len == 1 && e->name[0] == '.';
-    bool dotdot = e->name_len == 2 && e->name[0] == '.' && e->name[1] == '.';
-    return dot || dotdot ? 0 : 1;
+    return (e->name_len == 1 && e->name[0] == '.') ||
+           (e->name_len == 2 && e->name[0] == '.' && e->name[1] == '.');
 }
 
 /**
- * @brief Check if a directory is empty
+ * @brief Check if a directory is empty: nothing but "." and ".."
  *
- * @param dir: The ext2 directory node
- * @return int: 1 if empty, 0 if not, negative error code on failure
+ * @param dir: The ext2 directory node; the caller holds its lock
+ * @return 1 if empty, 0 if not, negative error code on failure
  */
 int ext2_dir_empty(ext2_node_t *dir)
 {
-    int ret = ext2_dir_walk(dir, ext2_empty_visit, NULL);
-    return ret < 0 ? ret : ret == 0;
-}
-
-/**
- * @brief Context for reading directory entries
- */
-typedef struct ext2_readdir_context
-{
-    uint64_t index;
-    uint64_t count;
-    vfs_dirent_t *entry;
-} ext2_readdir_context_t;
-
-/**
- * @brief Visit function for reading directory entries
- *
- * @param e: The ext2 directory entry
- * @param context: The readdir context
- * @return int: 1 if the entry matches the index, 0 otherwise
- */
-static int ext2_readdir_visit(const ext2_dirent_t *e, void *context)
-{
-    ext2_readdir_context_t *ctx = context;
-
-    vfs_node_type_t type;
-    if (!ext2_entry_type(e->file_type, &type))
-        return 0;
-
-    if (ctx->count++ != ctx->index)
-        return 0;
-
-    ctx->entry->ino = e->inode;
-    ctx->entry->type = type;
-    ctx->entry->length = e->name_len;
-    memcpy(ctx->entry->name, e->name, e->name_len);
-    ctx->entry->name[e->name_len] = '\0';
-
+    ext2_dir_cursor_t c release_with(ext2_dir_cursor_close) = ext2_dir_cursor(dir);
+    while (return_on_error(ext2_dir_next(&c)))
+        if (!ext2_entry_is_dots(c.entry))
+            return 0;
     return 1;
 }
 
 /**
- * @brief Read a directory entry by index
+ * @brief Read a directory entry by index. Kinds the VFS can't show (symlinks) are
+ * skipped and not counted
  *
  * @param dir: The directory VFS node
  * @param index: The index of the entry to read
  * @param entry: Pointer to store the resulting directory entry
- * @return int: 0 on success, negative error code on failure
+ * @return 1 with the entry, 0 past the last, or negative error code on failure
  */
 int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
 {
-    guard(mutex, &EXT2_NODE(dir)->lock);
+    ext2_node_t *d = EXT2_NODE(dir);
+    guard(mutex, &d->lock);
 
-    ext2_readdir_context_t ctx = {
-        .index = index,
-        .count = 0,
-        .entry = entry};
-    return ext2_dir_walk(EXT2_NODE(dir), ext2_readdir_visit, &ctx);
+    ext2_dir_cursor_t c release_with(ext2_dir_cursor_close) = ext2_dir_cursor(d);
+    uint64_t count = 0;
+    vfs_node_type_t type;
+    while (return_on_error(ext2_dir_next(&c)))
+    {
+        if (!ext2_entry_type(c.entry->file_type, &type) || count++ != index)
+            continue;
+
+        entry->ino = c.entry->inode;
+        entry->type = type;
+        entry->length = c.entry->name_len;
+        memcpy(entry->name, c.entry->name, c.entry->name_len);
+        entry->name[c.entry->name_len] = '\0';
+        return 1;
+    }
+
+    return 0;
 }
 
 /**
- * @brief Visit function for looking up a directory entry by name
+ * @brief Find a name in a directory and read what its record names. The cursor is
+ * closed on return, so no lease is held after: ext2_node_get may follow (it takes
+ * volume->lock and may read the disk).
  *
- * @param e: The ext2 directory entry
- * @param context: The lookup context
- * @return int: 1 if the entry matches the name, 0 otherwise
+ * @param dir: The directory; the caller holds its lock
+ * @param name: The name (not '\0'-terminated)
+ * @param length: The length of the name
+ * @param ino: Receives the record's inode (may be NULL)
+ * @param file_type: Receives the record's EXT2_FT_* type (may be NULL)
+ * @return 1 if there, 0 if not, or -errno
  */
-int ext2_lookup_visit(const ext2_dirent_t *e, void *context)
+int ext2_dir_lookup(ext2_node_t *dir, const char *name, size_t length, uint32_t *ino, uint8_t *file_type)
 {
-    ext2_lookup_context_t *ctx = context;
-
-    if (e->name_len != ctx->length)
+    ext2_dir_cursor_t c release_with(ext2_dir_cursor_close) = ext2_dir_cursor(dir);
+    if (!return_on_error(ext2_dir_find(&c, name, length)))
         return 0;
 
-    if (memcmp(e->name, ctx->name, ctx->length) != 0)
-        return 0;
-
-    ctx->ino = e->inode;
-    ctx->file_type = e->file_type;
-
+    if (ino != NULL)
+        *ino = c.entry->inode;
+    if (file_type != NULL)
+        *file_type = c.entry->file_type;
     return 1;
 }
 
@@ -440,26 +377,24 @@ int ext2_lookup_visit(const ext2_dirent_t *e, void *context)
  * @param name: The name of the entry to look up
  * @param length: The length of the name
  * @param child: Pointer to store the resulting child VFS node
- * @return int: 0 on success, negative error code on failure
+ * @return 0, -ENOENT (also for kinds the VFS can't show), or negative error code on failure
  */
 int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child)
 {
-    ext2_lookup_context_t ctx = {
-        .name = name,
-        .length = length,
-    };
-    int ret;
-    scoped_guard(mutex, &EXT2_NODE(dir)->lock)
+    ext2_node_t *d = EXT2_NODE(dir);
+    uint32_t ino = 0;
+    uint8_t file_type = 0;
+    int found = 0;
+
+    scoped_guard(mutex, &d->lock)
     {
-        ret = ext2_dir_walk(EXT2_NODE(dir), ext2_lookup_visit, &ctx);
+        found = return_on_error(ext2_dir_lookup(d, name, length, &ino, &file_type));
     }
-    if (ret < 0)
-        return ret;
 
     vfs_node_type_t type;
-    if (ret == 0 || !ext2_entry_type(ctx.file_type, &type))
+    if (!found || !ext2_entry_type(file_type, &type))
         return -ENOENT; // not there, or a kind the VFS cannot show yet
 
-    // After the walk, with no lease held: ext2_node_get takes volume->lock and may read the disk
-    return ext2_node_get(EXT2_NODE(dir)->volume, ctx.ino, dir, child);
+    // After the lock, with no lease held: ext2_node_get takes volume->lock and may read the disk
+    return ext2_node_get(d->volume, ino, dir, child);
 }

@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <cleanup.h>
 #include "disk_format.h"
 
 #define EXT2_NODE_HASH_BITS 6 // 64 buckets for cached nodes
@@ -96,31 +97,34 @@ int ext2_dir_empty(ext2_node_t *dir);
 bool ext2_entry_type(uint8_t file_type, vfs_node_type_t *type);
 
 /**
- * Called for each used entry of a directory, while its block is leased:
- * `entry` points into the cache buffer and is only valid during the call.
- *
- * @return 0 to go on, 1 to stop the walk, or -errno to fail it.
+ * A position in a directory's records, like C#'s IEnumerator: start it with
+ * ext2_dir_cursor(dir), step it with ext2_dir_next, and declare it with
+ * release_with(ext2_dir_cursor_close) so its block's lease goes back when it
+ * leaves scope. The caller holds dir->lock for the cursor's whole life.
  */
-typedef int (*ext2_visit_t)(const ext2_dirent_t *entry, void *context);
+typedef struct ext2_dir_cursor
+{
+    ext2_node_t *dir;
+    uint64_t block;             // the directory's block (logical index) being read
+    block_cache_buf_t *lease;   // that block while the cursor points into it, else NULL
+    const uint8_t *data;        // the block's bytes
+    uint32_t offset;            // the current record's offset in the block
+    uint32_t previous;          // the record before it in this block, or UINT32_MAX
+    const ext2_dirent_t *entry; // the current record: valid until the next step
+} ext2_dir_cursor_t;
 
-int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context);
+#define ext2_dir_cursor(d) ((ext2_dir_cursor_t){.dir = (d), .previous = UINT32_MAX})
+
+int ext2_dir_next_record(ext2_dir_cursor_t *c);
+int ext2_dir_next(ext2_dir_cursor_t *c);
+int ext2_dir_find(ext2_dir_cursor_t *c, const char *name, size_t length);
+void ext2_dir_cursor_close(ext2_dir_cursor_t *c);
+ext2_dirent_t *ext2_dir_writable(ext2_dir_cursor_t *c, uint32_t offset);
+int ext2_dir_lookup(ext2_node_t *dir, const char *name, size_t length, uint32_t *ino, uint8_t *file_type);
 int ext2_dir_add(ext2_node_t *dir, const char *name, size_t length, uint32_t ino, uint8_t file_type);
 int ext2_dir_remove(ext2_node_t *dir, const char *name, size_t length);
 int ext2_dir_set(ext2_node_t *dir, const char *name, size_t length, uint32_t ino, uint8_t file_type);
 int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
-
-/**
- * @brief Context for looking up a directory entry by name
- */
-typedef struct ext2_lookup_context
-{
-    const char *name;
-    size_t length;
-    uint32_t ino;
-    uint8_t file_type;
-} ext2_lookup_context_t;
-
-int ext2_lookup_visit(const ext2_dirent_t *e, void *context);
 int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
 
 // file_data.c
