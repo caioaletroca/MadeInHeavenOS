@@ -1092,6 +1092,12 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   libc (glibc would allocate one; we do not). `ERANGE` is 34, as Linux.
 - **`getpid()`** → the caller's pid (no lock: it never changes). **`getppid()`** → the parent's pid
   read under `process_tree_lock` (`process_parent_pid`), 0 without one (init, like Linux).
+- **`getuid()`/`geteuid()`/`getgid()`/`getegid()`** (`SYS_GETUID` 49 to `SYS_GETEGID` 52,
+  D10g) → the caller's `process_identity_t` (real and effective user and group: the first
+  fields of Linux's `struct cred`). `child_create` copies the parent's
+  (`process_identity_inherit`, no lock: only the process itself will write its own), exec keeps
+  them, and every process is root (0) because `process_create` zeroes it and nothing sets it
+  yet. No `setuid` and no permission checks yet.
 - **`brk(address)`** always returns the current break, never `-errno` (Linux semantics; libc turns
   "did not move" into `ENOMEM`). It moves only for `heap_start <= address <= limit`, `limit` =
   `USER_STACK_TOP - USER_STACK_MAX - PAGE_SIZE` (one page below the stack's reservation); `brk(0)` is the
@@ -3596,18 +3602,26 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
         - `5053440`: the `busybox` test, 46 cases (exact stdout and status, input on a
           pipe); 32 run, 14 are parked with the calls they wait for (`waits_for`). The first
           run showed what is missing:
-          - **getuid/geteuid/getgid/getegid:** ash calls `geteuid` at startup and mlibc
-            *panics* without the sysdep ("Cannot continue without sys_geteuid()"). Return
-            0 (root) for now. Unparks the 4 `sh` cases and the file chain after
-            `echo made > file`.
+          - **getuid/geteuid/getgid/getegid (done):** ash calls `geteuid` at startup and
+            mlibc *panics* without the sysdep ("Cannot continue without sys_geteuid()").
           - **fcntl `F_GETFL`/`F_SETFL`/`F_DUPFD`/`F_DUPFD_CLOEXEC`:** the kernel and the
-            sysdep know only `F_GETFD`/`F_SETFD`. busybox `printf` exits 1 when
-            `fcntl(1, F_GETFL)` fails; ash saves fds with `F_DUPFD_CLOEXEC` before a
-            redirection. The status flags belong to the open file (shared by `dup`s).
+            sysdep know only `F_GETFD`/`F_SETFD`. busybox `printf` (the applet and ash's
+            builtin) checks `fcntl(1, F_GETFL)` first and prints nothing when it fails; ash
+            saves fds with `F_DUPFD_CLOEXEC` before a redirection. The status flags belong
+            to the open file (shared by `dup`s).
           - **rename:** `mv` (and Lua's `os.rename`); VFS and ext2, `..` fixed when a
             directory moves, `EINVAL` for a move into its own subtree.
           - **utimensat:** `touch` (NULL times = now, `UTIME_NOW`/`UTIME_OMIT`).
-        - Next: those calls (the user writes them), unparking the cases batch by batch;
+        - The uid calls, batch 1 (the user wrote the kernel side): `fd7bf94` adds
+          `process_identity_t` and calls 49 to 52 (see Processes). mlibc fork `3bcc11c7`
+          adds the four sysdeps; `9d5d2017` fixes `clearenv`, which cleared a copy of
+          mlibc's vector (`auto`, not `auto &`) and never touched `environ`, so `env -i`
+          kept everything (managarm's master has the same bug: an upstream PR candidate).
+          Pointer `0fabb2a`. `10f7d4c`: `fork` checks the ids in parent and child, `exec`
+          checks `clearenv` (on the starting environment and on mlibc's copy after a
+          `setenv`), the 4 `sh` cases run (the pipeline and loop use `echo`: `printf` waits
+          for `F_GETFL`); 10 cases stay parked. Gate: 48 of 48 on both boots.
+        - Next: the remaining calls (the user writes them), unparking the cases batch by batch;
           the run after each shows the next gaps (`cp` may want `fchmod`). Then symlinks
           for applet names (`/bin/ls → busybox`: a VFS link type, following during
           lookup with `ELOOP` at 40, `readlink`/`lstat`, initrd tar type `2`, ext2 fast
@@ -3793,6 +3807,9 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - mlibc's `execvp` has no default `PATH` when the environment has none (glibc falls back to
   `/bin:/usr/bin`): `env -i cmd` finds nothing unless `cmd` is a path.
 - Applets run only as `busybox <applet>` until the kernel has symlinks (D10g's next step).
+- The fork's `clearenv` fix (`9d5d2017`) is managarm's bug too: send it upstream as a PR.
+- Every process is root: no `setuid`/`setgid`, no saved ids or supplementary groups, and no
+  permission checks on files (ext2 keeps owners and modes, the kernel ignores them).
 
 - The monotonic clock counts timer ticks (100 Hz, `timer_nanoseconds` = ticks × 10 ms): it
   moves in 10 ms steps and falls behind whenever ticks are lost. A starved QEMU drops them
