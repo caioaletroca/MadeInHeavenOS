@@ -46,6 +46,7 @@ typedef struct ext2_volume
     uint32_t free_inodes;      // s_free_inodes_count, under allocation_lock (for W6)
     mutex_t allocation_lock;   // the bitmaps, the group table's counters, free_blocks and free_inodes
     mutex_t lock;              // the node cache: nodes[] and every node's hash link
+    mutex_t rename_lock;       // one rename at a time: the tree's shape (every node's parent) holds still while one checks ancestors and takes two directories' locks
     hlist_head_t nodes[HASH_BUCKETS(EXT2_NODE_HASH_BITS)];
 } ext2_volume_t;
 
@@ -105,6 +106,7 @@ typedef int (*ext2_visit_t)(const ext2_dirent_t *entry, void *context);
 int ext2_dir_walk(ext2_node_t *dir, ext2_visit_t visit, void *context);
 int ext2_dir_add(ext2_node_t *dir, const char *name, size_t length, uint32_t ino, uint8_t file_type);
 int ext2_dir_remove(ext2_node_t *dir, const char *name, size_t length);
+int ext2_dir_set(ext2_node_t *dir, const char *name, size_t length, uint32_t ino, uint8_t file_type);
 int ext2_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
 
 /**
@@ -132,6 +134,7 @@ void ext2_release(vfs_node_t *node);
 int ext2_unlink(vfs_node_t *dir, const char *name, size_t length);
 int ext2_mkdir(vfs_node_t *dir, const char *name, size_t length, uint32_t mode);
 int ext2_rmdir(vfs_node_t *dir, const char *name, size_t length);
+int ext2_rename(vfs_node_t *old_dir, const char *old_name, size_t old_length, vfs_node_t *new_dir, const char *new_name, size_t new_length);
 
 /**
  * @brief Mark a node's mtime and ctime as changed

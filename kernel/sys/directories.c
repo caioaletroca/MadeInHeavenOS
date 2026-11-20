@@ -87,6 +87,34 @@ long sys_rmdir(uintptr_t path)
 }
 
 /**
+ * rename(old, new): gives the file or directory at old the name new, replacing
+ * what new names (see vfs_rename for the rules).
+ *
+ * @param old_path The user-space pointer to the current path.
+ * @param new_path The user-space pointer to the new path.
+ * @return 0 on success, or a negative error code on failure.
+ */
+long sys_rename(uintptr_t old_path, uintptr_t new_path)
+{
+    long error;
+    char *old_kernel_path = user_path_copy(old_path, &error);
+    if (old_kernel_path == NULL)
+        return error;
+
+    char *new_kernel_path = user_path_copy(new_path, &error);
+    if (new_kernel_path == NULL)
+    {
+        kfree(old_kernel_path);
+        return error;
+    }
+
+    int ret = vfs_rename(old_kernel_path, new_kernel_path);
+    kfree(new_kernel_path);
+    kfree(old_kernel_path);
+    return ret;
+}
+
+/**
  * Change the current working directory of the calling process.
  *
  * @param path The path to the new current working directory.

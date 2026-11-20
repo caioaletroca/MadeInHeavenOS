@@ -55,6 +55,7 @@
 #define SYS_GETEUID 50
 #define SYS_GETGID 51
 #define SYS_GETEGID 52
+#define SYS_RENAME 53
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)

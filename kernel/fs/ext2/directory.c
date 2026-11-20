@@ -265,6 +265,69 @@ int ext2_dir_remove(ext2_node_t *dir, const char *name, size_t length)
 }
 
 /**
+ * @brief Point an existing record at another inode, in place: the name, its place in the
+ * block and its rec_len stay (a moved directory's ".." must stay its second record)
+ *
+ * The caller holds dir->lock.
+ *
+ * @param dir: The directory node
+ * @param name: The record's name (not '\0'-terminated)
+ * @param length: The length of the name
+ * @param ino: The inode the record names from now on
+ * @param file_type: That inode's EXT2_FT_* type
+ * @return 0, -ENOENT if not there, -EIO for a corrupt record, or the disk's error
+ */
+int ext2_dir_set(ext2_node_t *dir, const char *name, size_t length, uint32_t ino, uint8_t file_type)
+{
+    ext2_volume_t *volume = dir->volume;
+    uint64_t blocks = dir->base.size / volume->block_size;
+
+    for (uint64_t i = 0; i < blocks; i++)
+    {
+        uint32_t block;
+        int ret = ext2_file_block(volume, dir, i, NULL, false, &block);
+        if (ret < 0)
+            return ret;
+        if (block == 0)
+            continue;
+
+        block_cache_buf_t *lease;
+        const uint8_t *data;
+        ret = ext2_block_get(volume, block, &lease, &data);
+        if (ret < 0)
+            return ret;
+
+        uint32_t rec_len;
+        for (uint32_t offset = 0; offset < volume->block_size; offset += rec_len)
+        {
+            if (ext2_record_bad(volume, data, offset))
+            {
+                block_cache_put(lease);
+                return -EIO;
+            }
+
+            const ext2_dirent_t *e = (const ext2_dirent_t *)(data + offset);
+            rec_len = e->rec_len;
+            if (e->inode == 0 || e->name_len != length || memcmp(e->name, name, length) != 0)
+                continue;
+
+            ext2_dirent_t *writable = (ext2_dirent_t *)(lease->data + (data - lease->data) + offset);
+            block_cache_begin_write(lease);
+            writable->inode = ino;
+            writable->file_type = file_type;
+            block_cache_end_write(lease);
+
+            block_cache_put(lease);
+            return 0;
+        }
+
+        block_cache_put(lease);
+    }
+
+    return -ENOENT;
+}
+
+/**
  * @brief Visit function for checking if a directory is empty
  *
  * @param e: The ext2 directory entry

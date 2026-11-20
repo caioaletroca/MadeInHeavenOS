@@ -234,6 +234,7 @@ int ext2_mount(block_device_t *disk, vfs_node_t **root)
 
     mutex_init(&volume->allocation_lock);
     mutex_init(&volume->lock);
+    mutex_init(&volume->rename_lock);
     volume->free_blocks = superblock.s_free_blocks_count;
     volume->free_inodes = superblock.s_free_inodes_count;
     volume->dev = vfs_dev_alloc();

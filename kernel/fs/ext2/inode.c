@@ -12,6 +12,7 @@ static const vfs_node_ops_t ext2_ops = {
     .readdir = ext2_readdir,
     .truncate = ext2_truncate,
     .create = ext2_create,
+    .rename = ext2_rename,
     .unlink = ext2_unlink,
     .mkdir = ext2_mkdir,
     .rmdir = ext2_rmdir,

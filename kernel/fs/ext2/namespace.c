@@ -351,3 +351,237 @@ int ext2_rmdir(vfs_node_t *dir, const char *name, size_t length)
 
     return ret;
 }
+
+// ---- Renames: one at a time per volume (rename_lock), so they alone hold two directories ----
+
+/**
+ * @brief Whether a node is a given directory or lies somewhere under it
+ *
+ * Walks the parents up to the volume's root (its own parent). Only renames change a
+ * parent and the caller holds rename_lock, so the chain holds still; every node on it
+ * is kept alive by its child's reference, so no lock is needed per step.
+ *
+ * @param node: Where the walk starts
+ * @param ancestor: The directory looked for
+ * @return true if node is ancestor or one of its descendants
+ */
+static bool ext2_is_under(vfs_node_t *node, vfs_node_t *ancestor)
+{
+    for (;;)
+    {
+        if (node == ancestor)
+            return true;
+        if (node->parent == node)
+            return false;
+        node = node->parent;
+    }
+}
+
+/**
+ * @brief Take two directories' locks without a deadlock: an ancestor's before its
+ * descendant's, the order every other operation follows (a directory before its child)
+ *
+ * Two unrelated directories go in any order: only a rename ever holds two, and
+ * rename_lock (held by the caller) lets one run at a time. The same directory twice is
+ * locked once. Not a guard: which lock comes first is only known at run time.
+ *
+ * @param a: One directory
+ * @param b: The other (may be a)
+ */
+static void ext2_lock_two(ext2_node_t *a, ext2_node_t *b)
+{
+    if (a == b)
+    {
+        mutex_lock(&a->lock);
+        return;
+    }
+    if (ext2_is_under(&a->base, &b->base))
+    {
+        ext2_node_t *swap = a;
+        a = b;
+        b = swap;
+    }
+    mutex_lock(&a->lock);
+    mutex_lock(&b->lock);
+}
+
+/**
+ * @brief Release what ext2_lock_two took (the order of unlocking does not matter)
+ *
+ * @param a: One directory
+ * @param b: The other (may be a: then it is unlocked once)
+ */
+static void ext2_unlock_two(ext2_node_t *a, ext2_node_t *b)
+{
+    mutex_unlock(&a->lock);
+    if (a != b)
+        mutex_unlock(&b->lock);
+}
+
+/**
+ * @brief Give an entry a new name, in its directory or another one of the volume,
+ * replacing what the new name names (POSIX rename)
+ *
+ * Every check comes before any write. Then the new name first (added, or the target's
+ * record pointed at the source in place), a moved directory's ".." rewritten in place,
+ * the old name last: a crash in between leaves two names, never none (e2fsck mends the
+ * link count). A replaced target loses its name and is freed at its last put; the link
+ * counts change in memory and are stored once. The source's node then moves under its
+ * new parent (vfs_node_set_parent), still under rename_lock.
+ *
+ * @param old_dir: The directory holding the entry
+ * @param old_name: The entry's name (not '\0'-terminated)
+ * @param old_length: The length of old_name
+ * @param new_dir: The directory it moves to (may be old_dir)
+ * @param new_name: The new name (not '\0'-terminated)
+ * @param new_length: The length of new_name
+ * @return 0 (also when both names are one file: nothing changes), -ENOENT, -EEXIST for a
+ * target the VFS can't show (a symlink), -EINVAL (a directory into its own subtree),
+ * -ENOTEMPTY (a non-empty target, or one holding the source), -ENOTDIR, -EISDIR,
+ * -EMLINK, -EROFS for an indexed directory, or -errno
+ */
+int ext2_rename(vfs_node_t *old_dir, const char *old_name, size_t old_length,
+                vfs_node_t *new_dir, const char *new_name, size_t new_length)
+{
+    int64_t now = clock_seconds();
+    ext2_node_t *d = EXT2_NODE(old_dir);
+    ext2_node_t *nd = EXT2_NODE(new_dir);
+    ext2_volume_t *volume = d->volume;
+    vfs_node_t *source = NULL, *target = NULL;
+    int ret = 0;
+
+    guard(mutex, &volume->rename_lock);
+
+    if ((d->flags & EXT2_INDEX_FL) || (nd->flags & EXT2_INDEX_FL))
+        return -EROFS;
+
+    ext2_lock_two(d, nd);
+
+    // The source, as unlink finds it
+    ext2_lookup_context_t from = {.name = old_name, .length = old_length};
+    vfs_node_type_t type;
+    ret = ext2_dir_walk(d, ext2_lookup_visit, &from);
+    if (ret == 0 || (ret == 1 && !ext2_entry_type(from.file_type, &type)))
+        ret = -ENOENT;
+    else if (ret == 1)
+        ret = ext2_node_get(volume, from.ino, old_dir, &source);
+
+    ext2_lookup_context_t to = {.name = new_name, .length = new_length};
+    if (ret == 0)
+    {
+        ret = ext2_dir_walk(nd, ext2_lookup_visit, &to);
+        if (ret == 1 && !ext2_entry_type(to.file_type, &type))
+            ret = -EEXIST; // a kind the VFS can't show (a symlink): never replaced blind
+        else if (ret == 1 && to.ino == from.ino)
+            ret = 1; // the same file under both names: nothing to do (POSIX)
+        else if (ret == 1)
+            ret = ext2_node_get(volume, to.ino, new_dir, &target);
+    }
+
+    bool directory = source != NULL && source->type == VFS_DIRECTORY;
+    bool moves = d != nd;
+
+    if (ret == 0 && new_dir->nlink == 0)
+        ret = -ENOENT; // the new directory was removed while held
+    if (ret == 0 && directory && ext2_is_under(new_dir, source))
+        ret = -EINVAL; // into itself or its own subtree
+    if (ret == 0 && target != NULL && ext2_is_under(old_dir, target))
+        ret = -ENOTEMPTY; // the target holds the source
+    if (ret == 0 && target != NULL && directory && target->type != VFS_DIRECTORY)
+        ret = -ENOTDIR;
+    if (ret == 0 && target != NULL && !directory && target->type == VFS_DIRECTORY)
+        ret = -EISDIR;
+    if (ret == 0 && directory && moves && target == NULL && new_dir->nlink >= EXT2_LINK_MAX)
+        ret = -EMLINK;
+    if (ret == 0 && target != NULL && target->type == VFS_DIRECTORY)
+    {
+        ext2_node_t *t = EXT2_NODE(target);
+        scoped_guard(mutex, &t->lock)
+        {
+            ret = ext2_dir_empty(t);
+            ret = ret == 1 ? 0 : ret == 0 ? -ENOTEMPTY
+                                          : ret;
+        }
+    }
+
+    // The writes: the new name first, so a crash leaves two names, never none
+    uint8_t file_type = directory ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
+    if (ret == 0)
+    {
+        if (target == NULL)
+            ret = ext2_dir_add(nd, new_name, new_length, from.ino, file_type);
+        else
+            ret = ext2_dir_set(nd, new_name, new_length, from.ino, file_type);
+    }
+
+    // A directory that changes parent: its ".." follows, and the link moves with it
+    if (ret == 0 && directory && moves)
+    {
+        ext2_node_t *s = EXT2_NODE(source);
+        scoped_guard(mutex, &s->lock)
+        {
+            ret = ext2_dir_set(s, "..", 2, nd->ino, EXT2_FT_DIR);
+        }
+        if (ret == 0)
+        {
+            old_dir->nlink--;
+            new_dir->nlink++;
+        }
+    }
+
+    if (ret == 0)
+        ret = ext2_dir_remove(d, old_name, old_length);
+
+    if (ret == 0 && target != NULL)
+    {
+        ext2_node_t *t = EXT2_NODE(target);
+        scoped_guard(mutex, &t->lock)
+        {
+            target->nlink = target->type == VFS_DIRECTORY ? 0 : target->nlink - 1;
+            target->ctime = now;
+            ret = ext2_links_store(t);
+            if (target->nlink == 0)
+                t->free_on_release = true;
+        }
+        if (target->type == VFS_DIRECTORY)
+            new_dir->nlink--;
+    }
+
+    if (ret == 0)
+    {
+        ext2_node_t *s = EXT2_NODE(source);
+        scoped_guard(mutex, &s->lock)
+        {
+            source->ctime = now;
+            ret = ext2_times_store(s);
+        }
+    }
+    if (ret == 0)
+        ret = ext2_links_store(d);
+    if (ret == 0 && moves)
+        ret = ext2_links_store(nd);
+    if (ret == 0)
+    {
+        ext2_mark_changed(d, now);
+        ret = ext2_times_store(d);
+    }
+    if (ret == 0 && moves)
+    {
+        ext2_mark_changed(nd, now);
+        ret = ext2_times_store(nd);
+    }
+
+    ext2_unlock_two(d, nd);
+
+    // Still under rename_lock: the next rename's ancestor checks see the new parent
+    if (ret == 0 && moves)
+        vfs_node_set_parent(source, new_dir);
+
+    // After the directories' locks, as in unlink: a replaced target is freed here if unheld
+    if (target != NULL)
+        vfs_node_put(target);
+    if (source != NULL)
+        vfs_node_put(source);
+
+    return ret == 1 ? 0 : ret;
+}

@@ -115,6 +115,32 @@ void vfs_node_put(vfs_node_t *node)
         node->ops->release(node);
 }
 
+vfs_node_t *vfs_node_parent(vfs_node_t *node)
+{
+    // Read and held under the child's lock, so a rename can't let go of it in between
+    guard(spinlock, &node->lock);
+    vfs_node_t *parent = node->parent;
+    if (parent != node)
+        vfs_node_get(parent);
+    else
+        node->refs++;
+    return parent;
+}
+
+void vfs_node_set_parent(vfs_node_t *node, vfs_node_t *parent)
+{
+    vfs_node_get(parent);
+    vfs_node_t *old;
+    scoped_guard(spinlock, &node->lock)
+    {
+        old = node->parent;
+        node->parent = parent;
+    }
+
+    // After the lock: the last put of a parent may release it, which takes other locks
+    vfs_node_put(old);
+}
+
 void vfs_mount_root(vfs_node_t *root)
 {
     if (vfs_root != NULL)
@@ -203,8 +229,7 @@ int vfs_lookup(const char *path, vfs_node_t **out)
             while (up->mount_point != NULL)
                 up = up->mount_point;
 
-            next = up->parent;
-            vfs_node_get(next);
+            next = vfs_node_parent(up);
         }
         else
             ret = node->ops->lookup(node, name, length, &next);
@@ -254,9 +279,10 @@ int vfs_getcwd(char *buffer, size_t size)
         while (dir->mount_point != NULL)
             dir = dir->mount_point;
 
-        vfs_node_t *parent = dir->parent;
+        vfs_node_t *parent = vfs_node_parent(dir);
         if (parent == dir)
         {
+            vfs_node_put(parent);
             ret = -ENOENT;
             break;
         }
@@ -274,9 +300,13 @@ int vfs_getcwd(char *buffer, size_t size)
             }
         }
         if (ret < 0)
+        {
+            vfs_node_put(parent);
             break;
+        }
         if (!found)
         {
+            vfs_node_put(parent);
             ret = -ENOENT;
             break;
         }
@@ -284,6 +314,7 @@ int vfs_getcwd(char *buffer, size_t size)
         // "/name" in front of what is already there
         if (entry.length + 1 > pos)
         {
+            vfs_node_put(parent);
             ret = -ENAMETOOLONG;
             break;
         }
@@ -292,7 +323,6 @@ int vfs_getcwd(char *buffer, size_t size)
         buffer[--pos] = '/';
 
         // One step up: hold the parent before letting go of the child
-        vfs_node_get(parent);
         vfs_node_put(node);
         node = parent;
     }
@@ -709,6 +739,72 @@ int vfs_rmdir(const char *path)
     }
 
     kfree(trimmed);
+    return ret;
+}
+
+static bool vfs_name_is_dots(const char *name, size_t length)
+{
+    return name[0] == '.' && (length == 1 || (length == 2 && name[1] == '.'));
+}
+
+int vfs_rename(const char *old_path, const char *new_path)
+{
+    size_t old_end = strlen(old_path), new_end = strlen(new_path);
+    if (old_end == 0 || new_end == 0)
+        return -ENOENT;
+
+    bool slash = old_path[old_end - 1] == '/' || new_path[new_end - 1] == '/';
+
+    char *old_trimmed = vfs_path_trimmed(old_path);
+    char *new_trimmed = vfs_path_trimmed(new_path);
+    vfs_node_t *old_dir = NULL, *new_dir = NULL;
+    const char *old_name, *new_name;
+    size_t old_length, new_length;
+    int ret = 0;
+
+    if (old_trimmed == NULL || new_trimmed == NULL)
+        ret = -ENOMEM;
+    else if (strcmp(old_trimmed, "/") == 0 || strcmp(new_trimmed, "/") == 0)
+        ret = -EBUSY;
+
+    // A trailing '/' promises a directory: old must be one
+    if (ret == 0 && slash)
+    {
+        vfs_node_t *node;
+        ret = vfs_lookup(old_trimmed, &node);
+        if (ret == 0)
+        {
+            if (node->type != VFS_DIRECTORY)
+                ret = -ENOTDIR;
+            vfs_node_put(node);
+        }
+    }
+
+    if (ret == 0)
+        ret = vfs_lookup_parent(old_trimmed, &old_dir, &old_name, &old_length);
+    if (ret == 0)
+        ret = vfs_lookup_parent(new_trimmed, &new_dir, &new_name, &new_length);
+
+    if (ret == 0)
+    {
+        if (vfs_name_is_dots(old_name, old_length) || vfs_name_is_dots(new_name, new_length))
+            ret = -EBUSY;
+        else if (old_dir->dev != new_dir->dev)
+            ret = -EXDEV;
+        else if (old_dir->ops->rename == NULL)
+            ret = -EROFS;
+        else if (vfs_is_mount_point(old_trimmed) || vfs_is_mount_point(new_trimmed))
+            ret = -EBUSY;
+        else
+            ret = old_dir->ops->rename(old_dir, old_name, old_length, new_dir, new_name, new_length);
+    }
+
+    if (new_dir != NULL)
+        vfs_node_put(new_dir);
+    if (old_dir != NULL)
+        vfs_node_put(old_dir);
+    kfree(new_trimmed);
+    kfree(old_trimmed);
     return ret;
 }
 

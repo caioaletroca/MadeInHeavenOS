@@ -16,6 +16,7 @@
 #define EFAULT 14       // bad address
 #define EBUSY 16        // device or resource busy
 #define EEXIST 17       // already exists: a device name registered twice
+#define EXDEV 18        // cross-device link: a rename between two file systems (mv copies instead)
 #define ENODEV 19       // no such device: root= names a disk that does not exist
 #define ENOTDIR 20      // not a directory
 #define EISDIR 21       // is a directory

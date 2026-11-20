@@ -87,6 +87,13 @@ typedef struct vfs_node_ops
     // -ENOENT. It is freed once it has no references left
     int (*rmdir)(vfs_node_t *dir, const char *name, size_t length);
 
+    // Directory: gives the entry old_name in this directory (old_dir) the name new_name in
+    // new_dir, on the same file system, replacing what new_name names. The VFS has checked the
+    // paths (same file system, no ".", "..", mount points); the file system checks the rest:
+    // -ENOENT, -EISDIR, -ENOTDIR, -ENOTEMPTY, -EINVAL (into its own subtree), -EMLINK
+    int (*rename)(vfs_node_t *old_dir, const char *old_name, size_t old_length,
+                  vfs_node_t *new_dir, const char *new_name, size_t new_length);
+
     // File: copies up to count bytes from offset; returns the count (0 at the end) or -errno
     long (*read)(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
 
@@ -137,6 +144,23 @@ bool vfs_node_tryget(vfs_node_t *node);
  * @param node The node to decrement the reference count for.
  */
 void vfs_node_put(vfs_node_t *node);
+
+/**
+ * @brief The node's parent directory (its ".."), as a new reference.
+ *
+ * @param node The node.
+ * @return Its parent, held; the node itself for a file system's root.
+ */
+vfs_node_t *vfs_node_parent(vfs_node_t *node);
+
+/**
+ * @brief Moves a node under another parent directory (rename): holds the new one and lets
+ * go of the old one.
+ *
+ * @param node The node that moved.
+ * @param parent Its new parent directory.
+ */
+void vfs_node_set_parent(vfs_node_t *node, vfs_node_t *parent);
 
 /**
  * Get the next component of a path.
@@ -299,5 +323,15 @@ int vfs_mkdir(const char *path, uint32_t mode);
  * @return 0 on success, -errno on failure.
  */
 int vfs_rmdir(const char *path);
+
+/**
+ * @brief Rename a file or directory: old_path's entry gets the name new_path,
+ * replacing what new_path names (POSIX rename).
+ *
+ * @param old_path The current path.
+ * @param new_path The new path.
+ * @return 0 on success, -errno on failure.
+ */
+int vfs_rename(const char *old_path, const char *new_path);
 
 #endif /* _FS_VFS_H_ */
