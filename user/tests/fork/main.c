@@ -273,6 +273,24 @@ static void test_directory(void)
     CHECK(getcwd(here, sizeof(here)) != NULL && strcmp(here, start) == 0);
 }
 
+// Who the process runs as: root everywhere until there are users, and a child inherits it
+static void test_identity(void)
+{
+    CHECK(getuid() == 0 && geteuid() == 0);
+    CHECK(getgid() == 0 && getegid() == 0);
+
+    pid_t child = fork_flushed();
+    CHECK(child >= 0);
+    if (child == 0)
+    {
+        CHECK(getuid() == 0 && geteuid() == 0);
+        CHECK(getgid() == 0 && getegid() == 0);
+        child_done();
+    }
+
+    child_passed(child);
+}
+
 // Several at once, any order; each reaped once
 static void test_children(void)
 {
@@ -355,6 +373,7 @@ int main(void)
     test_files();
     test_pipe();
     test_directory();
+    test_identity();
     test_children();
     test_orphan();
     test_rounds();

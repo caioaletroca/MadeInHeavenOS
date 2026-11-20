@@ -474,6 +474,32 @@ static void test_execvp(void)
     environ = original;
 }
 
+// clearenv empties environ, whether it is still the one the program started
+// with or mlibc's own copy after a setenv; setenv works again after it. In a
+// child, so this process keeps its environment
+static void test_clearenv(void)
+{
+    for (int copied = 0; copied <= 1; copied++)
+    {
+        pid_t child = fork_flushed();
+        CHECK(child >= 0);
+        if (child == 0)
+        {
+            if (copied)
+                CHECK(setenv("EXEC_EXTRA", "1", 1) == 0);
+            CHECK(clearenv() == 0);
+            CHECK(environ != NULL && environ[0] == NULL);
+            CHECK(getenv("TEST_ROOT") == NULL && getenv("EXEC_EXTRA") == NULL);
+
+            CHECK(setenv("A", "1", 1) == 0);
+            CHECK(environ[0] != NULL && strcmp(environ[0], "A=1") == 0 && environ[1] == NULL);
+            fflush(stdout);
+            _exit(test_status());
+        }
+        child_passed(child);
+    }
+}
+
 int main(int argc, char **argv)
 {
     self = argv[0];
@@ -493,6 +519,7 @@ int main(int argc, char **argv)
     test_chain();
     test_execv();
     test_execvp();
+    test_clearenv();
 
     // Every pipe and file is closed again: the next free fd is 3
     int fd = dup(0);

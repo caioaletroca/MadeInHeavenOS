@@ -36,10 +36,10 @@ typedef struct busybox_case
     const char *waits_for; // the missing calls this case needs; NULL = runs
 } busybox_case_t;
 
-// ash calls geteuid at startup (mlibc panics without it) and saves fds with F_DUPFD
-#define WAITS_ASH "getuid/geteuid/getgid/getegid, fcntl F_DUPFD"
+// ash saves the fds a redirection replaces with F_DUPFD
+#define WAITS_REDIRECT "fcntl F_DUPFD"
 // The cases after it use the file ash writes first
-#define WAITS_FILE WAITS_ASH
+#define WAITS_FILE WAITS_REDIRECT
 
 static const busybox_case_t cases[] = {
     // Output only
@@ -80,7 +80,7 @@ static const busybox_case_t cases[] = {
     // Directories and files: /usr holds only tests in both boots; /mnt is the writable test disk
     {{"ls", "/usr"}, NULL, "tests\n", 0, NULL},
     {{"mkdir", "/mnt/busybox"}, NULL, "", 0, NULL},
-    {{"sh", "-c", "echo made > /mnt/busybox/file"}, NULL, "", 0, WAITS_ASH},
+    {{"sh", "-c", "echo made > /mnt/busybox/file"}, NULL, "", 0, WAITS_REDIRECT},
     {{"cat", "/mnt/busybox/file"}, NULL, "made\n", 0, WAITS_FILE},
     {{"cp", "/mnt/busybox/file", "/mnt/busybox/copy"}, NULL, "", 0, WAITS_FILE},
     {{"cmp", "/mnt/busybox/file", "/mnt/busybox/copy"}, NULL, "", 0, WAITS_FILE},
@@ -93,11 +93,12 @@ static const busybox_case_t cases[] = {
     {{"rmdir", "/mnt/busybox"}, NULL, "", 0, NULL},
     {{"test", "-e", "/mnt/busybox"}, NULL, "", 1, NULL},
 
-    // The shell: arithmetic, a pipeline, a loop, an exit status
-    {{"sh", "-c", "echo $((6 * 7))"}, NULL, "42\n", 0, WAITS_ASH},
-    {{"sh", "-c", "printf 'b\\na\\n' | busybox sort"}, NULL, "a\nb\n", 0, WAITS_ASH},
-    {{"sh", "-c", "for i in 1 2 3; do printf $i; done; echo"}, NULL, "123\n", 0, WAITS_ASH},
-    {{"sh", "-c", "exit 3"}, NULL, "", 3, WAITS_ASH},
+    // The shell: arithmetic, a pipeline, a loop, an exit status. echo, not printf: printf
+    // checks stdout with F_GETFL first (the parked printf case above)
+    {{"sh", "-c", "echo $((6 * 7))"}, NULL, "42\n", 0, NULL},
+    {{"sh", "-c", "{ echo b; echo a; } | busybox sort"}, NULL, "a\nb\n", 0, NULL},
+    {{"sh", "-c", "for i in 1 2 3; do echo -n $i; done; echo"}, NULL, "123\n", 0, NULL},
+    {{"sh", "-c", "exit 3"}, NULL, "", 3, NULL},
 };
 
 /*
