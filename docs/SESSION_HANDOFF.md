@@ -1003,7 +1003,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   internal.h     what sys/ shares (ext2's pattern): the common includes, the helpers and every
                  sys_* the dispatch calls, grouped by file; nothing outside sys/ includes it
   user_copy.c    syscall_space, user_string_copy, user_path_copy
-  files.c        sys_file (fd → file_t); open read write lseek close dup dup2 ioctl truncate ftruncate pipe
+  files.c        sys_file (fd → file_t); open read write lseek close dup dup2 ioctl truncate ftruncate utimensat pipe fcntl
   directories.c  getdents unlink mkdir rmdir chdir getcwd
   stat.c         stat fstat
   processes.c    exit spawn fork exec wait getpid getppid (child_create, program_load, spawn_args_t,
@@ -1440,7 +1440,22 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   either side → `-EBUSY`; then the old parent's `rename` op. A node's `parent` can change now,
   so it is read and held under the node's spinlock (`vfs_node_parent`, used by `vfs_lookup`'s
   `..` and `vfs_getcwd`) and swapped the same way (`vfs_node_set_parent`, the old parent put
-  after the lock). Directories open (listed with
+  after the lock). **`vfs_set_attributes(node, attributes)`** (D10g; Linux's `setattr`): a
+  `vfs_attributes_t` with a `which` mask (`VFS_SET_ATIME`, `VFS_SET_MTIME`; `chmod`'s mode is
+  the next bit when it comes) and the fields it names; `which` 0 → 0, nothing changes; no
+  `set_attributes` op → `-EROFS` (initrd, devfs, read-only ext2); else the VFS sets `ctime` to
+  `clock_seconds()` on a copy and calls the op. **`utimensat(dirfd, path, times, flags)`**
+  (`sys_utimensat`, `SYS_UTIMENSAT` 54, `files.c`; mlibc's `Utimensat` sysdep, which `utime`,
+  `utimes`, `futimes`, `futimens` and `utimensat` all reach): an unknown flag → `-EINVAL`;
+  `times` 0 → both now, else two `mihos_timespec`s (`-EFAULT`), each `MIHOS_UTIME_NOW` → now,
+  `MIHOS_UTIME_OMIT` → its bit cleared, else `tv_nsec` outside 0–999 999 999 → `-EINVAL`, the
+  seconds kept (`utime_make`); checked before the lookup, as Linux. The node
+  (`utimensat_node`): a NULL path (futimens) or `""` with `AT_EMPTY_PATH` → `dirfd`'s file
+  (`-EBADF`); a relative path from a real `dirfd` → `-ENOSYS` (no `*at` lookups); else
+  `vfs_lookup` (`""` → `-ENOENT`). `AT_SYMLINK_NOFOLLOW` is accepted and changes nothing (no
+  symlinks). `AT_FDCWD` (-100), `AT_SYMLINK_NOFOLLOW` (0x100), `AT_EMPTY_PATH` (0x1000,
+  `_GNU_SOURCE` in mlibc's `<fcntl.h>`) are in `uapi/mihos/fcntl.h`, `MIHOS_UTIME_*` in
+  `uapi/mihos/stat.h`, all Linux's values. Directories open (listed with
   `getdents`); reading one gives `-EISDIR`. `vfs_read`: a directory → `-EISDIR`, a node without
   a `read` op (character devices, read through their `file_ops`) → `-EINVAL`. A block device is
   read like a file: `lseek` works on it, since only `VFS_CHARDEV` is refused.
@@ -2913,6 +2928,8 @@ link.next == MALLOC_MAGIC while allocated; size in UNITs (sizeof(block_t)), head
   alone (its link count, not its bytes). A read sets atime under Linux's relatime rule
   (`ext2_atime_due`): only if atime ≤ mtime or ≤ ctime (unread since the change) or a day
   old, so repeated reads cost no disk writes; best effort, never on a read-only volume.
+  `utimensat` sets atime and mtime as asked through `ext2_set_attributes` (the
+  `set_attributes` op, writable volumes only: the times `which` names, ctime, one store).
   `ext2_times_store` writes all three with one 12-byte write, in the disk's order (`i_atime`
   8, `i_ctime` 12, `i_mtime` 16, a `_Static_assert` on it). `i_dtime` = the free's time, at
   least `s_inodes_count`. The superblock gets `s_mtime` and `s_wtime` at a writable mount and
@@ -3678,7 +3695,8 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
             to the open file (shared by `dup`s).
           - **rename (done):** `mv` (and Lua's `os.rename`); VFS and ext2, `..` fixed when
             a directory moves, `EINVAL` for a move into its own subtree.
-          - **utimensat:** `touch` (NULL times = now, `UTIME_NOW`/`UTIME_OMIT`).
+          - **utimensat (done):** `touch` (`utimensat` with `UTIME_NOW`, then `open` with
+            `O_CREAT` on `ENOENT`), and `find` after it.
         - The uid calls, batch 1 (the user wrote the kernel side): `fd7bf94` adds
           `process_identity_t` and calls 49 to 52 (see Processes). mlibc fork `3bcc11c7`
           adds the four sysdeps; `9d5d2017` fixes `clearenv`, which cleared a copy of
@@ -3711,12 +3729,19 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           `cleanup.h` gains `release_with` and `return_on_error` (see Locks and guards), and
           `ext2_rename` is split into its steps with every release scoped. Behaviour
           unchanged: gate 48 of 48 on both boots, e2fsck clean.
-        - Next: the remaining calls (the user writes them), unparking the cases batch by batch;
-          the run after each shows the next gaps (`cp` may want `fchmod`). Then symlinks
+        - utimensat, batch 4 (the user wrote the kernel side): `d146bde` (see
+          `vfs_set_attributes` and `utimensat` under the VFS). The review caught `flags &&
+          AT_EMPTY_PATH` (any flag counted as `AT_EMPTY_PATH`); the test has the case that
+          shows it. mlibc fork `9a75e3e5` adds the `Utimensat` sysdep. Pointer `cd1f4c8`.
+          `fc031ab`: `ext2`'s `test_utimes` sets times every way and checks every refusal
+          (`_GNU_SOURCE` for `AT_EMPTY_PATH`); busybox `touch` and `find` run, nothing is
+          parked: all 46 cases run. Gate: 48 of 48 on both boots, e2fsck clean.
+        - Every kernel call the busybox cases need is in. Next: symlinks
           for applet names (`/bin/ls → busybox`: a VFS link type, following during
           lookup with `ELOOP` at 40, `readlink`/`lstat`, initrd tar type `2`, ext2 fast
           symlinks); `-c` in our own shell for Lua's `io.popen` (`/bin/sh` stays ours,
-          ash is `busybox sh`).
+          ash is `busybox sh`). Applets beyond the cases may want more (`cp -p` wants
+          `fchmod`: the next `set_attributes` bit).
     - Threads (`clone`, pthreads) when a port needs them (Python, Node.js), with real locks
       for what one thread per process covers today (fd table, address space, regions,
       `brk`); SMP last.
@@ -4000,8 +4025,12 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - File times: pipes and devfs nodes keep 0 (Linux starts a pipe's at its creation and a tty
   write moves its mtime: the VFS's job, not ext2's); seconds only (ext4's `i_*time_extra`
   fields add nanoseconds); Linux reads 128-byte inode times as signed 32-bit (January 2038:
-  a disk carried over shows 1901), ours unsigned (2106); no `utimensat`, so no `touch`, and
-  `cp -p`/`tar` cannot set times.
+  a disk carried over shows 1901), ours unsigned (2106), and nothing clamps a time
+  `utimensat` sets: one before 1970 or past 2106 wraps when stored (Linux clamps to the
+  range the inode holds).
+- `utimensat` with a relative path from a directory fd is `-ENOSYS` (no lookups from a node:
+  the `*at` family); `futimens` on an fd with no node (`file->node` NULL) is `-EINVAL`, where
+  Linux sets a pipe's times.
 - Calendar: UTC only (no `TZ`, no zone files, `localtime` = `gmtime`); no GNU `strftime`
   flags or widths (`%-d`, `%_d`, `%10Y`); `date` cannot set the clock (no `clock_settime`)
   and has no `-d`; no `<limits.h>` (`gmtime` uses GCC's `__INT_MAX__`); no `strtol`/`strtod`
