@@ -14,8 +14,8 @@
  * The ext2 test disk (disk.img) mounted on /mnt, from user space: listings,
  * stat, reads through open/lseek/read (big.txt across direct, single and
  * double indirect blocks, the sparse file's hole), overwrites in place,
- * creating and removing names, renames, setting times, symlinks, and what is
- * refused.
+ * creating and removing names, renames, setting times, symlinks (followed,
+ * read and made), and what is refused.
  */
 
 #define MNT "/mnt"
@@ -895,6 +895,102 @@ static void test_symlinks(void)
 #undef LINKS
 }
 
+// A target `length` characters long (at least 12) leading from grow/ to hello.txt: "./"
+// repeated (one more '/' for an odd length), then "../hello.txt"
+static void make_target(char *out, size_t length)
+{
+    size_t prefix = length - 12;
+    for (size_t i = 0; i < prefix; i++)
+        out[i] = (i % 2 == 0 && i + 1 < prefix) ? '.' : '/';
+    memcpy(out + prefix, "../hello.txt", 13);
+}
+
+// symlink(target, path) made a link holding exactly target, which leads to hello.txt
+static int made_link(const char *target, const char *path, const struct stat *hello)
+{
+    static char buffer[1100];
+    struct stat st;
+    size_t length = strlen(target);
+
+    if (symlink(target, path) != 0)
+    {
+        printf("symlink of %zu characters at %s failed: %s\n", length, path, strerror(errno));
+        return 0;
+    }
+    return lstat(path, &st) == 0 && S_ISLNK(st.st_mode) && (st.st_mode & 07777) == 0777 &&
+           st.st_size == (off_t)length && st.st_nlink == 1 &&
+           readlink(path, buffer, sizeof(buffer)) == (ssize_t)length && memcmp(buffer, target, length) == 0 &&
+           stat(path, &st) == 0 && st.st_ino == hello->st_ino;
+}
+
+/*
+ * Making symlinks (symlink(), what ln -s calls), in grow/ on the test disk: a fast one
+ * (59 characters, the most i_block's 60 bytes hold with Linux's '\0'), slow ones (a data
+ * block: 60 characters, and 1023, the most a 1 KiB block holds), each read back and
+ * followed, and a dangling one. The fast one and the longest stay for e2fsck to check;
+ * the other slow one is unlinked (e2fsck checks its block came back). Then the refusals:
+ * EEXIST (a file, a link, a dangling link, "/"), ENOENT (an empty target, a missing
+ * directory, "name/"), ENOTDIR, ENAMETOOLONG (a whole block), EROFS (devfs; the initrd in
+ * the live boot).
+ */
+static void test_make_symlinks(void)
+{
+#define GROW MNT "/grow"
+    static char target[1100];
+    struct stat st, hello;
+    CHECK(stat(MNT "/hello.txt", &hello) == 0);
+
+    make_target(target, 59);
+    CHECK(made_link(target, GROW "/fast", &hello));
+    make_target(target, 60);
+    CHECK(made_link(target, GROW "/slow", &hello));
+    make_target(target, 1023);
+    CHECK(made_link(target, GROW "/longest", &hello));
+    CHECK(unlink(GROW "/slow") == 0);
+    errno = 0;
+    CHECK(lstat(GROW "/slow", &st) == -1 && errno == ENOENT);
+
+    // Dangling: made all the same; its name is taken like any other
+    CHECK(symlink("nowhere", GROW "/dangling") == 0);
+    errno = 0;
+    CHECK(stat(GROW "/dangling", &st) == -1 && errno == ENOENT);
+    CHECK(lstat(GROW "/dangling", &st) == 0 && S_ISLNK(st.st_mode) && st.st_size == 7);
+    errno = 0;
+    CHECK(symlink("x", GROW "/dangling") == -1 && errno == EEXIST);
+    CHECK(unlink(GROW "/dangling") == 0);
+
+    // Refusals
+    errno = 0;
+    CHECK(symlink("x", GROW "/small") == -1 && errno == EEXIST);
+    errno = 0;
+    CHECK(symlink("x", GROW "/fast") == -1 && errno == EEXIST);
+    errno = 0;
+    CHECK(symlink("x", "/") == -1 && errno == EEXIST);
+    errno = 0;
+    CHECK(symlink("", GROW "/empty") == -1 && errno == ENOENT); // an empty target names nothing
+    errno = 0;
+    CHECK(symlink("x", GROW "/nope/link") == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(symlink("x", GROW "/new/") == -1 && errno == ENOENT); // a link is never a directory
+    errno = 0;
+    CHECK(symlink("x", MNT "/hello.txt/link") == -1 && errno == ENOTDIR);
+    make_target(target, 1024);
+    errno = 0;
+    CHECK(symlink(target, GROW "/toolong") == -1 && errno == ENAMETOOLONG);
+    errno = 0;
+    CHECK(lstat(GROW "/toolong", &st) == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(symlink("x", "/dev/link") == -1 && errno == EROFS);
+    if (test_root_on_disk())
+        CHECK(symlink("hello", "/usr/tests/made") == 0 && unlink("/usr/tests/made") == 0);
+    else
+    {
+        errno = 0;
+        CHECK(symlink("hello", "/usr/tests/made") == -1 && errno == EROFS); // the initrd
+    }
+#undef GROW
+}
+
 static void test_refusals(void)
 {
     char buffer[64];
@@ -939,6 +1035,7 @@ int main(void)
     test_times();
     test_utimes();
     test_symlinks();
+    test_make_symlinks();
     test_refusals();
 
     // Every fd and stream was closed: the next open gets fd 3 again

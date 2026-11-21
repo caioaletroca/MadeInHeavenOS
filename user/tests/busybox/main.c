@@ -82,11 +82,16 @@ static const busybox_case_t cases[] = {
     {{"cmp", "/mnt/busybox/file", "/mnt/busybox/copy"}, NULL, "", 0, NULL},
     {{"mv", "/mnt/busybox/copy", "/mnt/busybox/moved"}, NULL, "", 0, NULL},
     {{"ls", "/mnt/busybox"}, NULL, "file\nmoved\n", 0, NULL},
+    // ln -s: symlink(), then read through the link
+    {{"ln", "-s", "file", "/mnt/busybox/link"}, NULL, "", 0, NULL},
+    {{"cat", "/mnt/busybox/link"}, NULL, "made\n", 0, NULL},
+    {{"ls", "/mnt/busybox"}, NULL, "file\nlink\nmoved\n", 0, NULL},
     // touch: utimensat first, then open(O_CREAT) on ENOENT
     {{"touch", "/mnt/busybox/new"}, NULL, "", 0, NULL},
     {{"find", "/mnt/busybox", "-name", "n*"}, NULL, "/mnt/busybox/new\n", 0, NULL},
     // -f: copy is gone (mv moved it), so rm must not fail over it
-    {{"rm", "-f", "/mnt/busybox/file", "/mnt/busybox/copy", "/mnt/busybox/moved", "/mnt/busybox/new"},
+    {{"rm", "-f", "/mnt/busybox/file", "/mnt/busybox/copy", "/mnt/busybox/moved", "/mnt/busybox/new",
+      "/mnt/busybox/link"},
      NULL, "", 0, NULL},
     {{"rmdir", "/mnt/busybox"}, NULL, "", 0, NULL},
     {{"test", "-e", "/mnt/busybox"}, NULL, "", 1, NULL},
