@@ -8,6 +8,7 @@
 static const vfs_node_ops_t ext2_ops = {
     .lookup = ext2_lookup,
     .read = ext2_read,
+    .readlink = ext2_readlink,
     .write = ext2_write,
     .readdir = ext2_readdir,
     .truncate = ext2_truncate,
@@ -23,6 +24,7 @@ static const vfs_node_ops_t ext2_ops = {
 static const vfs_node_ops_t ext2_read_only_ops = {
     .lookup = ext2_lookup,
     .read = ext2_read,
+    .readlink = ext2_readlink,
     .readdir = ext2_readdir,
     .release = ext2_release,
 };
@@ -123,6 +125,9 @@ int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent, vfs_n
         break;
     case EXT2_S_IFDIR:
         type = VFS_DIRECTORY;
+        break;
+    case EXT2_S_IFLNK:
+        type = VFS_SYMLINK;
         break;
     default:
         return -ENOENT;

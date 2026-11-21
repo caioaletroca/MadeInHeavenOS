@@ -61,11 +61,13 @@ typedef struct initrd_node
 static int initrd_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **child);
 static long initrd_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
 static int initrd_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
+static long initrd_readlink(vfs_node_t *link, char *buffer, size_t size);
 
 static const vfs_node_ops_t initrd_ops = {
     .lookup = initrd_lookup,
     .read = initrd_read,
     .readdir = initrd_readdir,
+    .readlink = initrd_readlink,
     .release = NULL,
 };
 
@@ -258,6 +260,17 @@ static long initrd_read(vfs_node_t *file, void *buffer, size_t count, uint64_t o
 }
 
 /**
+ * initrd_readlink copies a symlink's target: its data points at the tar header's linkname.
+ * Returns the number of bytes copied (at most the target's length).
+ */
+static long initrd_readlink(vfs_node_t *link, char *buffer, size_t size)
+{
+    size = MIN(size, link->size);
+    memcpy(buffer, INITRD_NODE(link)->data, size);
+    return (long)size;
+}
+
+/**
  * initrd_readdir reads the directory entries of the specified directory node.
  * It fills the provided vfs_dirent_t structure with the entry at the given index.
  * Returns 1 if an entry is found, or 0 if the index is out of bounds.
@@ -313,7 +326,9 @@ static int initrd_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)
 static void initrd_add_entry(initrd_node_t *root, const tar_header_t *header, size_t size, const void *data)
 {
     bool is_file = header->type == '0' || header->type == '\0';
-    if (!is_file && header->type != '5')
+    bool is_directory = header->type == '5';
+    bool is_link = header->type == '2';
+    if (!is_file && !is_directory && !is_link)
         return;
 
     // Full path: "prefix/name", or just name. %.*s stops at a NUL or after the field's size
@@ -342,7 +357,7 @@ static void initrd_add_entry(initrd_node_t *root, const tar_header_t *header, si
         size_t next_length;
         const char *next_name = vfs_path_next(&p, &next_length);
 
-        if (next_length > 0 || !is_file)
+        if (next_length > 0 || is_directory)
         {
             dir = initrd_find_or_create_dir(dir, name, length);
             last = dir;
@@ -352,9 +367,10 @@ static void initrd_add_entry(initrd_node_t *root, const tar_header_t *header, si
             if (initrd_find_child(dir, name, length) != NULL)
                 panic("initrd: '%s' listed twice\n", path);
 
-            initrd_node_t *file = initrd_node_create(VFS_FILE, name, length);
-            file->base.size = size;
-            file->data = data;
+            initrd_node_t *file = initrd_node_create(is_link ? VFS_SYMLINK : VFS_FILE, name, length);
+            // A symlink's target is the header's linkname (no '\0' if it fills all 100 bytes)
+            file->base.size = is_link ? strnlen(header->linkname, sizeof(header->linkname)) : size;
+            file->data = is_link ? header->linkname : data;
             initrd_add(dir, file);
             last = file;
         }

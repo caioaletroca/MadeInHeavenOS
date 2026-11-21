@@ -85,6 +85,30 @@ long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset)
 }
 
 /**
+ * @brief A symlink's target: from i_block for a fast symlink, else from its data block,
+ * read like a file's contents (mke2fs and Linux make it fast when it fits, under 60 bytes)
+ *
+ * @param link: The symlink's VFS node
+ * @param buffer: Receives up to size bytes of the target (no '\0')
+ * @param size: The buffer's size
+ * @return The bytes copied, -EIO for a fast symlink longer than i_block, or the read's error
+ */
+long ext2_readlink(vfs_node_t *link, char *buffer, size_t size)
+{
+    ext2_node_t *n = EXT2_NODE(link);
+    size = MIN(size, link->size);
+
+    if (!ext2_is_fast_symlink(n))
+        return ext2_read(link, buffer, size, 0);
+
+    if (link->size > sizeof(n->block))
+        return -EIO;
+
+    memcpy(buffer, n->block, size);
+    return (long)size;
+}
+
+/**
  * @brief Write data to an ext2 file
  *
  * @param file: The VFS node representing the file

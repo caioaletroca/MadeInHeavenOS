@@ -16,6 +16,8 @@
 #include <panic.h>
 #include <util.h>
 
+#define VFS_LINKS_MAX 40 // Linux's MAXSYMLINKS: links followed in one lookup, then -ELOOP
+
 static vfs_node_t *vfs_root;
 
 static uint32_t vfs_mode_type(vfs_node_type_t type)
@@ -30,6 +32,8 @@ static uint32_t vfs_mode_type(vfs_node_type_t type)
         return MIHOS_S_IFBLK;
     case VFS_FIFO:
         return MIHOS_S_IFIFO;
+    case VFS_SYMLINK:
+        return MIHOS_S_IFLNK;
     default:
         return MIHOS_S_IFREG;
     }
@@ -45,6 +49,8 @@ static uint8_t vfs_dirent_type(vfs_node_type_t type)
         return MIHOS_DT_CHR;
     case VFS_BLOCKDEV:
         return MIHOS_DT_BLK;
+    case VFS_SYMLINK:
+        return MIHOS_DT_LNK;
     default:
         return MIHOS_DT_REG;
     }
@@ -200,12 +206,58 @@ static vfs_node_t *vfs_lookup_start(const char *path)
     return start;
 }
 
-int vfs_lookup(const char *path, vfs_node_t **out)
+/**
+ * The path a walk goes on with after meeting a symlink: the link's target, then what
+ * came after the link's name (rest: "" or "/more/names"), in a new buffer.
+ *
+ * @param link The symlink.
+ * @param rest The rest of the path being walked.
+ * @param out Receives the new path (kmalloc'd).
+ * @return 0, -ENOENT for an empty target (it names nothing, as in Linux), -ENAMETOOLONG,
+ *         -ENOMEM, or the file system's error.
+ */
+static int vfs_link_path(vfs_node_t *link, const char *rest, char **out)
 {
-    if (path[0] == '\0')
+    size_t rest_length = strlen(rest);
+    if (link->size == 0)
         return -ENOENT;
+    if (link->size + rest_length >= VFS_PATH_MAX)
+        return -ENAMETOOLONG;
 
-    size_t path_length = strlen(path);
+    char *path release_with(kfree_ref) = kmalloc(link->size + rest_length + 1);
+    if (path == NULL)
+        return -ENOMEM;
+
+    long length = vfs_readlink(link, path, link->size);
+    if (length < 0)
+        return (int)length;
+    memcpy(path + length, rest, rest_length + 1);
+
+    *out = path;
+    path = NULL;
+    return 0;
+}
+
+static inline bool vfs_name_is_dot(const char *name, size_t length)
+{
+    return length == 1 && name[0] == '.';
+}
+
+/**
+ * Walks a path one name at a time, through ".." (out of mounts), into mounted roots, and
+ * through symlinks: a link's target replaces its name in the path, and the walk goes on
+ * from the link's directory (a relative target) or the root (an absolute one).
+ *
+ * @param path The path (not empty).
+ * @param follow_last Whether a symlink as the last name is followed; "link/" always is.
+ * @param out Receives the node, as a new reference.
+ * @return 0, -ENOENT, -ENOTDIR, -ENAMETOOLONG, -ELOOP (past VFS_LINKS_MAX links), or -errno.
+ */
+static int vfs_walk(const char *path, bool follow_last, vfs_node_t **out)
+{
+    char *spliced release_with(kfree_ref) = NULL;
+    unsigned int links = 0;
+    const char *begin = path;
     vfs_node_t *node = vfs_lookup_start(path);
 
     for (;;)
@@ -222,7 +274,7 @@ int vfs_lookup(const char *path, vfs_node_t **out)
             ret = -ENAMETOOLONG;
         else if (node->type != VFS_DIRECTORY)
             ret = -ENOTDIR;
-        else if (length == 1 && name[0] == '.')
+        else if (vfs_name_is_dot(name, length))
             continue;
         else if (length == 2 && name[0] == '.' && name[1] == '.')
         {
@@ -234,6 +286,34 @@ int vfs_lookup(const char *path, vfs_node_t **out)
         }
         else
             ret = node->ops->lookup(node, name, length, &next);
+
+        // A symlink: not the last name, or the last one and followed. path points just past
+        // the name: '\0' if it was the last, '/' if more follows
+        if (ret == 0 && next->type == VFS_SYMLINK && (follow_last || *path != '\0'))
+        {
+            char *target = NULL;
+            ret = ++links > VFS_LINKS_MAX ? -ELOOP : vfs_link_path(next, path, &target);
+            vfs_node_put(next);
+            if (ret < 0)
+            {
+                vfs_node_put(node);
+                return ret;
+            }
+
+            // The rest was copied out of the old buffer: it can go now
+            kfree(spliced);
+            spliced = target;
+            path = begin = target;
+
+            // Absolute: start over at the root; relative: stay in the link's directory
+            if (target[0] == '/')
+            {
+                vfs_node_put(node);
+                node = vfs_root;
+                vfs_node_get(node);
+            }
+            continue;
+        }
 
         vfs_node_put(node);
 
@@ -252,8 +332,9 @@ int vfs_lookup(const char *path, vfs_node_t **out)
         }
     }
 
-    // "/usr/tests/hello/": a trailing '/' promises a directory (POSIX)
-    if (path_length > 1 && path[-1] == '/' && node->type != VFS_DIRECTORY)
+    // "/usr/tests/hello/": a trailing '/' promises a directory (POSIX); for a link's
+    // target too ("hello/" through a link is ENOTDIR as well)
+    if (path > begin && path[-1] == '/' && node->type != VFS_DIRECTORY)
     {
         vfs_node_put(node);
         return -ENOTDIR;
@@ -261,6 +342,20 @@ int vfs_lookup(const char *path, vfs_node_t **out)
 
     *out = node;
     return 0;
+}
+
+int vfs_lookup(const char *path, vfs_node_t **out)
+{
+    if (path[0] == '\0')
+        return -ENOENT;
+    return vfs_walk(path, true, out);
+}
+
+int vfs_lookup_link(const char *path, vfs_node_t **out)
+{
+    if (path[0] == '\0')
+        return -ENOENT;
+    return vfs_walk(path, false, out);
 }
 
 int vfs_getcwd(char *buffer, size_t size)
@@ -349,6 +444,16 @@ long vfs_read(vfs_node_t *node, void *buffer, size_t count, uint64_t offset)
         return -EINVAL; // character devices are read through their file_ops, never here
 
     return node->ops->read(node, buffer, count, offset);
+}
+
+long vfs_readlink(vfs_node_t *link, char *buffer, size_t size)
+{
+    if (link->type != VFS_SYMLINK)
+        return -EINVAL; // readlink of a file or directory (Linux's answer)
+    if (link->ops->readlink == NULL)
+        return -EIO;
+
+    return link->ops->readlink(link, buffer, size);
 }
 
 long vfs_write(vfs_node_t *node, const void *buffer, size_t count, uint64_t offset)
@@ -834,7 +939,8 @@ int vfs_open(const char *path, int flags, uint32_t mode, file_t **out)
         ret = vfs_create(path, mode, &node);
 
         // Someone made it between our lookup and the create: without O_EXCL, open theirs. Only
-        // once: a name the VFS cannot show (a symlink) is -EEXIST to create and -ENOENT to lookup
+        // once: a dangling symlink is -ENOENT to lookup and -EEXIST to create (its name is
+        // taken); Linux would create the file the link names (debt)
         if (ret == -EEXIST && !(flags & O_EXCL))
             ret = vfs_lookup(path, &node);
     }

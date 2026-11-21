@@ -11,6 +11,7 @@
 #define MIHOS_S_IFREG 0100000 // regular file
 #define MIHOS_S_IFBLK 0060000 // block device (a disk)
 #define MIHOS_S_IFIFO 0010000 // FIFO (a pipe)
+#define MIHOS_S_IFLNK 0120000 // symbolic link
 
 // st_rdev: which device a device file is, in Linux's encoding (the minor's low byte in bits 0-7,
 // the major's low 12 bits in 8-19, the rest above), so major()/minor() agree with mlibc's

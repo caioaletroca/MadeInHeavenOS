@@ -23,6 +23,7 @@ typedef enum
     VFS_CHARDEV,
     VFS_BLOCKDEV, // a disk: read at byte offsets through the node's ops, seekable
     VFS_FIFO,     // a pipe: no name, read and written through its file's ops, not seekable
+    VFS_SYMLINK,  // a name for a path: its target is read with readlink, and lookups follow it
 } vfs_node_type_t;
 
 struct file_ops;
@@ -112,6 +113,9 @@ typedef struct vfs_node_ops
 
     // File: copies up to count bytes from offset; returns the count (0 at the end) or -errno
     long (*read)(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
+
+    // Symlink: copies up to size bytes of the target (no '\0'); returns the count or -errno
+    long (*readlink)(vfs_node_t *link, char *buffer, size_t size);
 
     // File or disk: copies count bytes in at offset (VFS_APPEND for a regular file: at its end, under the
     // file system's lock); returns the count written (fewer at the end of a disk) or -errno
@@ -233,6 +237,26 @@ int vfs_mount(const char *path, vfs_node_t *root);
  * @return 0 on success, -errno on failure.
  */
 int vfs_lookup(const char *path, vfs_node_t **node);
+
+/**
+ * @brief Look up a node by its path without following a symlink in the last name
+ * (lstat's lookup); links before it are followed, and so is "link/".
+ *
+ * @param path The path to look up.
+ * @param node Pointer to store the resulting node (a VFS_SYMLINK node for a link).
+ * @return 0 on success, -errno on failure.
+ */
+int vfs_lookup_link(const char *path, vfs_node_t **node);
+
+/**
+ * @brief Read a symlink's target.
+ *
+ * @param link The symlink.
+ * @param buffer Receives up to size bytes, not '\0'-terminated.
+ * @param size The buffer's size.
+ * @return The bytes copied, or -EINVAL if the node is not a symlink.
+ */
+long vfs_readlink(vfs_node_t *link, char *buffer, size_t size);
 
 /**
  * @brief The current directory's absolute path, rebuilt by walking up: each

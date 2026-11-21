@@ -126,7 +126,7 @@ static bool big_line_ok(const char *p, uint32_t line)
 
 /**
  * The mounted root: a directory on its own file system, ".." leading out of
- * the mount, and the listing in disk order (the symlink skipped).
+ * the mount, and the listing in disk order (the symlink as one).
  */
 static void ext2_test_root(void)
 {
@@ -154,7 +154,7 @@ static void ext2_test_root(void)
     } listing[] = {
         {".", VFS_DIRECTORY}, {"..", VFS_DIRECTORY}, {"lost+found", VFS_DIRECTORY}, {NULL, VFS_FILE}, // the long name
         {"big.txt", VFS_FILE}, {"docs", VFS_DIRECTORY}, {"empty", VFS_FILE},  {"grow", VFS_DIRECTORY},
-        {"hello.txt", VFS_FILE}, {"sparse", VFS_FILE},
+        {"hello.txt", VFS_FILE}, {"link", VFS_SYMLINK}, {"sparse", VFS_FILE},
     };
     size_t count = sizeof(listing) / sizeof(listing[0]);
     uint32_t subdirectories = 0;
@@ -177,7 +177,7 @@ static void ext2_test_root(void)
 
     vfs_dirent_t entry;
     if (vfs_readdir(mnt, count, &entry) != 0 || vfs_readdir(mnt, 100, &entry) != 0)
-        panic("ext2 self-test: /mnt lists more than expected (is 'link' shown?)\n");
+        panic("ext2 self-test: /mnt lists more than expected\n");
 
     // Every subdirectory's ".." links to the root: 2 + one per subdirectory
     if (mnt->nlink != 2 + subdirectories)
@@ -197,12 +197,12 @@ static void ext2_test_root(void)
 }
 
 /**
- * Lookups: names compared exactly, what the VFS cannot show is not found,
- * paths through ".." inside the file system reach the same node.
+ * Lookups: names compared exactly, paths through ".." inside the file system
+ * reach the same node, and the symlink: followed to hello.txt's node, or (not
+ * following) a node of its own holding the target, a fast one (in i_block).
  */
 static void ext2_test_lookup(void)
 {
-    ext2_expect_error(MNT "/link", -ENOENT); // a symlink: no VFS type for it yet
     ext2_expect_error(MNT "/nope", -ENOENT);
     ext2_expect_error(MNT "/hello", -ENOENT);     // a prefix
     ext2_expect_error(MNT "/hello.txtx", -ENOENT); // longer
@@ -227,6 +227,24 @@ static void ext2_test_lookup(void)
     vfs_node_put(docs_up);
     vfs_node_put(docs);
     vfs_node_put(again);
+
+    // The symlink, followed and not
+    vfs_node_t *through = ext2_expect(MNT "/link", VFS_FILE);
+    if (through != hello)
+        panic("ext2 self-test: link does not lead to hello.txt's node\n");
+    vfs_node_put(through);
+
+    vfs_node_t *link = NULL;
+    if (vfs_lookup_link(MNT "/link", &link) != 0 || link->type != VFS_SYMLINK || link == hello)
+        panic("ext2 self-test: link, not followed, is not a symlink node\n");
+    char target[16];
+    long length_read = vfs_readlink(link, target, sizeof(target));
+    if (link->size != 9 || length_read != 9 || memcmp(target, "hello.txt", 9) != 0)
+        panic("ext2 self-test: link's target is not 'hello.txt' (read %ld)\n", length_read);
+    if (vfs_readlink(hello, target, sizeof(target)) != -EINVAL)
+        panic("ext2 self-test: readlink of a file is not EINVAL\n");
+    vfs_node_put(link);
+    ext2_expect_error(MNT "/link/", -ENOTDIR); // followed, a file
     vfs_node_put(hello);
 }
 
@@ -922,8 +940,8 @@ static void open_expect(const char *path, int flags, int error)
  * names need more than the block: the directory gets a second one (its size and
  * i_blocks on the disk), every name looks up to its inode. Then the refusals,
  * from the path (EISDIR, ENOENT, ENOTDIR, ENAMETOOLONG), the file system (EROFS
- * on devfs, and on the initrd in the live boot) and the symlink's name (taken: ENOENT, EEXIST with
- * O_EXCL). e2fsck checks the result (fsck-test.sh).
+ * on devfs, and on the initrd in the live boot) and the symlink (followed to hello.txt; EEXIST
+ * with O_EXCL, which never follows). e2fsck checks the result (fsck-test.sh).
  */
 static uint32_t create_free_inodes, create_free_blocks; // before ext2_test_create, for ext2_test_unlink
 
@@ -1057,7 +1075,7 @@ static void ext2_test_create(void)
     if (!root_on_disk)
         open_expect("/usr/new", O_WRONLY | O_CREAT, -EROFS);
     open_expect("/dev/new", O_WRONLY | O_CREAT, -EROFS);
-    open_expect(MNT "/link", O_WRONLY | O_CREAT, -ENOENT);
+    open_expect(MNT "/link", O_RDONLY | O_CREAT, 0); // followed: hello.txt is there
     open_expect(MNT "/link", O_WRONLY | O_CREAT | O_EXCL, -EEXIST);
     open_expect(MNT "/docs", O_RDONLY | O_CREAT, 0);
     open_expect(MNT "/docs", O_WRONLY | O_CREAT, -EISDIR);
@@ -1096,7 +1114,8 @@ static void unlink_expect(const char *path, int error)
  * the end grow/ lists its 5 files again, and the free counts are what they were
  * before the creates, but for grow/'s second block (directories never shrink).
  * Then the refusals: EISDIR (a directory, with or without '/', the dots, "/"),
- * ENOTDIR, ENOENT (missing, the symlink), EROFS (devfs; the initrd in the live boot).
+ * ENOTDIR (also the symlink with a '/': followed, a file), ENOENT, EROFS (devfs; the
+ * initrd in the live boot).
  */
 static void ext2_test_unlink(void)
 {
@@ -1179,7 +1198,7 @@ static void ext2_test_unlink(void)
     unlink_expect("/", -EISDIR);
     unlink_expect(MNT "/hello.txt/", -ENOTDIR);
     unlink_expect(MNT "/nope", -ENOENT);
-    unlink_expect(MNT "/link", -ENOENT);
+    unlink_expect(MNT "/link/", -ENOTDIR);
     if (!root_on_disk) // on the disk's root it would delete init
         unlink_expect("/sbin/init", -EROFS);
     unlink_expect("/dev/null", -EROFS); // devfs: read-only in both boots
@@ -1316,7 +1335,7 @@ static void ext2_test_dirs(void)
     // Refusals
     mkdir_expect(MNT "/grow/small", -EEXIST);
     mkdir_expect(MNT "/docs", -EEXIST);
-    mkdir_expect(MNT "/link", -EEXIST); // a symlink: lookup cannot see it, but the name is taken
+    mkdir_expect(MNT "/link", -EEXIST); // the symlink's own name is taken
     mkdir_expect("/", -EEXIST);
     if (!root_on_disk)
         mkdir_expect("/usr/new", -EROFS);
@@ -1325,7 +1344,7 @@ static void ext2_test_dirs(void)
     mkdir_expect(MNT "/hello.txt/new", -ENOTDIR);
     rmdir_expect(MNT "/hello.txt", -ENOTDIR);
     rmdir_expect(MNT "/nope", -ENOENT);
-    rmdir_expect(MNT "/link", -ENOENT);
+    rmdir_expect(MNT "/link", -ENOTDIR); // the link itself, not hello.txt behind it
     rmdir_expect(MNT "/docs", -ENOTEMPTY);
     rmdir_expect(MNT "/docs/.", -EINVAL);
     rmdir_expect(MNT "/docs/..", -ENOTEMPTY);

@@ -96,6 +96,14 @@ int ext2_truncate_branch(ext2_volume_t *volume, ext2_node_t *node, uint32_t *slo
 // directory.c
 int ext2_dir_empty(ext2_node_t *dir);
 bool ext2_entry_type(uint8_t file_type, vfs_node_type_t *type);
+uint8_t ext2_file_type(vfs_node_type_t type);
+
+// Linux's ext2_inode_is_fast_symlink: a symlink with no data blocks (i_blocks 0) keeps its
+// target in i_block's 60 bytes instead of a block ("fast": no block to read)
+static inline bool ext2_is_fast_symlink(const ext2_node_t *n)
+{
+    return n->base.type == VFS_SYMLINK && n->blocks == 0;
+}
 
 /**
  * A position in a directory's records, like C#'s IEnumerator: start it with
@@ -130,6 +138,7 @@ int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **c
 
 // file_data.c
 long ext2_read(vfs_node_t *file, void *buffer, size_t count, uint64_t offset);
+long ext2_readlink(vfs_node_t *link, char *buffer, size_t size);
 long ext2_write(vfs_node_t *file, const void *buffer, size_t count, uint64_t offset);
 int ext2_truncate(vfs_node_t *file, uint64_t size);
 

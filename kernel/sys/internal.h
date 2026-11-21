@@ -52,7 +52,9 @@ long sys_getcwd(uintptr_t buffer, size_t size);
 
 // stat.c
 long sys_stat(uintptr_t path, uintptr_t statbuf);
+long sys_lstat(uintptr_t path, uintptr_t statbuf);
 long sys_fstat(unsigned long fd, uintptr_t statbuf);
+long sys_readlink(uintptr_t path, uintptr_t buffer, long size);
 
 // processes.c
 long sys_exit(long status);

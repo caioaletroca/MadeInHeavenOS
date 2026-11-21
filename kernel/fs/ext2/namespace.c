@@ -79,7 +79,8 @@ void ext2_release(vfs_node_t *node)
     // No names left and now no references: nobody can reach it again, give back its blocks and inode
     if (n->free_on_release)
     {
-        int ret = ext2_truncate(node, 0);
+        // A fast symlink's i_block is its target's text, not blocks: nothing to free there
+        int ret = ext2_is_fast_symlink(n) ? 0 : ext2_truncate(node, 0);
         if (ret == 0)
             ret = ext2_inode_free(n->volume, n->ino, node->type == VFS_DIRECTORY);
         if (ret < 0)
@@ -109,7 +110,7 @@ void ext2_release(vfs_node_t *node)
  * @param dir: The directory VFS node
  * @param name: The name to remove (not '\0'-terminated)
  * @param length: The length of the name
- * @return 0, -ENOENT (also for kinds the VFS cannot show, like symlinks), -EISDIR for a
+ * @return 0, -ENOENT (also for kinds the VFS cannot show, like fifos), -EISDIR for a
  * directory, -EROFS for an indexed directory, -EIO for a file with no links, or -errno
  */
 int ext2_unlink(vfs_node_t *dir, const char *name, size_t length)
@@ -426,7 +427,7 @@ static inline void ext2_dirs_guard_exit(ext2_dirs_guard_t *guard)
  * @param dir: The directory; the caller holds its lock
  * @param name: The name (not '\0'-terminated)
  * @param length: The length of the name
- * @param unshown: The error for a name of a kind the VFS can't show (a symlink)
+ * @param unshown: The error for a name of a kind the VFS can't show (a fifo, socket or device file)
  * @param node: Receives the node, as a new reference
  * @return 1 if found, 0 if not there, unshown, or -errno
  */
@@ -584,7 +585,7 @@ static int ext2_rename_store(vfs_node_t *source, ext2_node_t *d, ext2_node_t *nd
  * @param new_name: The new name (not '\0'-terminated)
  * @param new_length: The length of new_name
  * @return 0 (also when both names are one file: nothing changes), -ENOENT, -EEXIST for a
- * target the VFS can't show (a symlink), -EINVAL (a directory into its own subtree),
+ * target the VFS can't show (a fifo, socket or device file), -EINVAL (a directory into its own subtree),
  * -ENOTEMPTY (a non-empty target, or one holding the source), -ENOTDIR, -EISDIR,
  * -EMLINK, -EROFS for an indexed directory, or -errno
  */
@@ -619,7 +620,7 @@ int ext2_rename(vfs_node_t *old_dir, const char *old_name, size_t old_length,
         // The writes: the new name first, so a crash leaves two names, never none
         bool directory = source->type == VFS_DIRECTORY;
         uint32_t ino = EXT2_NODE(source)->ino;
-        uint8_t file_type = directory ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
+        uint8_t file_type = ext2_file_type(source->type);
 
         if (target == NULL)
             return_on_error(ext2_dir_add(nd, new_name, new_length, ino, file_type));

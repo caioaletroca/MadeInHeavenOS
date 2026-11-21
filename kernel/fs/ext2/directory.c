@@ -41,8 +41,30 @@ bool ext2_entry_type(uint8_t file_type, vfs_node_type_t *type)
     case EXT2_FT_DIR:
         *type = VFS_DIRECTORY;
         return true;
+    case EXT2_FT_SYMLINK:
+        *type = VFS_SYMLINK;
+        return true;
     default:
         return false;
+    }
+}
+
+/**
+ * @brief The directory entry type for a VFS node type
+ *
+ * @param type: The VFS node type (a file, directory or symlink)
+ * @return Its EXT2_FT_* value
+ */
+uint8_t ext2_file_type(vfs_node_type_t type)
+{
+    switch (type)
+    {
+    case VFS_DIRECTORY:
+        return EXT2_FT_DIR;
+    case VFS_SYMLINK:
+        return EXT2_FT_SYMLINK;
+    default:
+        return EXT2_FT_REG_FILE;
     }
 }
 
@@ -313,7 +335,7 @@ int ext2_dir_empty(ext2_node_t *dir)
 }
 
 /**
- * @brief Read a directory entry by index. Kinds the VFS can't show (symlinks) are
+ * @brief Read a directory entry by index. Kinds the VFS can't show (fifos, sockets, device files) are
  * skipped and not counted
  *
  * @param dir: The directory VFS node
@@ -393,7 +415,7 @@ int ext2_lookup(vfs_node_t *dir, const char *name, size_t length, vfs_node_t **c
 
     vfs_node_type_t type;
     if (!found || !ext2_entry_type(file_type, &type))
-        return -ENOENT; // not there, or a kind the VFS cannot show yet
+        return -ENOENT; // not there, or a kind the VFS cannot show (a fifo, socket or device file)
 
     // After the lock, with no lease held: ext2_node_get takes volume->lock and may read the disk
     return ext2_node_get(d->volume, ino, dir, child);

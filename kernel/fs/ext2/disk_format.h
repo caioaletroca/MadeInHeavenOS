@@ -40,6 +40,7 @@
 #define EXT2_S_IFMT 0xF000
 #define EXT2_S_IFDIR 0x4000
 #define EXT2_S_IFREG 0x8000
+#define EXT2_S_IFLNK 0xA000
 
 // i_flags: inode flags (EXT2_INDEX_FL for hashed directories)
 #define EXT2_INDEX_FL 0x1000 // a hashed (htree) directory: its blocks carry an index we cannot update, so never changed here
@@ -47,6 +48,7 @@
 // Directory entry file_type (with FILETYPE)
 #define EXT2_FT_REG_FILE 1
 #define EXT2_FT_DIR 2
+#define EXT2_FT_SYMLINK 7
 
 // A directory record's size: the 8-byte header and the name, rounded up to 4
 #define EXT2_DIRENT_SIZE(name_len) ((sizeof(ext2_dirent_t) + (name_len) + 3) & ~(size_t)3)

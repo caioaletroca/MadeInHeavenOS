@@ -7,6 +7,7 @@
 #define MIHOS_DT_DIR 4
 #define MIHOS_DT_BLK 6
 #define MIHOS_DT_REG 8
+#define MIHOS_DT_LNK 10
 
 struct mihos_dirent
 {

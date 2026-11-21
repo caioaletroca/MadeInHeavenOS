@@ -23,6 +23,12 @@ void *kmalloc(size_t size);
  */
 void kfree(void *ptr);
 
+// kfree for release_with: frees the buffer the variable holds (NULL is fine)
+static inline void kfree_ref(void *variable)
+{
+    kfree(*(void **)variable);
+}
+
 /**
  * Allocates a block of memory of the specified size and initializes it to zero.
  *

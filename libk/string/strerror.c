@@ -39,6 +39,7 @@ static const char *const messages[] = {
     [ENAMETOOLONG] = "File name too long",
     [ENOSYS] = "Function not implemented",
     [ENOTEMPTY] = "Directory not empty",
+    [ELOOP] = "Too many levels of symbolic links",
     [ENOBUFS] = "No buffer space available",
     [ETIMEDOUT] = "Connection timed out",
 };

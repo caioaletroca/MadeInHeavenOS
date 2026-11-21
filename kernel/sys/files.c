@@ -379,7 +379,7 @@ static int utime_make(const struct mihos_timespec *given, int64_t now, uint32_t 
 /**
  * The node utimensat changes: dirfd's own file for a NULL path (futimens) or for ""
  * with AT_EMPTY_PATH; else the path, absolute or from the working directory.
- * AT_SYMLINK_NOFOLLOW changes nothing yet: there are no symlinks.
+ * AT_SYMLINK_NOFOLLOW: a symlink as the last name is changed itself.
  *
  * @param dirfd AT_FDCWD, or an open fd.
  * @param path User path, or 0.
@@ -420,7 +420,7 @@ static int utimensat_node(int dirfd, uintptr_t path, int flags, vfs_node_t **nod
         return -ENOSYS;
     }
 
-    int ret = vfs_lookup(kernel_path, node);
+    int ret = flags & AT_SYMLINK_NOFOLLOW ? vfs_lookup_link(kernel_path, node) : vfs_lookup(kernel_path, node);
     kfree(kernel_path);
     return ret;
 }
