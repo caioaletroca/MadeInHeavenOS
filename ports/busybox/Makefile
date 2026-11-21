@@ -26,6 +26,14 @@ SOURCE_DIR := $(OUTPUT_DIR)/objects/ports/busybox-$(BUSYBOX_VERSION)
 LIBC := $(SYSROOT_DIR)/usr/lib/libc.a
 INSTALLED := $(SYSROOT_DIR)/bin/busybox
 
+# The applets' names, one path per line ("/bin/ls", "/usr/bin/xargs"), from
+# busybox's own busybox.links. Installed outside the image's directories:
+# grub/Makefile reads it and makes each name a symlink to busybox in the
+# initrd's /bin (busybox runs the applet named by argv[0]). The links are made
+# there, not in the sysroot, so a program of ours installed later with the same
+# name is never copied through a link onto busybox.
+APPLET_LIST := $(SYSROOT_DIR)/usr/share/busybox/applets
+
 # Linked as user/Makefile links our programs (see the flags explained there):
 # static on mlibc from the sysroot. Busybox's own CONFIG_STATIC adds -static.
 define BUILD_CONFIG
@@ -39,7 +47,7 @@ export BUILD_CONFIG
 
 .PHONY: all clean
 
-all: $(INSTALLED)
+all: $(INSTALLED) $(APPLET_LIST)
 
 # Downloaded under a temporary name, so an interrupted download never looks finished
 $(TARBALL):
@@ -84,6 +92,13 @@ $(INSTALLED): $(SOURCE_DIR)/busybox
 	mkdir -p $(@D)
 	cp $< $@
 
+$(SOURCE_DIR)/busybox.links: $(SOURCE_DIR)/busybox
+	$(MAKE) -C $(SOURCE_DIR) busybox.links
+
+$(APPLET_LIST): $(SOURCE_DIR)/busybox.links
+	mkdir -p $(@D)
+	cp $< $@
+
 # The download stays: `make purge` at the top removes it
 clean:
-	rm -rf $(SOURCE_DIR) $(INSTALLED)
+	rm -rf $(SOURCE_DIR) $(INSTALLED) $(APPLET_LIST)

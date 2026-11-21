@@ -11,7 +11,8 @@
 /*
  * Directories: opendir/readdir/rewinddir/closedir, and the getdents records
  * under them. The layout is the same in both boots: /usr holds only tests,
- * /usr/tests holds every test, this one included. The root differs (the disk's
+ * /usr/tests holds every test, this one included, and the ext2 test's links/.
+ * The root differs (the disk's
  * has lost+found, in its own order), so only /usr's records are spelled out.
  */
 
@@ -26,7 +27,7 @@ typedef struct listing
     int hello, run, dirs; // times each was seen
     int dots_first;       // "." then ".." as the first two entries
     ino_t self, parent;   // inode numbers of "." and ".."
-    int types_ok;         // every entry had DT_DIR or DT_REG, as expected
+    int types_ok;         // every entry had DT_DIR (the dots, links/) or DT_REG, as expected
     int end_errno;        // errno after the NULL at the end (0: the end, not an error)
 } listing_t;
 
@@ -52,8 +53,9 @@ static void list(DIR *dir, listing_t *out)
             out->parent = entry->d_ino;
         }
 
-        int is_dot = strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
-        if (entry->d_type != (is_dot ? DT_DIR : DT_REG)) // /usr/tests holds only programs
+        // /usr/tests holds programs, and links/ (the ext2 test's symlinks, grub/Makefile)
+        int is_dir = strcmp(name, ".") == 0 || strcmp(name, "..") == 0 || strcmp(name, "links") == 0;
+        if (entry->d_type != (is_dir ? DT_DIR : DT_REG))
             out->types_ok = 0;
 
         out->hello += strcmp(name, "hello") == 0;

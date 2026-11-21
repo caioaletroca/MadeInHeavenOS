@@ -96,21 +96,31 @@ static const busybox_case_t cases[] = {
     {{"sh", "-c", "{ echo b; echo a; } | busybox sort"}, NULL, "a\nb\n", 0, NULL},
     {{"sh", "-c", "for i in 1 2 3; do echo -n $i; done; echo"}, NULL, "123\n", 0, NULL},
     {{"sh", "-c", "exit 3"}, NULL, "", 3, NULL},
+    // ash running applets through their links (/bin/sh is ours, so it is called as busybox sh)
+    {{"sh", "-c", "/bin/seq 1 4 | /bin/wc -l"}, NULL, "4\n", 0, NULL},
 };
 
 /*
- * Runs busybox with the case's arguments: input on stdin through one pipe,
- * stdout read back through another until busybox closes it. The inputs are
+ * The same applets by name: /bin/<applet> is a symlink to busybox (grub/Makefile
+ * makes one per applet a program of ours doesn't already name), the kernel follows
+ * it to the program, and busybox picks the applet from argv[0]'s last name.
+ */
+static const busybox_case_t named_cases[] = {
+    {{"seq", "1", "3"}, NULL, "1\n2\n3\n", 0, NULL},
+    {{"sort", "-r"}, "a\nc\nb\n", "c\nb\na\n", 0, NULL},
+    {{"basename", "/a/b"}, NULL, "b\n", 0, NULL},
+    {{"false"}, NULL, "", 1, NULL},
+};
+
+/*
+ * Runs program with argv and the case's input: input on stdin through one pipe,
+ * stdout read back through another until the program closes it. The inputs are
  * small, so writing all of it before reading cannot fill the pipe.
- * Returns the exit status (-1 if busybox did not start or exit normally);
+ * Returns the exit status (-1 if it did not start or exit normally);
  * output receives up to size - 1 bytes, '\0'-terminated.
  */
-static int run(const busybox_case_t *c, char *output, size_t size)
+static int run(const char *program, char *const argv[], const busybox_case_t *c, char *output, size_t size)
 {
-    char *argv[ARGS_MAX + 2] = {BUSYBOX_PATH};
-    for (int i = 0; i < ARGS_MAX && c->args[i] != NULL; i++)
-        argv[i + 1] = (char *)c->args[i];
-
     int in[2], out[2];
     if (pipe(in) != 0 || pipe(out) != 0)
     {
@@ -126,13 +136,13 @@ static int run(const busybox_case_t *c, char *output, size_t size)
     posix_spawn_file_actions_addclose(&actions, out[0]);
 
     pid_t pid;
-    int error = posix_spawn(&pid, BUSYBOX_PATH, &actions, NULL, argv, environ);
+    int error = posix_spawn(&pid, program, &actions, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&actions);
     close(in[0]);
     close(out[1]);
     if (error != 0)
     {
-        printf("could not start %s: %s\n", BUSYBOX_PATH, strerror(error));
+        printf("could not start %s: %s\n", program, strerror(error));
         close(in[1]);
         close(out[0]);
         return -1;
@@ -169,35 +179,53 @@ static void print_escaped(const char *text)
     }
 }
 
+/*
+ * Runs one case and checks its status and output: as "busybox <applet> ...", or
+ * by_name as "/bin/<applet> ..." (argv[0] the link's path).
+ */
+static void check(const busybox_case_t *c, int by_name)
+{
+    char path[64] = BUSYBOX_PATH;
+    if (by_name)
+        snprintf(path, sizeof(path), "/bin/%s", c->args[0]);
+
+    // argv: the program, then the case's arguments (by name, the applet is the program)
+    char *argv[ARGS_MAX + 2] = {path};
+    int first = by_name ? 1 : 0;
+    for (int i = first; i < ARGS_MAX && c->args[i] != NULL; i++)
+        argv[i + 1 - first] = (char *)c->args[i];
+
+    char output[OUTPUT_MAX];
+    int status = run(path, argv, c, output, sizeof(output));
+
+    int output_ok = strcmp(output, c->output) == 0;
+    if (status != c->status || !output_ok)
+    {
+        printf("case \"%s", by_name ? "" : "busybox ");
+        for (int a = 0; a < ARGS_MAX && c->args[a] != NULL; a++)
+            printf("%s%s", a > 0 ? " " : "", c->args[a]);
+        printf("\": status %d (expected %d), output \"", status, c->status);
+        print_escaped(output);
+        printf("\" (expected \"");
+        print_escaped(c->output);
+        printf("\")\n");
+    }
+    CHECK(status == c->status && output_ok);
+}
+
 int main(void)
 {
     unsigned int parked = 0;
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
     {
-        const busybox_case_t *c = &cases[i];
-        if (c->waits_for != NULL)
-        {
+        if (cases[i].waits_for != NULL)
             parked++;
-            continue;
-        }
-
-        char output[OUTPUT_MAX];
-        int status = run(c, output, sizeof(output));
-
-        int output_ok = strcmp(output, c->output) == 0;
-        if (status != c->status || !output_ok)
-        {
-            printf("case \"busybox");
-            for (int a = 0; a < ARGS_MAX && c->args[a] != NULL; a++)
-                printf(" %s", c->args[a]);
-            printf("\": status %d (expected %d), output \"", status, c->status);
-            print_escaped(output);
-            printf("\" (expected \"");
-            print_escaped(c->output);
-            printf("\")\n");
-        }
-        CHECK(status == c->status && output_ok);
+        else
+            check(&cases[i], 0);
     }
+
+    for (size_t i = 0; i < sizeof(named_cases) / sizeof(named_cases[0]); i++)
+        check(&named_cases[i], 1);
 
     if (parked > 0)
         printf("busybox: %u cases parked until their calls land\n", parked);

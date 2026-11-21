@@ -14,7 +14,8 @@
  * The ext2 test disk (disk.img) mounted on /mnt, from user space: listings,
  * stat, reads through open/lseek/read (big.txt across direct, single and
  * double indirect blocks, the sparse file's hole), overwrites in place,
- * creating and removing names, renames, setting times, and what is refused.
+ * creating and removing names, renames, setting times, symlinks, and what is
+ * refused.
  */
 
 #define MNT "/mnt"
@@ -71,8 +72,9 @@ static void expect_text(const char *path, const char *text)
 static void test_listing(void)
 {
     static const char *const names[] = {".", "..", "lost+found", long_name, "big.txt",
-                                         "docs", "empty", "grow", "hello.txt", "sparse"};
-    static const unsigned char types[] = {DT_DIR, DT_DIR, DT_DIR, DT_REG, DT_REG, DT_DIR, DT_REG, DT_DIR, DT_REG, DT_REG};
+                                         "docs", "empty", "grow", "hello.txt", "link", "sparse"};
+    static const unsigned char types[] = {DT_DIR, DT_DIR, DT_DIR, DT_REG, DT_REG, DT_DIR,
+                                          DT_REG, DT_DIR, DT_REG, DT_LNK, DT_REG};
     const int count = sizeof(names) / sizeof(names[0]);
 
     DIR *dir = opendir(MNT);
@@ -80,7 +82,7 @@ static void test_listing(void)
     if (dir == NULL)
         return;
 
-    int i = 0, in_order = 1, link_seen = 0;
+    int i = 0, in_order = 1;
     ino_t hello_ino = 0;
     errno = 0;
     struct dirent *entry;
@@ -90,14 +92,14 @@ static void test_listing(void)
             in_order = in_order && strcmp(entry->d_name, names[i]) == 0 && entry->d_type == types[i];
         if (i < 2)
             in_order = in_order && entry->d_ino == 2; // "." and ".." of the root: inode 2
-        link_seen += strcmp(entry->d_name, "link") == 0;
+        if (i >= count || !in_order)
+            printf("listing: entry %d is \"%s\" (type %d)\n", i, entry->d_name, entry->d_type);
         if (strcmp(entry->d_name, "hello.txt") == 0)
             hello_ino = entry->d_ino;
         i++;
     }
     CHECK(errno == 0); // the end, not an error
     CHECK(i == count && in_order);
-    CHECK(link_seen == 0); // a symlink: the VFS cannot show it yet
     closedir(dir);
 
     struct stat st;
@@ -373,7 +375,8 @@ static void test_truncate(void)
  * Creating from user space (in grow/, after the kernel's creates): open with
  * O_CREAT | O_EXCL and a mode, stat of the new file, EEXIST for a second O_EXCL,
  * creat emptying an existing file without changing its mode, and the refusals:
- * EISDIR (a trailing '/'), ENOENT (a missing parent, the symlink's name), EROFS.
+ * EISDIR (a trailing '/'), ENOENT (a missing parent), EEXIST (O_EXCL through the
+ * symlink to hello.txt), EROFS.
  */
 static void test_create(void)
 {
@@ -400,7 +403,7 @@ static void test_create(void)
     errno = 0;
     CHECK(open(MNT "/nope/made", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
     errno = 0;
-    CHECK(open(MNT "/link", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
+    CHECK(open(MNT "/link", O_WRONLY | O_CREAT | O_EXCL, 0644) == -1 && errno == EEXIST); // it leads to hello.txt
     if (!test_root_on_disk()) // the initrd is read-only
     {
         errno = 0;
@@ -412,8 +415,8 @@ static void test_create(void)
  * Unlinking from user space: grow/made (test_create's) goes; a temp file is
  * unlinked right after its open and still reads and writes (st_nlink 0) until
  * its close. O_APPEND through two fds, one seeked back to 0: every write lands
- * at the end, the offset after it. The refusals: EISDIR, ENOTDIR, ENOENT (a
- * missing name, the symlink), EROFS.
+ * at the end, the offset after it. The refusals: EISDIR, ENOTDIR (also the
+ * symlink with a '/': followed to a file), ENOENT, EROFS.
  */
 static void test_unlink(void)
 {
@@ -454,7 +457,7 @@ static void test_unlink(void)
     errno = 0;
     CHECK(unlink(MNT "/nope") == -1 && errno == ENOENT);
     errno = 0;
-    CHECK(unlink(MNT "/link") == -1 && errno == ENOENT);
+    CHECK(unlink(MNT "/link/") == -1 && errno == ENOTDIR); // the '/' follows it, to a file
     if (!test_root_on_disk()) // on the disk's root it would delete this very test
     {
         errno = 0;
@@ -792,12 +795,110 @@ static void test_utimes(void)
 #undef UF
 }
 
+/*
+ * Symlinks: link (a fast ext2 symlink to hello.txt) and the fixtures grub/Makefile
+ * puts in /usr/tests/links (initrd symlinks in the live boot, ext2 ones, fast and
+ * slow, on the disk root). open and stat follow them, lstat and readlink don't; a
+ * relative target goes from the link's directory, an absolute one from /; a chain;
+ * a directory through a link (with a '/' too; getcwd gives the real path); ENOENT
+ * for a dangling one, ELOOP for a loop; readlink cuts without a '\0' and refuses a
+ * file. A rename keeps a link a link. On the disk root a fast and a slow one are
+ * unlinked (e2fsck checks the slow one's block came back).
+ */
+static void test_symlinks(void)
+{
+#define LINKS "/usr/tests/links"
+#define HELLO_TEXT "Hello from the disk!\n"
+    struct stat st, hello;
+    char buffer[128];
+
+    // On ext2: open and stat follow; lstat and readlink see the link
+    expect_text(MNT "/link", HELLO_TEXT);
+    CHECK(stat(MNT "/link", &st) == 0 && stat(MNT "/hello.txt", &hello) == 0);
+    CHECK(S_ISREG(st.st_mode) && st.st_ino == hello.st_ino);
+    CHECK(lstat(MNT "/link", &st) == 0 && S_ISLNK(st.st_mode) && st.st_size == 9);
+    CHECK(st.st_ino != hello.st_ino && (st.st_mode & 07777) == 0777);
+    CHECK(readlink(MNT "/link", buffer, sizeof(buffer)) == 9 && memcmp(buffer, "hello.txt", 9) == 0);
+    CHECK(readlink(MNT "/link", buffer, 5) == 5 && memcmp(buffer, "hello", 5) == 0); // cut, no '\0'
+    errno = 0;
+    CHECK(readlink(MNT "/hello.txt", buffer, sizeof(buffer)) == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK(readlink(MNT "/nope", buffer, sizeof(buffer)) == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(lstat(MNT "/link/", &st) == -1 && errno == ENOTDIR); // the '/' follows it, to a file
+
+    // The fixtures: relative from links/, a chain, a target past 59 characters
+    CHECK(stat("/usr/tests/hello", &hello) == 0);
+    CHECK(stat(LINKS "/relative", &st) == 0 && st.st_ino == hello.st_ino); // ../hello
+    CHECK(stat(LINKS "/chain1", &st) == 0 && st.st_ino == hello.st_ino);   // → chain2 → relative
+    CHECK(stat(LINKS "/long", &st) == 0 && st.st_ino == hello.st_ino);     // "./" x 30, then ../hello
+    CHECK(lstat(LINKS "/long", &st) == 0 && S_ISLNK(st.st_mode) && st.st_size == 68);
+    CHECK(readlink(LINKS "/long", buffer, sizeof(buffer)) == 68 && memcmp(buffer + 60, "../hello", 8) == 0);
+
+    // A directory through an absolute link, with or without '/', and through two in a row
+    CHECK(stat(LINKS "/directory", &st) == 0 && S_ISDIR(st.st_mode));
+    CHECK(lstat(LINKS "/directory", &st) == 0 && S_ISLNK(st.st_mode));
+    CHECK(lstat(LINKS "/directory/", &st) == 0 && S_ISDIR(st.st_mode));
+    CHECK(stat(LINKS "/directory/hello", &st) == 0 && st.st_ino == hello.st_ino);
+    CHECK(stat(LINKS "/directory/links/directory/links/relative", &st) == 0 && st.st_ino == hello.st_ino);
+
+    // Inside a directory reached through a link, getcwd gives its own path
+    char start[64];
+    CHECK(getcwd(start, sizeof(start)) != NULL);
+    CHECK(chdir(LINKS "/directory") == 0);
+    CHECK(getcwd(buffer, sizeof(buffer)) != NULL && strcmp(buffer, "/usr/tests") == 0);
+    CHECK(chdir(start) == 0);
+
+    // Dangling and looping
+    errno = 0;
+    CHECK(stat(LINKS "/dangling", &st) == -1 && errno == ENOENT);
+    CHECK(lstat(LINKS "/dangling", &st) == 0 && S_ISLNK(st.st_mode));
+    errno = 0;
+    CHECK(open(LINKS "/loop", O_RDONLY) == -1 && errno == ELOOP);
+    errno = 0;
+    CHECK(stat(LINKS "/loop/x", &st) == -1 && errno == ELOOP);
+    CHECK(lstat(LINKS "/loop", &st) == 0 && S_ISLNK(st.st_mode)); // the link itself is fine
+
+    // A listing shows them as links
+    int links = 0;
+    DIR *dir = opendir(LINKS);
+    CHECK(dir != NULL);
+    for (struct dirent *entry; dir != NULL && (entry = readdir(dir)) != NULL;)
+        links += entry->d_type == DT_LNK;
+    if (dir != NULL)
+        closedir(dir);
+    CHECK(links == 7);
+
+    // A rename keeps a link a link (its record's file type, which e2fsck checks)
+    CHECK(rename(MNT "/link", MNT "/grow/moved-link") == 0);
+    CHECK(lstat(MNT "/grow/moved-link", &st) == 0 && S_ISLNK(st.st_mode));
+    errno = 0;
+    CHECK(stat(MNT "/grow/moved-link", &st) == -1 && errno == ENOENT); // relative: grow/hello.txt now
+    CHECK(rename(MNT "/grow/moved-link", MNT "/link") == 0);
+    expect_text(MNT "/link", HELLO_TEXT);
+
+    // Removing links: ext2's on the disk root (the target stays); the initrd's are read-only
+    if (test_root_on_disk())
+    {
+        CHECK(unlink(LINKS "/dangling") == 0); // fast: its inode goes, no block
+        CHECK(unlink(LINKS "/long") == 0);     // slow: its block goes too
+        errno = 0;
+        CHECK(lstat(LINKS "/long", &st) == -1 && errno == ENOENT);
+        CHECK(stat("/usr/tests/hello", &st) == 0 && st.st_ino == hello.st_ino);
+    }
+    else
+    {
+        errno = 0;
+        CHECK(unlink(LINKS "/dangling") == -1 && errno == EROFS);
+    }
+#undef HELLO_TEXT
+#undef LINKS
+}
+
 static void test_refusals(void)
 {
     char buffer[64];
 
-    errno = 0;
-    CHECK(open(MNT "/link", O_RDONLY) == -1 && errno == ENOENT);
     errno = 0;
     CHECK(open(MNT "/hello.txt/", O_RDONLY) == -1 && errno == ENOTDIR);
     errno = 0;
@@ -837,6 +938,7 @@ int main(void)
     test_rename();
     test_times();
     test_utimes();
+    test_symlinks();
     test_refusals();
 
     // Every fd and stream was closed: the next open gets fd 3 again

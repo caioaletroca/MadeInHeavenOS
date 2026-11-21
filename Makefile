@@ -32,7 +32,7 @@ all: grub $(DISK_IMAGE) $(PART_IMAGE)
 #             place shows; 300 blocks: direct, single and double indirect
 #   sparse    "start", a hole up to 16 KiB, "end": no blocks for the middle
 #   aaa...a   a 255-character name, the longest ext2 allows
-#   link      a symlink to hello.txt (the VFS has no symlinks yet: skipped)
+#   link      a symlink to hello.txt (a fast one: the target is in the inode)
 #   grow/     files the tests grow (no truncate yet: other tests' files stay
 #             as they are): small (5 bytes), empty, holes (sparse's layout),
 #             long (big.txt's content, 300 blocks), user (the ext2 test's own)

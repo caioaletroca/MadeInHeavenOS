@@ -23,6 +23,19 @@ ROOT_FILES := $(filter-out %.elf,$(foreach dir,$(ROOT_DIRS),$(wildcard $(SYSROOT
 # can be mounted on it
 MOUNT_POINTS := dev mnt
 
+# BusyBox's applets by name: each name in the list ports/busybox installs
+# becomes /bin/<name> → busybox (busybox runs the applet argv[0] names), unless
+# a program of ours already has the name (/bin/sh stays ours). Absent until
+# the port has been built.
+APPLET_LIST := $(SYSROOT_DIR)/usr/share/busybox/applets
+
+# The symlink fixtures of the ext2 test (user/tests/ext2), read-only on the
+# initrd in the live boot and real ext2 symlinks on the disk root in the other:
+# a relative link, an absolute one to a directory, a chain of two, a dangling
+# one, a loop, and one whose target is past 59 characters (on ext2 a "slow"
+# symlink, its target in a data block; shorter targets live in the inode)
+LINK_FIXTURES = $(INITRD_STAGING)/usr/tests/links
+
 INITRD_STAGING := $(STAGING_DIR)/initrd
 INITRD := $(BINARY_DIR)/initrd.tar
 staging_path = $(INITRD_STAGING)$(patsubst $(SYSROOT_DIR)%,%,$1)
@@ -36,10 +49,24 @@ iso: $(ISO)
 # ustar: the format the kernel reads. Owner 0 and names sorted, so the archive
 # only changes when a program (or this layout) does. --sort=name orders what is
 # inside each directory, not the operands: those are sorted here.
-$(INITRD): $(ROOT_FILES) Makefile
+$(INITRD): $(ROOT_FILES) $(wildcard $(APPLET_LIST)) Makefile
 	rm -rf $(INITRD_STAGING)
 	$(foreach file,$(ROOT_FILES),mkdir -p $(dir $(call staging_path,$(file))) && cp $(file) $(call staging_path,$(file));)
 	$(foreach dir,$(MOUNT_POINTS),mkdir -m 0755 -p $(INITRD_STAGING)/$(dir);)
+	if [ -f $(APPLET_LIST) ]; then \
+	    for path in $$(cat $(APPLET_LIST)); do \
+	        name=$${path##*/}; \
+	        [ -e $(INITRD_STAGING)/bin/$$name ] || ln -s busybox $(INITRD_STAGING)/bin/$$name; \
+	    done; \
+	fi
+	mkdir -p $(LINK_FIXTURES)
+	ln -s ../hello $(LINK_FIXTURES)/relative
+	ln -s /usr/tests $(LINK_FIXTURES)/directory
+	ln -s chain2 $(LINK_FIXTURES)/chain1
+	ln -s relative $(LINK_FIXTURES)/chain2
+	ln -s nowhere $(LINK_FIXTURES)/dangling
+	ln -s loop $(LINK_FIXTURES)/loop
+	ln -s $$(printf './%.0s' $$(seq 30))../hello $(LINK_FIXTURES)/long
 	mkdir -p $(@D)
 	tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name \
 	    -cf $@ -C $(INITRD_STAGING) $(sort $(ROOT_DIRS) $(MOUNT_POINTS))
