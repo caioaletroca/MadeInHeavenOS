@@ -1,4 +1,6 @@
+#define _GNU_SOURCE // AT_EMPTY_PATH is a Linux extension: <fcntl.h> shows it only with this
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -12,7 +14,7 @@
  * The ext2 test disk (disk.img) mounted on /mnt, from user space: listings,
  * stat, reads through open/lseek/read (big.txt across direct, single and
  * double indirect blocks, the sparse file's hole), overwrites in place,
- * creating and removing names, renames, and what is refused.
+ * creating and removing names, renames, setting times, and what is refused.
  */
 
 #define MNT "/mnt"
@@ -712,6 +714,84 @@ static void test_rename(void)
 #undef RB
 }
 
+/*
+ * utimensat and the calls mlibc builds on it (utimes, futimens), in grow/: given times
+ * (seconds kept, nanoseconds dropped), UTIME_OMIT for one, both UTIME_OMIT changing
+ * nothing (not even ctime), NULL and UTIME_NOW for now, an open fd (futimens, and ""
+ * with AT_EMPTY_PATH), and the refusals.
+ */
+static void test_utimes(void)
+{
+#define UF MNT "/grow/stamp"
+    struct stat st;
+    make_file(UF, "x");
+
+    // Given times; ctime is the call's time
+    time_t before = time(NULL);
+    struct timespec given[2] = {{1000000000, 0}, {1234567890, 500}};
+    CHECK(utimensat(AT_FDCWD, UF, given, 0) == 0);
+    CHECK(stat(UF, &st) == 0);
+    CHECK(st.st_atime == 1000000000 && st.st_mtime == 1234567890 && st.st_mtim.tv_nsec == 0);
+    CHECK(st.st_ctime >= before && st.st_ctime <= time(NULL));
+
+    // UTIME_OMIT on the access time: only the modification time changes
+    struct timespec only_mtime[2] = {{0, UTIME_OMIT}, {1500000000, 0}};
+    CHECK(utimensat(AT_FDCWD, UF, only_mtime, 0) == 0);
+    CHECK(stat(UF, &st) == 0 && st.st_atime == 1000000000 && st.st_mtime == 1500000000);
+
+    // Both UTIME_OMIT: nothing changes, not even ctime (a second later it would show)
+    time_t changed = st.st_ctime;
+    sleep(1);
+    struct timespec neither[2] = {{0, UTIME_OMIT}, {0, UTIME_OMIT}};
+    CHECK(utimensat(AT_FDCWD, UF, neither, 0) == 0);
+    CHECK(stat(UF, &st) == 0 && st.st_ctime == changed && st.st_mtime == 1500000000);
+
+    // NULL: both now, and ctime with them
+    CHECK(utimensat(AT_FDCWD, UF, NULL, 0) == 0);
+    CHECK(stat(UF, &st) == 0 && st.st_mtime > changed);
+    CHECK(st.st_atime == st.st_mtime && st.st_ctime == st.st_mtime);
+
+    // UTIME_NOW for one, through utimes' own conversion for the other call
+    struct timeval old[2] = {{1300000000, 0}, {1400000000, 0}};
+    CHECK(utimes(UF, old) == 0);
+    struct timespec access_now[2] = {{0, UTIME_NOW}, {0, UTIME_OMIT}};
+    CHECK(utimensat(AT_FDCWD, UF, access_now, 0) == 0);
+    CHECK(stat(UF, &st) == 0 && st.st_atime >= changed && st.st_mtime == 1400000000);
+
+    // An open file: futimens, and "" with AT_EMPTY_PATH (futimes' way)
+    int fd = open(UF, O_RDONLY);
+    CHECK(fd >= 0);
+    struct timespec by_fd[2] = {{1600000000, 0}, {1700000000, 0}};
+    CHECK(futimens(fd, by_fd) == 0);
+    CHECK(fstat(fd, &st) == 0 && st.st_atime == 1600000000 && st.st_mtime == 1700000000);
+    struct timespec empty_path[2] = {{1100000000, 0}, {0, UTIME_OMIT}};
+    CHECK(utimensat(fd, "", empty_path, AT_EMPTY_PATH) == 0);
+    CHECK(fstat(fd, &st) == 0 && st.st_atime == 1100000000 && st.st_mtime == 1700000000);
+    close(fd);
+
+    // Refusals; none changed anything
+    struct timespec bad[2] = {{0, 1000000000}, {0, 0}};
+    errno = 0;
+    CHECK(utimensat(AT_FDCWD, UF, bad, 0) == -1 && errno == EINVAL); // nanoseconds out of range
+    errno = 0;
+    CHECK(utimensat(AT_FDCWD, UF, NULL, 0x8000) == -1 && errno == EINVAL); // an unknown flag
+    errno = 0;
+    CHECK(utimensat(AT_FDCWD, MNT "/grow/nope", NULL, 0) == -1 && errno == ENOENT);
+    errno = 0;
+    CHECK(utimensat(AT_FDCWD, "", NULL, AT_SYMLINK_NOFOLLOW) == -1 && errno == ENOENT); // "" needs AT_EMPTY_PATH
+    errno = 0;
+    CHECK(futimens(99, NULL) == -1 && errno == EBADF);
+    if (!test_root_on_disk())
+    {
+        errno = 0;
+        CHECK(utimensat(AT_FDCWD, "/usr/tests/ext2", NULL, 0) == -1 && errno == EROFS); // the initrd
+    }
+    CHECK(stat(UF, &st) == 0 && st.st_atime == 1100000000 && st.st_mtime == 1700000000);
+
+    CHECK(unlink(UF) == 0);
+#undef UF
+}
+
 static void test_refusals(void)
 {
     char buffer[64];
@@ -756,6 +836,7 @@ int main(void)
     test_dirs();
     test_rename();
     test_times();
+    test_utimes();
     test_refusals();
 
     // Every fd and stream was closed: the next open gets fd 3 again
