@@ -1005,7 +1005,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
   user_copy.c    syscall_space, user_string_copy, user_path_copy
   files.c        sys_file (fd → file_t); open read write lseek close dup dup2 ioctl truncate ftruncate utimensat pipe fcntl
   directories.c  getdents unlink mkdir rmdir chdir getcwd
-  stat.c         stat fstat
+  stat.c         stat lstat fstat readlink
   processes.c    exit spawn fork exec wait getpid getppid (child_create, program_load, spawn_args_t,
                  user_vector_copy and wait_status_encode static there)
   memory.c       brk
@@ -1409,8 +1409,8 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   a `kmalloc`'d string and looked up (through mounts); not a directory → `-ENOTDIR`, no
   `create` node op → `-EROFS` (initrd, devfs), else `create(dir, name, length, mode & 07777,
   &node)`. A create giving `-EEXIST` without `O_EXCL` (made meanwhile) is retried as a lookup
-  once: a name the VFS cannot show (a symlink) is `-EEXIST` to create and `-ENOENT` to look up,
-  so a loop would never end. An existing file with `O_CREAT | O_EXCL` → `-EEXIST`; `O_EXCL`
+  once: a dangling symlink is `-ENOENT` to look up and `-EEXIST` to create (its name is
+  taken), so a loop would never end (Linux creates the file the link names: debt). An existing file with `O_CREAT | O_EXCL` → `-EEXIST`; `O_EXCL`
   alone is ignored (POSIX leaves it undefined, Linux ignores it). The new node then goes
   through the usual checks (`O_TRUNC` on it is a no-op). No umask. libc: `open` reads its
   `mode_t` with `va_arg` only with `O_CREAT`; `creat(path, mode)` = `open(path, O_WRONLY |
@@ -1452,8 +1452,8 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   seconds kept (`utime_make`); checked before the lookup, as Linux. The node
   (`utimensat_node`): a NULL path (futimens) or `""` with `AT_EMPTY_PATH` → `dirfd`'s file
   (`-EBADF`); a relative path from a real `dirfd` → `-ENOSYS` (no `*at` lookups); else
-  `vfs_lookup` (`""` → `-ENOENT`). `AT_SYMLINK_NOFOLLOW` is accepted and changes nothing (no
-  symlinks). `AT_FDCWD` (-100), `AT_SYMLINK_NOFOLLOW` (0x100), `AT_EMPTY_PATH` (0x1000,
+  `vfs_lookup` (`""` → `-ENOENT`); with `AT_SYMLINK_NOFOLLOW`, `vfs_lookup_link`: a symlink
+  as the last name gets the times itself (ext2; the initrd's is `-EROFS`). `AT_FDCWD` (-100), `AT_SYMLINK_NOFOLLOW` (0x100), `AT_EMPTY_PATH` (0x1000,
   `_GNU_SOURCE` in mlibc's `<fcntl.h>`) are in `uapi/mihos/fcntl.h`, `MIHOS_UTIME_*` in
   `uapi/mihos/stat.h`, all Linux's values. Directories open (listed with
   `getdents`); reading one gives `-EISDIR`. `vfs_read`: a directory → `-EISDIR`, a node without
@@ -1480,10 +1480,17 @@ process->files[fd] ──▶ file_t { ops, flags, refs, private, node, offset } 
   `MIHOS_DT_REG` 8), `d_name`
   `'\0'`-terminated at offset 11; `d_reclen = ALIGN_UP(11 + length + 1, 8)` so every `d_ino` is
   8-aligned. Returns bytes, 0 at the end, `-EINVAL` if the first record does not fit (Linux).
-- **`stat(path, st)` / `fstat(fd, st)`** (`sys_stat`, `sys_fstat`): `stat` copies the path with
-  `user_path_copy` (shared with `sys_open`: a `kmalloc`'d `VFS_PATH_MAX` buffer, `-E2BIG` →
-  `-ENAMETOOLONG`), `vfs_lookup`s it, `vfs_stat`s into a kernel `struct mihos_stat`, puts the
-  node, then `address_space_write`s it (`-EFAULT`). `fstat`: `-EBADF`, then `vfs_stat` of
+- **`stat(path, st)` / `lstat(path, st)` / `fstat(fd, st)`** (`sys_stat`, `sys_lstat`
+  (`SYS_LSTAT` 55), `sys_fstat`): `stat` and `lstat` share `stat_path(path, st, follow)`: the
+  path copied with `user_path_copy` (shared with `sys_open`: a `kmalloc`'d `VFS_PATH_MAX`
+  buffer, `-E2BIG` → `-ENAMETOOLONG`), `vfs_lookup` (stat) or `vfs_lookup_link` (lstat: a
+  symlink as the last name is reported itself, `MIHOS_S_IFLNK` 0120000, its size the
+  target's length), `vfs_stat` into a kernel `struct mihos_stat`, then `address_space_write`
+  (`-EFAULT`); the path and node go through `release_with`. mlibc's `Stat` sysdep takes
+  `SYS_LSTAT` for `AT_SYMLINK_NOFOLLOW`. **`readlink(path, buffer, size)`** (`sys_readlink`,
+  `SYS_READLINK` 56; mlibc's `Readlink` sysdep, which `realpath` uses with lstat): `size` ≤ 0
+  → `-EINVAL`; `vfs_lookup_link`; not a symlink → `-EINVAL`; the target cut to `size`, no
+  `'\0'`, returns the bytes written (Linux). `fstat`: `-EBADF`, then `vfs_stat` of
   `file->node` (every open file has one; a pipe's is its anonymous `VFS_FIFO` node).
   The ABI (uapi `<mihos/stat.h>`): fixed-width fields with an explicit `__pad0`, Linux's x86-64
   `struct stat` layout; `MIHOS_S_IFMT`/`IFDIR`/`IFCHR`/`IFBLK`/`IFREG`/`IFIFO` (octal, Linux values) in the high
@@ -1584,7 +1591,9 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
   (`prefix/name`, `%.*s` since a full 100-byte field has no NUL), walks it with `vfs_path_next`
   looking one component ahead: every component before the last is a directory, found or created
   (`initrd_find_or_create_dir`, `mkdir -p`: tar lists `usr/tests/` but never `usr/`), the last is the file
-  (type `'0'`/`'\0'`) or directory (`'5'`); other types are skipped; a name that is both a file
+  (type `'0'`/`'\0'`), directory (`'5'`) or symlink (`'2'`: a `VFS_SYMLINK` node whose
+  `data` points at the header's `linkname`, its size `strnlen` of the 100 bytes; read by
+  `initrd_readlink`); other types are skipped; a name that is both a file
   and a directory, or a file listed twice, panics. The root is its own parent, returned with
   one reference (the caller mounts it).
   Ops: `lookup` (linear search of `children`, returns a new reference), `read` (copies
@@ -1629,6 +1638,18 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
   `-ENAMETOOLONG`, a file before another component → `-ENOTDIR`, a file with a trailing `/` →
   `-ENOTDIR` (POSIX). Returns a new reference. `vfs_read` checks the type (`-EISDIR`),
   `vfs_readdir` too (`-ENOTDIR`).
+  **Symlinks** (D10g batch 5): `VFS_SYMLINK` nodes with a `readlink` op (`vfs_readlink`: not a
+  link → `-EINVAL`; `MIHOS_DT_LNK` 10 in listings). `vfs_lookup` and `vfs_lookup_link` are
+  both `vfs_walk(path, follow_last)`: a link met before the last name, or as the last with
+  `follow_last` (lookup) or a `/` after it (`link/`), is replaced in the path by its target
+  (`vfs_link_path`: target + the rest, a new `kmalloc`'d path, the old one freed), and the
+  walk goes on from the link's directory (relative target) or the root (absolute). An empty
+  target → `-ENOENT`; past `VFS_LINKS_MAX` (40, Linux's) → `-ELOOP` (40); too long →
+  `-ENAMETOOLONG`. A loop, not recursion: 40 nested walks on a 16 KiB kernel stack were the
+  risk. The trailing-`/` check applies to the final path, so `hello/` through a link is
+  `-ENOTDIR` too. Everything else follows (open, chdir, mkdir's "exists" check); unlink,
+  rmdir and rename act on the link's own name through `vfs_lookup_parent`. No way to make a
+  link yet (`symlink()`: the next batch).
   `vfs_read_file(path, &data, &size)`, relative paths included (spawn runs `./hello`): the whole file in a `kmalloc`'d buffer (loops on `read`;
   0 before the end → `-EIO`), the outputs set only on success. Open files: see Files.
   **Mounts:** `vfs_mount(path, root)` looks the directory up (`-ENOENT`/`-ENOTDIR` pass
@@ -2465,9 +2486,8 @@ lookup(dir, name) ─▶ ext2_dir_lookup ─ cursor over records in leased block
   deleted ones included); `-ENOENT`, `-EIO` for a corrupt record. A directory never shrinks.
 - **Deleting** (its own section, after "File data"): `ext2_unlink(dir, name, length)` (the
   `unlink` node op, writable volumes only), under the directory's lock: `EXT2_INDEX_FL` →
-  `-EROFS`; `ext2_dir_lookup` (not found, or a kind the VFS cannot show →
-  `-ENOENT`: a fast symlink keeps its target in `i_block`, which a truncate would free as
-  block numbers); the node read *before* anything changes (`ext2_node_get`: a failure later
+  `-EROFS`; `ext2_dir_lookup` (not found, or a kind the VFS cannot show (a fifo, socket or
+  device file) → `-ENOENT`); symlinks unlink like files; the node read *before* anything changes (`ext2_node_get`: a failure later
   never leaves a nameless file with a link); a directory → `-EISDIR` (rmdir's); 0 links
   already → `-EIO`; `ext2_dir_remove`; then under the file's lock `nlink` −1 and
   `i_links_count` written (a `uint16_t`, 2 bytes), at 0 `free_on_release` set (even if the
@@ -2507,8 +2527,8 @@ lookup(dir, name) ─▶ ext2_dir_lookup ─ cursor over records in leased block
   reverse: directories, nodes, `rename_lock`. The steps are helpers: `ext2_rename_get` (find
   and take a node), `ext2_rename_check` (every refusal, one `return` each),
   `ext2_rename_move_dotdot`, `ext2_rename_drop_target`, `ext2_rename_store`. Every check
-  before any write: source missing → `-ENOENT`; a target the VFS can't show (a symlink) →
-  `-EEXIST`; both names one inode → 0, nothing done; new directory removed → `-ENOENT`; a
+  before any write: source missing → `-ENOENT`; a target the VFS can't show (a fifo, socket or
+  device file) → `-EEXIST`; both names one inode → 0, nothing done; new directory removed → `-ENOENT`; a
   directory into its own subtree →
   `-EINVAL`; a target holding the source (`mv a/b/x a/b`, where the target *is* the old
   directory, already locked) → `-ENOTEMPTY`, checked before the target's lock; directory onto
@@ -3736,12 +3756,25 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           `fc031ab`: `ext2`'s `test_utimes` sets times every way and checks every refusal
           (`_GNU_SOURCE` for `AT_EMPTY_PATH`); busybox `touch` and `find` run, nothing is
           parked: all 46 cases run. Gate: 48 of 48 on both boots, e2fsck clean.
-        - Every kernel call the busybox cases need is in. Next: symlinks
-          for applet names (`/bin/ls → busybox`: a VFS link type, following during
-          lookup with `ELOOP` at 40, `readlink`/`lstat`, initrd tar type `2`, ext2 fast
-          symlinks); `-c` in our own shell for Lua's `io.popen` (`/bin/sh` stays ours,
-          ash is `busybox sh`). Applets beyond the cases may want more (`cp -p` wants
-          `fchmod`: the next `set_attributes` bit).
+        - Symlinks, batch 5, the read side (the user wrote the kernel side): `f04b8e7` (see
+          Symlinks under the VFS, `lstat`/`readlink` under stat, the initrd's type `'2'`,
+          ext2's fast and slow links). The review caught the initrd's last-name test
+          inverted (`!is_directory`: every file a directory) and a `&` for `&&`. mlibc fork
+          `3f0993a5` adds the `Readlink` sysdep and `lstat` in `Stat`. Pointer `641c3a1`.
+          `632360b`: grub/Makefile links every busybox applet in the initrd's `/bin` to
+          `busybox` (from busybox's own `busybox.links`, installed by ports/busybox as
+          `usr/share/busybox/applets`), except names our programs have (`sh`, `cat`,
+          `date`, `echo`, `ls` stay ours: retiring them is a decision of its own), and
+          makes the ext2 test's fixtures in `/usr/tests/links` (relative, absolute to a
+          directory, a chain, dangling, a loop, a 68-character target: a slow link on the
+          disk root); `ext2`'s `test_symlinks` checks them on both boots, busybox runs
+          applets as `/bin/<name>` and through ash, `dirs` allows `links/`; the kernel's
+          ext2 self-test (in `f04b8e7`) follows the test disk's `link`. Gate: 48 of 48 on
+          both boots, e2fsck clean.
+        - Next: making links (`symlink`, `ln -s`: an ext2 fast or slow symlink inode and a
+          `EXT2_FT_SYMLINK` entry); `-c` in our own shell for Lua's `io.popen` (`/bin/sh`
+          stays ours, ash is `busybox sh`). Applets beyond the cases may want more (`cp -p`
+          wants `fchmod`: the next `set_attributes` bit).
     - Threads (`clone`, pthreads) when a port needs them (Python, Node.js), with real locks
       for what one thread per process covers today (fd table, address space, regions,
       `brk`); SMP last.
@@ -4031,6 +4064,12 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `utimensat` with a relative path from a directory fd is `-ENOSYS` (no lookups from a node:
   the `*at` family); `futimens` on an fd with no node (`file->node` NULL) is `-EINVAL`, where
   Linux sets a pipe's times.
+- Symlinks: no way to make one yet (`symlink`, `ln -s`); `open` with `O_CREAT` through a
+  dangling link is `-ENOENT` (Linux creates the file it names); `vfs_is_mount_point` still
+  follows a link (`vfs_lookup`, should be `vfs_lookup_link`: rmdir or rename of a link to a
+  mount point says `-EBUSY`); a fast symlink's `st_blocks` is 1 (Linux 0); ext2's fast-link
+  test is `i_blocks == 0` and ignores an extended-attribute block (Linux subtracts it; our
+  disks have none).
 - Calendar: UTC only (no `TZ`, no zone files, `localtime` = `gmtime`); no GNU `strftime`
   flags or widths (`%-d`, `%_d`, `%10Y`); `date` cannot set the clock (no `clock_settime`)
   and has no `-d`; no `<limits.h>` (`gmtime` uses GCC's `__INT_MAX__`); no `strtol`/`strtod`
@@ -4305,8 +4344,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   (a terminal's) only by eye: no pseudo-terminal to capture it.
 - ext2 (each item becomes work when something needs it):
   - no `link`, so a file has one name (but the
-    link count is kept right for when it has more); symlinks (and other kinds the VFS cannot
-    show) cannot be unlinked (a fast symlink's `i_block` holds text); an `O_APPEND` file's
+    link count is kept right for when it has more); fifos, sockets and device files on a disk
+    cannot be seen or unlinked; an `O_APPEND` file's
     offset is the size read after its write, so another appender's bytes may come before it
     (Linux returns the exact end from inside the write); a failure to free an unlinked file at
     its last put only logs (a leak); no umask;
