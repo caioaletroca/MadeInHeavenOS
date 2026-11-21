@@ -147,6 +147,7 @@ int ext2_create(vfs_node_t *dir, const char *name, size_t length, uint32_t mode,
 void ext2_release(vfs_node_t *node);
 int ext2_unlink(vfs_node_t *dir, const char *name, size_t length);
 int ext2_mkdir(vfs_node_t *dir, const char *name, size_t length, uint32_t mode);
+int ext2_symlink(vfs_node_t *dir, const char *name, size_t length, const char *target, size_t target_length);
 int ext2_rmdir(vfs_node_t *dir, const char *name, size_t length);
 int ext2_rename(vfs_node_t *old_dir, const char *old_name, size_t old_length, vfs_node_t *new_dir, const char *new_name, size_t new_length);
 

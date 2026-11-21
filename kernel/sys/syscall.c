@@ -116,6 +116,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_lstat((uintptr_t)arg0, (uintptr_t)arg1);
     case SYS_READLINK:
         return sys_readlink((uintptr_t)arg0, (uintptr_t)arg1, (long)arg2);
+    case SYS_SYMLINK:
+        return sys_symlink((uintptr_t)arg0, (uintptr_t)arg1);
     default:
         return -ENOSYS;
     }

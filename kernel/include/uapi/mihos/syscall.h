@@ -59,6 +59,7 @@
 #define SYS_UTIMENSAT 54
 #define SYS_LSTAT 55
 #define SYS_READLINK 56
+#define SYS_SYMLINK 57
 
 // SYS_REBOOT commands
 #define REBOOT_HALT 0 // stop the CPU (no ACPI power off yet)

@@ -17,6 +17,7 @@ static const vfs_node_ops_t ext2_ops = {
     .rename = ext2_rename,
     .unlink = ext2_unlink,
     .mkdir = ext2_mkdir,
+    .symlink = ext2_symlink,
     .rmdir = ext2_rmdir,
     .release = ext2_release,
 };

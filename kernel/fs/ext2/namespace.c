@@ -4,7 +4,7 @@
 #include <mm/kmalloc.h>
 #include <logger.h>
 
-// ---- Names: creating files and removing their names; a node's blocks and inode freed at its last put ----
+// ---- Names: creating files, directories and symlinks and removing their names; a node's blocks and inode freed at its last put ----
 
 /**
  * @brief A new, empty regular file in a directory: an inode taken and prepared, then its name
@@ -259,6 +259,93 @@ int ext2_mkdir(vfs_node_t *dir, const char *name, size_t length, uint32_t mode)
         vfs_node_put(child);
 
     return ret;
+}
+
+/**
+ * @brief Store a new symlink's target: in i_block when it fits (a fast symlink: Linux and
+ * mke2fs keep targets of up to 59 characters there, 60 bytes with its '\0'), else in a data
+ * block written through ext2_write (a slow one)
+ *
+ * @param link: The new link's node, no target yet (size 0, no blocks)
+ * @param target: The target (not '\0'-terminated)
+ * @param length: Its length, under a block (ext2_symlink checked)
+ * @return 0 or -errno
+ */
+static int ext2_symlink_store(ext2_node_t *link, const char *target, size_t length)
+{
+    if (length >= sizeof(link->block))
+    {
+        long written = ext2_write(&link->base, target, length, 0);
+        if (written < 0)
+            return (int)written;
+        return written == (long)length ? 0 : -EIO;
+    }
+
+    guard(mutex, &link->lock);
+    memcpy(link->block, target, length); // the rest stays 0 from ext2_inode_init, as e2fsck wants
+    link->base.size = length;
+    return ext2_inode_store(link);
+}
+
+/**
+ * @brief A new symlink in a directory: an inode taken and prepared, its target stored, then
+ * its name (no record ever points at a link without its target); a failure after the inode
+ * was read frees it at the put
+ *
+ * @param dir: The directory VFS node
+ * @param name: The link's name (not '\0'-terminated)
+ * @param length: The length of the name
+ * @param target: What the link holds (not '\0'-terminated, not empty)
+ * @param target_length: Its length
+ * @return 0, -ENAMETOOLONG (a target that does not fit one block with its '\0'), -EEXIST,
+ *         -ENOENT (the directory was removed), -EROFS for an indexed directory, or -errno
+ */
+int ext2_symlink(vfs_node_t *dir, const char *name, size_t length, const char *target, size_t target_length)
+{
+    int64_t now = clock_seconds();
+    ext2_node_t *d = EXT2_NODE(dir);
+    ext2_volume_t *volume = d->volume;
+
+    // Declared before the lock, so it is put after the lock is released (cleanups run in
+    // reverse): a failed link is freed there, as in ext2_mkdir
+    vfs_node_t *link release_with(vfs_node_put_ref) = NULL;
+
+    if (target_length >= volume->block_size)
+        return -ENAMETOOLONG; // Linux: the target and its '\0' must fit one block
+
+    guard(mutex, &d->lock);
+
+    if (d->flags & EXT2_INDEX_FL)
+        return -EROFS; // a hashed directory: its index would not list the name
+    if (dir->nlink == 0)
+        return -ENOENT; // removed (rmdir) while still held: no new names in it
+
+    if (return_on_error(ext2_dir_lookup(d, name, length, NULL, NULL)))
+        return -EEXIST; // whatever its type, as in ext2_create
+
+    uint32_t ino = 0;
+    return_on_error(ext2_inode_alloc(volume, d->ino, false, &ino));
+    int ret = ext2_inode_init(volume, ino, EXT2_S_IFLNK | 0777, 1, (uint32_t)now);
+    if (ret == 0)
+        ret = ext2_node_get(volume, ino, dir, &link);
+    if (ret < 0)
+    {
+        ext2_inode_free(volume, ino, false);
+        return ret;
+    }
+
+    ret = ext2_symlink_store(EXT2_NODE(link), target, target_length);
+    if (ret == 0)
+        ret = ext2_dir_add(d, name, length, ino, EXT2_FT_SYMLINK);
+    if (ret < 0)
+    {
+        link->nlink = 0; // never named: its block (if slow) and inode go at the put
+        EXT2_NODE(link)->free_on_release = true;
+        return ret;
+    }
+
+    ext2_mark_changed(d, now);
+    return ext2_times_store(d);
 }
 
 int ext2_rmdir(vfs_node_t *dir, const char *name, size_t length)

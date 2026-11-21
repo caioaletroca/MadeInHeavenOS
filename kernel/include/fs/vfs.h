@@ -100,6 +100,10 @@ typedef struct vfs_node_ops
     // -EEXIST if the name is taken (whatever its type)
     int (*mkdir)(vfs_node_t *dir, const char *name, size_t length, uint32_t mode);
 
+    // Directory: a new symlink called name[0..length) holding target[0..target_length) (not
+    // '\0'-terminated, not empty); -EEXIST if the name is taken (whatever its type)
+    int (*symlink)(vfs_node_t *dir, const char *name, size_t length, const char *target, size_t target_length);
+
     // Directory: removes the empty directory called name[0..length); -ENOTDIR, -ENOTEMPTY,
     // -ENOENT. It is freed once it has no references left
     int (*rmdir)(vfs_node_t *dir, const char *name, size_t length);
@@ -379,6 +383,17 @@ int vfs_unlink(const char *path);
  * @return 0 on success, -errno on failure.
  */
 int vfs_mkdir(const char *path, uint32_t mode);
+
+/**
+ * @brief Make a symlink at path holding target (POSIX symlink). The target is not looked up:
+ * it may name nothing yet.
+ *
+ * @param target What the link holds.
+ * @param path Where the link goes.
+ * @return 0, -EEXIST (the name is taken, a dangling link too), -ENOENT (an empty target, a
+ *         missing directory, a path ending in '/'), -ENOTDIR, -EROFS, or -errno.
+ */
+int vfs_symlink(const char *target, const char *path);
 
 /**
  * @brief Remove a directory at the specified path.

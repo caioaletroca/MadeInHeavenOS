@@ -807,6 +807,34 @@ int vfs_mkdir(const char *path, uint32_t mode)
     return ret;
 }
 
+int vfs_symlink(const char *target, const char *path)
+{
+    if (target[0] == '\0' || path[0] == '\0')
+        return -ENOENT; // an empty target names nothing (Linux)
+
+    // A taken name is -EEXIST before anything else, even on a read-only file system, as in
+    // Linux; not following, so a dangling link's name is taken too
+    vfs_node_t *existing;
+    if (vfs_lookup_link(path, &existing) == 0)
+    {
+        vfs_node_put(existing);
+        return -EEXIST;
+    }
+
+    // "name/": a symlink is never a directory (Linux's answer)
+    if (path[strlen(path) - 1] == '/')
+        return -ENOENT;
+
+    vfs_node_t *dir release_with(vfs_node_put_ref) = NULL;
+    const char *name;
+    size_t length;
+    return_on_error(vfs_lookup_parent(path, &dir, &name, &length));
+
+    if (dir->ops->symlink == NULL)
+        return -EROFS;
+    return dir->ops->symlink(dir, name, length, target, strlen(target));
+}
+
 /**
  * @brief Whether a file system is mounted on the directory at path.
  *

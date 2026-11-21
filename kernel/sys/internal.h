@@ -47,6 +47,7 @@ long sys_unlink(uintptr_t path);
 long sys_mkdir(uintptr_t path, uint32_t mode);
 long sys_rmdir(uintptr_t path);
 long sys_rename(uintptr_t old_path, uintptr_t new_path);
+long sys_symlink(uintptr_t target, uintptr_t link_path);
 long sys_chdir(uintptr_t path);
 long sys_getcwd(uintptr_t buffer, size_t size);
 

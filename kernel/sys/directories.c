@@ -1,6 +1,8 @@
 #include "internal.h"
+#include <mm/kmalloc.h>
+#include <cleanup.h>
 
-// ---- Calls on directories and names: listing, unlink, mkdir, rmdir, the current directory ----
+// ---- Calls on directories and names: listing, unlink, mkdir, rmdir, rename, symlink, the current directory ----
 
 long sys_getdents(unsigned long fd, uintptr_t buffer, size_t size)
 {
@@ -112,6 +114,27 @@ long sys_rename(uintptr_t old_path, uintptr_t new_path)
     kfree(new_kernel_path);
     kfree(old_kernel_path);
     return ret;
+}
+
+/**
+ * Make a symlink (symlink): link_path will hold target.
+ *
+ * @param target User pointer to what the link holds.
+ * @param link_path User pointer to where the link goes.
+ * @return 0, or what copying the strings or vfs_symlink returns.
+ */
+long sys_symlink(uintptr_t target, uintptr_t link_path)
+{
+    long error;
+    char *kernel_target release_with(kfree_ref) = user_path_copy(target, &error);
+    if (kernel_target == NULL)
+        return error;
+
+    char *kernel_path release_with(kfree_ref) = user_path_copy(link_path, &error);
+    if (kernel_path == NULL)
+        return error;
+
+    return vfs_symlink(kernel_target, kernel_path);
 }
 
 /**
