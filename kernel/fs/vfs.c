@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <asm/memory.h>
+#include <driver/clock.h>
 #include <sched/sync.h>
 #include <sched/spinlock.h>
 #include <sched/scheduler.h>
@@ -370,6 +371,19 @@ int vfs_truncate(vfs_node_t *file, uint64_t size)
         return -EROFS; // read-only file system
 
     return file->ops->truncate(file, size);
+}
+
+int vfs_set_attributes(vfs_node_t *node, const vfs_attributes_t *attributes)
+{
+    if (attributes->which == 0)
+        return 0;
+
+    if (node->ops->set_attributes == NULL)
+        return -EROFS;
+
+    vfs_attributes_t change = *attributes;
+    change.ctime = clock_seconds();
+    return node->ops->set_attributes(node, &change);
 }
 
 int vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry)

@@ -11,6 +11,7 @@ static const vfs_node_ops_t ext2_ops = {
     .write = ext2_write,
     .readdir = ext2_readdir,
     .truncate = ext2_truncate,
+    .set_attributes = ext2_set_attributes,
     .create = ext2_create,
     .rename = ext2_rename,
     .unlink = ext2_unlink,
@@ -196,4 +197,25 @@ int ext2_times_store(ext2_node_t *node)
                            ext2_inode_byte(node->volume, node->ino) + offsetof(ext2_inode_t, i_atime),
                            times,
                            sizeof(times));
+}
+
+/**
+ * @brief Change a node's metadata (the set_attributes op): the times attributes->which
+ * names, and ctime; all three are stored with one write
+ *
+ * @param node: The node
+ * @param attributes: What changes (ctime always)
+ * @return 0 or -errno
+ */
+int ext2_set_attributes(vfs_node_t *node, const vfs_attributes_t *attributes)
+{
+    ext2_node_t *n = EXT2_NODE(node);
+    guard(mutex, &n->lock);
+
+    if (attributes->which & VFS_SET_ATIME)
+        node->atime = attributes->atime;
+    if (attributes->which & VFS_SET_MTIME)
+        node->mtime = attributes->mtime;
+    node->ctime = attributes->ctime;
+    return ext2_times_store(n);
 }

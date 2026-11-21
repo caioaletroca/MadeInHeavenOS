@@ -87,6 +87,7 @@ int ext2_inode_store(ext2_node_t *n);
 int ext2_node_get(ext2_volume_t *volume, uint32_t ino, vfs_node_t *parent, vfs_node_t **out);
 int ext2_links_store(ext2_node_t *node);
 int ext2_times_store(ext2_node_t *node);
+int ext2_set_attributes(vfs_node_t *node, const vfs_attributes_t *attributes);
 
 // file_blocks.c
 int ext2_file_block(ext2_volume_t *volume, ext2_node_t *node, uint64_t logical, uint32_t *goal, bool create, uint32_t *out);

@@ -29,4 +29,9 @@
 // fd flags
 #define FD_CLOEXEC 1 // close this fd in a successful exec
 
+// The *at calls' directory and flags (Linux values)
+#define AT_FDCWD -100             // dirfd: the path is from the working directory
+#define AT_SYMLINK_NOFOLLOW 0x100 // act on a symlink itself, not what it points at
+#define AT_EMPTY_PATH 0x1000      // an empty path means dirfd's own file
+
 #endif // _UAPI_MIHOS_FCNTL_H_

@@ -20,6 +20,10 @@
 #define MIHOS_MAJOR(dev) ((uint32_t)((((dev) >> 32) & 0xFFFFF000u) | (((dev) >> 8) & 0xFFFu)))
 #define MIHOS_MINOR(dev) ((uint32_t)((((dev) >> 12) & 0xFFFFFF00u) | ((dev) & 0xFFu)))
 
+// utimensat's special tv_nsec values (Linux values)
+#define MIHOS_UTIME_NOW ((1l << 30) - 1l)  // this time becomes now
+#define MIHOS_UTIME_OMIT ((1l << 30) - 2l) // this time stays as it is
+
 /**
  * What stat and fstat write. Every field is fixed-width and the padding is
  * explicit, so the layout is the same for every compiler (it matches Linux's

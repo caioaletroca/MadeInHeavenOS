@@ -63,6 +63,22 @@ typedef struct vfs_dirent
     char name[VFS_NAME_MAX + 1];
 } vfs_dirent_t;
 
+// vfs_attributes_t.which: the fields a set_attributes call changes
+#define VFS_SET_ATIME 0x1
+#define VFS_SET_MTIME 0x2
+
+/**
+ * @brief A change to a node's metadata (Linux's struct iattr): only the fields `which`
+ * names apply. ctime is set by vfs_set_attributes, never by the caller.
+ */
+typedef struct vfs_attributes
+{
+    uint32_t which; // VFS_SET_*
+    int64_t atime;
+    int64_t mtime;
+    int64_t ctime; // the change's time: every change sets it
+} vfs_attributes_t;
+
 /**
  * What a file system implements. Every function receives its own nodes.
  */
@@ -103,6 +119,10 @@ typedef struct vfs_node_ops
 
     // File: sets the size; shrinking frees what is past it, growing leaves a hole. 0 or -errno
     int (*truncate)(vfs_node_t *file, uint64_t size);
+
+    // File or directory: applies the fields attributes->which names, and ctime; 0 or -errno.
+    // NULL: the metadata can't change (a read-only file system)
+    int (*set_attributes)(vfs_node_t *node, const vfs_attributes_t *attributes);
 
     // Directory: entry number index into *entry; 1 if there is one, 0 past the last, or -errno
     int (*readdir)(vfs_node_t *dir, uint64_t index, vfs_dirent_t *entry);
@@ -256,6 +276,15 @@ long vfs_write(vfs_node_t *node, const void *buffer, size_t count, uint64_t offs
  * @return 0 on success, -errno on failure.
  */
 int vfs_truncate(vfs_node_t *file, uint64_t size);
+
+/**
+ * @brief Change a node's metadata: the fields attributes->which names, and its ctime to now.
+ *
+ * @param node The node.
+ * @param attributes What changes (which 0: nothing does, not even ctime).
+ * @return 0, -EROFS where the file system can't change it, or -errno.
+ */
+int vfs_set_attributes(vfs_node_t *node, const vfs_attributes_t *attributes);
 
 /**
  * @brief Read a directory entry at a given index.

@@ -110,6 +110,8 @@ long syscall_dispatch(unsigned long number, unsigned long arg0, unsigned long ar
         return sys_getegid();
     case SYS_RENAME:
         return sys_rename((uintptr_t)arg0, (uintptr_t)arg1);
+    case SYS_UTIMENSAT:
+        return sys_utimensat((int)arg0, (uintptr_t)arg1, (uintptr_t)arg2, (int)arg3);
     default:
         return -ENOSYS;
     }

@@ -1,6 +1,11 @@
 #include "internal.h"
+#include <driver/clock.h>
 #include <mihos/ioctl.h>
+#include <mihos/fcntl.h>
+#include <mihos/stat.h>
+#include <mihos/errno.h>
 #include <fs/pipe.h>
+#include <cleanup.h>
 
 // ---- Calls on open files: open, read, write, seek, close, dup, ioctl, truncate ----
 
@@ -339,6 +344,121 @@ long sys_truncate(uintptr_t path, long length)
     vfs_node_put(node);
 
     return ret;
+}
+
+/**
+ * One of utimensat's two times: UTIME_NOW is now, UTIME_OMIT leaves it (its bit cleared
+ * from *which), anything else is the seconds given (nodes keep whole seconds).
+ *
+ * @param given The user's timespec.
+ * @param now The call's time.
+ * @param bit This time's VFS_SET_* bit.
+ * @param which The bits of the change.
+ * @param time Receives the time.
+ * @return 0, or -EINVAL for nanoseconds outside 0-999 999 999.
+ */
+static int utime_make(const struct mihos_timespec *given, int64_t now, uint32_t bit, uint32_t *which, int64_t *time)
+{
+    if (given->tv_nsec == MIHOS_UTIME_OMIT)
+    {
+        *which &= ~bit;
+        return 0;
+    }
+    if (given->tv_nsec == MIHOS_UTIME_NOW)
+    {
+        *time = now;
+        return 0;
+    }
+    if (given->tv_nsec < 0 || given->tv_nsec > 999999999)
+        return -EINVAL;
+
+    *time = given->tv_sec;
+    return 0;
+}
+
+/**
+ * The node utimensat changes: dirfd's own file for a NULL path (futimens) or for ""
+ * with AT_EMPTY_PATH; else the path, absolute or from the working directory.
+ * AT_SYMLINK_NOFOLLOW changes nothing yet: there are no symlinks.
+ *
+ * @param dirfd AT_FDCWD, or an open fd.
+ * @param path User path, or 0.
+ * @param flags AT_* flags (already checked).
+ * @param node Receives the node, as a new reference.
+ * @return 0, -EBADF, -ENOENT, -ENOSYS for a relative path from a directory fd
+ *         (no *at lookups yet), or -errno.
+ */
+static int utimensat_node(int dirfd, uintptr_t path, int flags, vfs_node_t **node)
+{
+    char *kernel_path = NULL;
+    if (path != 0)
+    {
+        long error;
+        kernel_path = user_path_copy(path, &error);
+        if (kernel_path == NULL)
+            return error;
+    }
+
+    // dirfd's own file
+    if (kernel_path == NULL || (kernel_path[0] == '\0' && (flags & AT_EMPTY_PATH)))
+    {
+        kfree(kernel_path);
+        file_t *file = sys_file(dirfd);
+        if (file == NULL)
+            return -EBADF;
+        if (file->node == NULL)
+            return -EINVAL;
+        vfs_node_get(file->node);
+        *node = file->node;
+        return 0;
+    }
+
+    // A relative path from a directory fd needs lookups from a node (the *at family)
+    if (kernel_path[0] != '/' && dirfd != AT_FDCWD)
+    {
+        kfree(kernel_path);
+        return -ENOSYS;
+    }
+
+    int ret = vfs_lookup(kernel_path, node);
+    kfree(kernel_path);
+    return ret;
+}
+
+/**
+ * Set a file's access and modification times (utimensat; mlibc's utime, utimes, futimes
+ * and futimens all come here). ctime becomes now, unless both times are UTIME_OMIT.
+ *
+ * @param dirfd AT_FDCWD, or the fd the path is relative to (or whose file is changed).
+ * @param path User path, or 0 for dirfd's own file.
+ * @param times User pointer to two timespecs (access, modification), or 0 for both now.
+ * @param flags AT_SYMLINK_NOFOLLOW, AT_EMPTY_PATH.
+ * @return 0, -EINVAL (unknown flag, bad nanoseconds), -EFAULT, -EROFS, or what finding
+ *         the node returns.
+ */
+long sys_utimensat(int dirfd, uintptr_t path, uintptr_t times, int flags)
+{
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))
+        return -EINVAL;
+
+    int64_t now = clock_seconds();
+    vfs_attributes_t attributes = {
+        .which = VFS_SET_ATIME | VFS_SET_MTIME,
+        .atime = now,
+        .mtime = now,
+    };
+    if (times != 0)
+    {
+        struct mihos_timespec given[2];
+        if (address_space_read(syscall_space(), times, given, sizeof(given)) != 0)
+            return -EFAULT;
+        return_on_error(utime_make(&given[0], now, VFS_SET_ATIME, &attributes.which, &attributes.atime));
+        return_on_error(utime_make(&given[1], now, VFS_SET_MTIME, &attributes.which, &attributes.mtime));
+    }
+
+    vfs_node_t *node release_with(vfs_node_put_ref) = NULL;
+    return_on_error(utimensat_node(dirfd, path, flags, &node));
+    return vfs_set_attributes(node, &attributes);
 }
 
 /**
