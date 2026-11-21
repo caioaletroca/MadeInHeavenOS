@@ -1004,7 +1004,7 @@ L4[256..511] kernel half  shared: arch_mmu_init gives every entry an L3 table at
                  sys_* the dispatch calls, grouped by file; nothing outside sys/ includes it
   user_copy.c    syscall_space, user_string_copy, user_path_copy
   files.c        sys_file (fd → file_t); open read write lseek close dup dup2 ioctl truncate ftruncate utimensat pipe fcntl
-  directories.c  getdents unlink mkdir rmdir chdir getcwd
+  directories.c  getdents unlink mkdir rmdir rename symlink chdir getcwd
   stat.c         stat lstat fstat readlink
   processes.c    exit spawn fork exec wait getpid getppid (child_create, program_load, spawn_args_t,
                  user_vector_copy and wait_status_encode static there)
@@ -1648,8 +1648,23 @@ init_start ─▶ vfs_read_file("/sbin/init") ─▶ argv = {"/sbin/init", init'
   `-ENAMETOOLONG`. A loop, not recursion: 40 nested walks on a 16 KiB kernel stack were the
   risk. The trailing-`/` check applies to the final path, so `hello/` through a link is
   `-ENOTDIR` too. Everything else follows (open, chdir, mkdir's "exists" check); unlink,
-  rmdir and rename act on the link's own name through `vfs_lookup_parent`. No way to make a
-  link yet (`symlink()`: the next batch).
+  rmdir and rename act on the link's own name through `vfs_lookup_parent`.
+  **`vfs_symlink(target, path)`** (`sys_symlink`, `SYS_SYMLINK` 57, D10g batch 6; mlibc's
+  `Symlink` sysdep, `symlink()`, busybox `ln -s`): an empty target or path → `-ENOENT`; the
+  name looked up without following (`vfs_lookup_link`) → `-EEXIST` first, before `-EROFS`, as
+  Linux (a dangling link's name is taken too); a trailing `/` → `-ENOENT` (a link is never a
+  directory); `vfs_lookup_parent`; no `symlink` op → `-EROFS` (initrd, devfs); then the
+  directory's `symlink(dir, name, length, target, target_length)` op. The target is never
+  looked up. ext2's `ext2_symlink` (writable volumes only): a target of a block or more
+  (≥ 1024 here: it and its `'\0'` must fit one block) → `-ENAMETOOLONG`; under the
+  directory's lock the same refusals as create (`EXT2_INDEX_FL` → `-EROFS`, removed →
+  `-ENOENT`, taken → `-EEXIST`); `ext2_inode_alloc`, `ext2_inode_init(EXT2_S_IFLNK | 0777, 1
+  link)` (Linux ignores a link's mode), `ext2_node_get`; the target stored
+  (`ext2_symlink_store`: ≤ 59 characters into `i_block`, a fast link, the rest of the 60
+  bytes left 0; longer through `ext2_write` into a data block, a slow link), then the name
+  (`EXT2_FT_SYMLINK`), so no record points at a link without its target. A failure after
+  the node exists marks it (`nlink` 0, `free_on_release`) and the put, after the directory's
+  lock, frees it.
   `vfs_read_file(path, &data, &size)`, relative paths included (spawn runs `./hello`): the whole file in a `kmalloc`'d buffer (loops on `read`;
   0 before the end → `-EIO`), the outputs set only on success. Open files: see Files.
   **Mounts:** `vfs_mount(path, root)` looks the directory up (`-ENOENT`/`-ENOTDIR` pass
@@ -3771,9 +3786,16 @@ sleep, semaphores, mutexes, reaper, input events + set 2 keyboard decoder.
           applets as `/bin/<name>` and through ash, `dirs` allows `links/`; the kernel's
           ext2 self-test (in `f04b8e7`) follows the test disk's `link`. Gate: 48 of 48 on
           both boots, e2fsck clean.
-        - Next: making links (`symlink`, `ln -s`: an ext2 fast or slow symlink inode and a
-          `EXT2_FT_SYMLINK` entry); `-c` in our own shell for Lua's `io.popen` (`/bin/sh`
-          stays ours, ash is `busybox sh`). Applets beyond the cases may want more (`cp -p`
+        - Symlinks, batch 6, making them (the user wrote the kernel side): `d5ecc56` (see
+          `vfs_symlink` under Symlinks in the VFS section). mlibc fork `dbcce844` adds the
+          `Symlink` sysdep. Pointer `8da7d84`. `534a4ba`: `ext2`'s `test_make_symlinks`
+          makes a 59-character fast link, 60- and 1023-character slow ones and a dangling
+          one in `grow/`, checks each with lstat, readlink and stat, and checks every
+          refusal (`EEXIST`, `ENOENT`, `ENOTDIR`, `ENAMETOOLONG`, `EROFS`); the 59 and 1023
+          stay for e2fsck. busybox runs `ln -s`, then `cat` and `ls` through the link.
+          Gate: 48 of 48 on both boots, e2fsck clean.
+        - Next: `-c` in our own shell for Lua's `io.popen` (`/bin/sh` stays ours, ash is
+          `busybox sh`). Applets beyond the cases may want more (`cp -p`
           wants `fchmod`: the next `set_attributes` bit).
     - Threads (`clone`, pthreads) when a port needs them (Python, Node.js), with real locks
       for what one thread per process covers today (fd table, address space, regions,
@@ -3952,7 +3974,6 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
   the small `od` (no `-A`/`-t`) and other trimmed applets.
 - mlibc's `execvp` has no default `PATH` when the environment has none (glibc falls back to
   `/bin:/usr/bin`): `env -i cmd` finds nothing unless `cmd` is a path.
-- Applets run only as `busybox <applet>` until the kernel has symlinks (D10g's next step).
 - The fork's `clearenv` fix (`9d5d2017`) is managarm's bug too: send it upstream as a PR.
 - Every process is root: no `setuid`/`setgid`, no saved ids or supplementary groups, and no
   permission checks on files (ext2 keeps owners and modes, the kernel ignores them).
@@ -4064,7 +4085,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - `utimensat` with a relative path from a directory fd is `-ENOSYS` (no lookups from a node:
   the `*at` family); `futimens` on an fd with no node (`file->node` NULL) is `-EINVAL`, where
   Linux sets a pipe's times.
-- Symlinks: no way to make one yet (`symlink`, `ln -s`); `open` with `O_CREAT` through a
+- Symlinks: no `symlinkat` (no `*at` family); `open` with `O_CREAT` through a
   dangling link is `-ENOENT` (Linux creates the file it names); `vfs_is_mount_point` still
   follows a link (`vfs_lookup`, should be `vfs_lookup_link`: rmdir or rename of a link to a
   mount point says `-EBUSY`); a fast symlink's `st_blocks` is 1 (Linux 0); ext2's fast-link
@@ -4115,7 +4136,7 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The initrd module stays reserved forever (files are used in place; never returned to the
   allocator).
 - Modules far above the kernel waste the free RAM between them (one boundary, not per-module holes).
-- Initrd directories are linear lists (`initrd_find_child` compares every name). No symlinks or hard
+- Initrd directories are linear lists (`initrd_find_child` compares every name). No hard
   links (skipped), no file modes used (everything is executable), read-only.
 - `vfs_read_file` copies every program once more (archive → `kmalloc` buffer → address space);
   fine at ~100 KiB, replaced by mapping later. `kmalloc` above 1024 B rounds to a power-of-two
@@ -4328,14 +4349,14 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
 - The adoption test's grandchild cannot be waited for: a failure is only its printed `FAIL` line,
   not counted by the runner.
 - `stat` times are whole seconds (`tv_nsec` 0); no users (`uid`/`gid` 0, ext2's `i_uid`/`i_gid` ignored);
-  `nlink` 1 outside ext2. No `lstat` (no symlinks) or `fstatat` (no `*at` calls yet).
+  `nlink` 1 outside ext2. No `fstatat` (no `*at` calls yet).
 - `ls` prints file arguments in argument order, mixed with the directories (real `ls` prints
   files first, then each directory). Its options, several paths and errors are checked by
   hand, like the shell.
 - `initrd_readdir` walks the children list from the start for every index, so a whole listing
   is O(n²); a file system could use `offset` as an opaque cursor (ext2: a byte position).
 - `getdents` fills at most a page per call; `d_type` is `DT_DIR`/`DT_REG`/`DT_CHR`/`DT_BLK`
-  (no symlinks, FIFOs or sockets yet). The `dirs` test hard-codes the root's layout (`bin`, `dev`, `mnt`, `sbin`, `usr`).
+  and `DT_LNK` (no FIFOs or sockets yet). The `dirs` test hard-codes the root's layout (`bin`, `dev`, `mnt`, `sbin`, `usr`).
 - The self-tests run on `kmain`'s 16 KiB boot stack (`boot.S`), which has no guard page: an
   overflow corrupts the memory below it silently (it happened: `ext2_test_unlink` once had a
   15 KB frame). Kernel thread stacks are 16 KiB too. A guard page (unmapped page below each
@@ -4375,8 +4396,8 @@ A stub `riscv64`/`qemu-virt` (or custom CPU) target implementing the contracts w
     (removing one through a path ending in `/.` is refused by the VFS, as Linux does);
   - one node `lock` for reads and writes: two reads of a file wait for each other (an rwlock
     would let them share);
-  - symlinks, device files, FIFOs and sockets on the disk are not shown or found (no VFS node
-    types for them; symlinks with `readlink` and path resolution in phase C);
+  - device files, FIFOs and sockets on the disk are not shown or found (no VFS node
+    types for them);
   - revision 0 and disks without `FILETYPE` are refused (readdir would have to read each
     inode for its type); blocks over 4 KiB are refused (they would straddle cache buffers);
   - `readdir` counts from the first entry on every call (O(n²) per listing; a byte-offset
